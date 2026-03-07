@@ -1,0 +1,120 @@
+name: Code Smell Detection (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      file-patterns:
+        description: 'File patterns to analyze (space-separated git pathspecs)'
+        required: false
+        type: string
+        default: '**/*.js **/*.ts **/*.jsx **/*.tsx'
+      max-turns:
+        description: 'Maximum Claude turns'
+        required: false
+        type: number
+        default: 5
+      file-limit:
+        description: 'Maximum number of changed files to analyze'
+        required: false
+        type: number
+        default: 30
+      severity-threshold:
+        description: 'Minimum severity to report (low, medium, high)'
+        required: false
+        type: string
+        default: 'medium'
+    outputs:
+      issues-found:
+        description: 'Total code smells detected'
+        value: ${{ jobs.analyze.outputs.count }}
+      high-severity:
+        description: 'High severity issues'
+        value: ${{ jobs.analyze.outputs.high }}
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    outputs:
+      count: ${{ steps.scan.outputs.total }}
+      high: ${{ steps.scan.outputs.high }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get changed files
+        id: changed
+        run: |
+          set -f
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            FILES=$(git diff --name-only origin/${{ github.base_ref }}...HEAD -- ${{ inputs.file-patterns }} 2>/dev/null | head -n ${{ inputs.file-limit }} || echo "")
+          else
+            FILES=$(git diff --name-only HEAD~1 -- ${{ inputs.file-patterns }} 2>/dev/null | head -n ${{ inputs.file-limit }} || echo "")
+          fi
+          set +f
+          FILE_COUNT=$(echo "$FILES" | grep -c '.' || true)
+          echo "count=$FILE_COUNT" >> $GITHUB_OUTPUT
+          echo "files<<EOF" >> $GITHUB_OUTPUT
+          echo "$FILES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Claude Code Smell Analysis
+        id: scan
+        if: steps.changed.outputs.count != '0'
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: "--model haiku --max-turns ${{ inputs.max-turns }}"
+          prompt: |
+            Analyze these files for code smells and anti-patterns.
+            Minimum severity to report: ${{ inputs.severity-threshold }}
+
+            ## Files to analyze
+            ${{ steps.changed.outputs.files }}
+
+            ## Complexity Smells (High Severity)
+            - Functions over 50 lines / single responsibility violations
+            - 4+ levels of indentation / complex conditional chains
+            - 5+ function parameters / boolean flag arguments
+            - Cyclomatic complexity > 10
+
+            ## Maintainability Smells (Medium Severity)
+            - Magic numbers/strings in conditionals
+            - Empty catch blocks / silently swallowed errors
+            - console.log() in production code
+            - 3+ levels of nested callbacks
+            - 10+ lines of similar code duplication
+
+            ## Style Smells (Low Severity)
+            - Inconsistent naming conventions
+            - Single-letter variables (except loop counters)
+            - TODO/FIXME without issue reference
+            - Commented-out code blocks
+
+            ## Output Format
+
+            For each issue:
+            - **File:Line** - Exact location
+            - **Smell** - Category name (e.g., "Long Function", "Deep Nesting")
+            - **Severity** - high / medium / low
+            - **Description** - Why it's problematic
+            - **Suggestion** - How to refactor
+
+            Group findings by severity (high first).
+
+            At the end, output machine-readable counts:
+            ```
+            TOTAL_ISSUES: <number>
+            HIGH_SEVERITY: <number>
+            ```
+
+            Leave a PR comment with findings, grouping by file then severity.

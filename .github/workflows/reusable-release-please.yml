@@ -1,0 +1,49 @@
+name: Release Please (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      config-file:
+        description: 'Path to release-please config file'
+        required: false
+        type: string
+        default: 'release-please-config.json'
+      manifest-file:
+        description: 'Path to release-please manifest file'
+        required: false
+        type: string
+        default: '.release-please-manifest.json'
+    secrets:
+      MY_RELEASE_PLEASE_TOKEN:
+        description: 'PAT with contents:write and pull-requests:write scopes'
+        required: true
+    outputs:
+      release_created:
+        description: 'Whether a release was created'
+        value: ${{ jobs.release-please.outputs.release_created }}
+      tag_name:
+        description: 'The tag name of the release'
+        value: ${{ jobs.release-please.outputs.tag_name }}
+
+# Prevent concurrent runs racing on the release-please branch.
+concurrency:
+  group: release-please-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@v4.4.0
+        id: release
+        with:
+          token: ${{ secrets.MY_RELEASE_PLEASE_TOKEN }}
+          config-file: ${{ inputs.config-file }}
+          manifest-file: ${{ inputs.manifest-file }}

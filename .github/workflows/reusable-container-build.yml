@@ -1,0 +1,127 @@
+name: Container Build (Reusable)
+
+# PR pre-release build phase of the build-once/promote pattern.
+# Runs on release-please PRs — builds and pushes a :next-{version} image to GHCR
+# so the release job (reusable-container-release.yml) can promote it instead of
+# rebuilding when the tag is pushed.
+#
+# Lookup key: the version read from the version file (e.g. package.json).
+# Release-please always bumps the version in the PR, so:
+#   PR build  → ghcr.io/.../image:next-1.2.3
+#   Tag push  → promote next-1.2.3 to 1.2.3, 1.2, 1
+#
+# This works regardless of merge strategy (squash or regular merge).
+
+on:
+  workflow_call:
+    inputs:
+      image-name:
+        description: 'Full image name under ghcr.io (e.g. laurigates/my-app)'
+        required: true
+        type: string
+      dockerfile:
+        description: 'Path to Dockerfile'
+        required: false
+        type: string
+        default: 'Dockerfile'
+      context:
+        description: 'Build context path'
+        required: false
+        type: string
+        default: '.'
+      build-args:
+        description: 'Newline-separated Docker build arguments'
+        required: false
+        type: string
+        default: ''
+      platforms:
+        description: 'Target platforms (comma-separated)'
+        required: false
+        type: string
+        default: 'linux/amd64'
+      cache-scope:
+        description: 'GHA cache scope (use different scopes for multiple images in one repo)'
+        required: false
+        type: string
+        default: 'app'
+      version-command:
+        description: 'Shell command to read the current version (stdout must be the bare version string)'
+        required: false
+        type: string
+        default: "jq -r '.version' package.json"
+    outputs:
+      pre-release-tag:
+        description: 'The full pre-release image reference pushed (ghcr.io/…:next-{version})'
+        value: ${{ jobs.build.outputs.pre-release-tag }}
+      version:
+        description: 'Version string read from the version file'
+        value: ${{ jobs.build.outputs.version }}
+      digest:
+        description: 'Image digest'
+        value: ${{ jobs.build.outputs.digest }}
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      pre-release-tag: ${{ steps.tag.outputs.pre-release-tag }}
+      version: ${{ steps.version.outputs.version }}
+      digest: ${{ steps.build-push.outputs.digest }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Log into GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Read version
+        id: version
+        run: |
+          VERSION=$(${{ inputs.version-command }})
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "Pre-release image tag: next-${VERSION}"
+
+      - name: Compute pre-release tag
+        id: tag
+        run: |
+          TAG="ghcr.io/${{ inputs.image-name }}:next-${{ steps.version.outputs.version }}"
+          echo "pre-release-tag=${TAG}" >> $GITHUB_OUTPUT
+
+      - name: Build and push pre-release image
+        id: build-push
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.dockerfile }}
+          platforms: ${{ inputs.platforms }}
+          push: true
+          tags: ${{ steps.tag.outputs.pre-release-tag }}
+          build-args: |
+            COMMIT_SHA=${{ github.sha }}
+            GIT_BRANCH=${{ github.ref_name }}
+            ${{ inputs.build-args }}
+          cache-from: type=gha,scope=${{ inputs.cache-scope }}
+          cache-to: type=gha,mode=max,scope=${{ inputs.cache-scope }}
+          # SBOM and provenance deferred to the release/promote job
+          provenance: false
+          sbom: false
+
+      - name: Job summary
+        if: always()
+        run: |
+          echo "## Container Build: \`${{ inputs.image-name }}\` (PR pre-release)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image**: \`${{ steps.tag.outputs.pre-release-tag }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Digest**: \`${{ steps.build-push.outputs.digest }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Purpose**: Pre-built for promotion on merge — no rebuild needed after tag push" >> $GITHUB_STEP_SUMMARY

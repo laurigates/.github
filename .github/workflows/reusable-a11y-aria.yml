@@ -1,0 +1,132 @@
+name: ARIA Patterns (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      file-patterns:
+        description: 'Component file patterns (space-separated git pathspecs)'
+        required: false
+        type: string
+        default: '**/*.tsx **/*.jsx **/*.vue'
+      max-turns:
+        description: 'Maximum Claude turns'
+        required: false
+        type: number
+        default: 5
+      file-limit:
+        description: 'Maximum number of changed files to analyze'
+        required: false
+        type: number
+        default: 30
+    outputs:
+      issues-found:
+        description: 'Total ARIA issues detected'
+        value: ${{ jobs.analyze.outputs.count }}
+      critical-issues:
+        description: 'Critical ARIA misuse'
+        value: ${{ jobs.analyze.outputs.critical }}
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    outputs:
+      count: ${{ steps.scan.outputs.total }}
+      critical: ${{ steps.scan.outputs.critical }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get changed component files
+        id: changed
+        run: |
+          set -f
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            FILES=$(git diff --name-only origin/${{ github.base_ref }}...HEAD -- ${{ inputs.file-patterns }} 2>/dev/null | head -n ${{ inputs.file-limit }} || echo "")
+          else
+            FILES=$(git diff --name-only HEAD~1 -- ${{ inputs.file-patterns }} 2>/dev/null | head -n ${{ inputs.file-limit }} || echo "")
+          fi
+          set +f
+          FILE_COUNT=$(echo "$FILES" | grep -c '.' || true)
+          echo "count=$FILE_COUNT" >> $GITHUB_OUTPUT
+          echo "files<<EOF" >> $GITHUB_OUTPUT
+          echo "$FILES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Claude ARIA Analysis
+        id: scan
+        if: steps.changed.outputs.count != '0'
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: "--model haiku --max-turns ${{ inputs.max-turns }}"
+          prompt: |
+            Audit ARIA implementation in changed components.
+
+            ## Files to analyze
+            ${{ steps.changed.outputs.files }}
+
+            ## Invalid Roles (Critical)
+            - Invalid role values or typos
+            - Roles that conflict with element semantics
+
+            ## Missing Required Roles (High)
+            - Custom dropdown without role="listbox" or role="menu"
+            - Custom toggle without role="switch"
+            - Tab components without role="tablist"/"tab"/"tabpanel"
+            - Modal dialogs without role="dialog"
+
+            ## Required ARIA Attributes (Critical)
+            - role="checkbox" requires aria-checked
+            - role="switch" requires aria-checked
+            - role="slider" requires aria-valuenow, aria-valuemin, aria-valuemax
+            - role="combobox" requires aria-expanded, aria-controls
+
+            ## State Management (High)
+            - Accordions: triggers need aria-expanded
+            - Dropdowns: triggers need aria-expanded, aria-haspopup
+            - Toggles: need aria-pressed or aria-checked
+            - Tabs: aria-selected on tab elements
+
+            ## Labeling (Critical)
+            - Icon-only buttons without aria-label
+            - Form inputs without aria-label or aria-labelledby
+            - Complex widgets without accessible name
+
+            ## Live Regions (High)
+            - Toast/snackbar without role="alert" or aria-live
+            - Status messages without role="status"
+
+            ## Focus Management (High)
+            - Dialogs without aria-modal="true"
+            - Missing aria-labelledby on dialog pointing to title
+
+            ## Output Format
+
+            For each issue:
+            - **File:Line** - Exact location
+            - **Severity** - Critical / High / Medium / Low
+            - **Pattern** - ARIA pattern name
+            - **Issue** - What's wrong
+            - **Code** - The problematic code
+            - **Reference** - WAI-ARIA APG pattern link
+            - **Fix** - Correct implementation
+
+            Reference: https://www.w3.org/WAI/ARIA/apg/patterns/
+
+            At the end, output machine-readable counts:
+            ```
+            TOTAL_ISSUES: <number>
+            CRITICAL_ISSUES: <number>
+            ```
+
+            Leave a PR comment with findings grouped by severity.

@@ -1,0 +1,72 @@
+name: Auto-merge Image Updater PRs (Reusable)
+
+# Called from push-triggered workflows on image-updater/* branches.
+# Creates the PR, approves, and enables auto-merge in a single job to avoid
+# GITHUB_TOKEN anti-recursion: actions using GITHUB_TOKEN don't trigger new
+# workflow runs, so a two-job design (push → create PR → pull_request → merge)
+# never fires the second job.
+#
+# Calling workflow should trigger on:
+#   push:
+#     branches:
+#       - 'image-updater-**'
+
+on:
+  workflow_call:
+    inputs:
+      merge-method:
+        description: 'Merge method: merge, squash, or rebase'
+        required: false
+        type: string
+        default: 'squash'
+      pr-title:
+        description: 'Pull request title'
+        required: false
+        type: string
+        default: 'build: automatic image update'
+    secrets:
+      AUTO_MERGE_PAT:
+        description: 'PAT for approving the PR (needs a different user from the PR author)'
+        required: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  create-and-merge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Create Pull Request
+        id: create-pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_URL=$(gh pr create \
+            --base main \
+            --head "${{ github.ref_name }}" \
+            --title "${{ inputs.pr-title }}" \
+            --body "Automated image update by argocd-image-updater.
+
+          Branch: \`${{ github.ref_name }}\`" \
+            2>&1) || true
+
+          if echo "$PR_URL" | grep -q "already exists"; then
+            PR_URL=$(gh pr view "${{ github.ref_name }}" --json url -q .url)
+          fi
+
+          echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
+          echo "Created/found PR: $PR_URL"
+
+      - name: Approve PR
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AUTO_MERGE_PAT || secrets.GITHUB_TOKEN }}
+        run: gh pr review --approve "${{ github.ref_name }}"
+
+      - name: Enable auto-merge
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr merge --auto --${{ inputs.merge-method }} "${{ github.ref_name }}"

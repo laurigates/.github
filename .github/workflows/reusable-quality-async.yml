@@ -1,0 +1,111 @@
+name: Async Pattern Validation (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      file-patterns:
+        description: 'File patterns to analyze (space-separated git pathspecs)'
+        required: false
+        type: string
+        default: '**/*.js **/*.ts **/*.jsx **/*.tsx'
+      max-turns:
+        description: 'Maximum Claude turns'
+        required: false
+        type: number
+        default: 5
+      file-limit:
+        description: 'Maximum number of changed files to analyze'
+        required: false
+        type: number
+        default: 30
+    outputs:
+      issues-found:
+        description: 'Total async pattern issues'
+        value: ${{ jobs.analyze.outputs.count }}
+      unhandled-rejections:
+        description: 'Potential unhandled rejections'
+        value: ${{ jobs.analyze.outputs.rejections }}
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    outputs:
+      count: ${{ steps.scan.outputs.total }}
+      rejections: ${{ steps.scan.outputs.rejections }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get changed files
+        id: changed
+        run: |
+          set -f
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            FILES=$(git diff --name-only origin/${{ github.base_ref }}...HEAD -- ${{ inputs.file-patterns }} 2>/dev/null | head -n ${{ inputs.file-limit }} || echo "")
+          else
+            FILES=$(git diff --name-only HEAD~1 -- ${{ inputs.file-patterns }} 2>/dev/null | head -n ${{ inputs.file-limit }} || echo "")
+          fi
+          set +f
+          FILE_COUNT=$(echo "$FILES" | grep -c '.' || true)
+          echo "count=$FILE_COUNT" >> $GITHUB_OUTPUT
+          echo "files<<EOF" >> $GITHUB_OUTPUT
+          echo "$FILES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Claude Async Pattern Analysis
+        id: scan
+        if: steps.changed.outputs.count != '0'
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: "--model haiku --max-turns ${{ inputs.max-turns }}"
+          prompt: |
+            Review async code patterns for potential issues.
+
+            ## Files to analyze
+            ${{ steps.changed.outputs.files }}
+
+            ## Critical Issues (Unhandled Rejections)
+            - Floating promises: returned but not awaited, stored, or chained
+            - `promise.then(handler)` without `.catch()`
+            - async function without try-catch AND caller doesn't handle
+            - Promise.all without catch
+            - Fire-and-forget without `void` operator
+
+            ## High Severity Issues
+            - `new Promise(async (resolve, reject) => ...)` anti-pattern
+            - catch block that doesn't rethrow or handle
+            - Error swallowed without logging
+
+            ## Medium Severity Issues
+            - Sequential awaits that could be parallel with Promise.all
+            - Unnecessary async (function doesn't await anything)
+            - Resource cleanup without finally block
+            - Race conditions: shared state updated in parallel async ops
+
+            ## Output Format
+
+            For each issue:
+            - **File:Line** - Exact location
+            - **Pattern** - Anti-pattern name
+            - **Severity** - critical / high / medium / low
+            - **Risk** - What could go wrong
+            - **Fix** - How to handle properly with code example
+
+            At the end, output machine-readable counts:
+            ```
+            TOTAL_ISSUES: <number>
+            UNHANDLED_REJECTIONS: <number>
+            ```
+
+            Leave a PR comment with findings grouped by severity.
