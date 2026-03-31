@@ -1,0 +1,59 @@
+name: Sync AI Rules
+
+on:
+  workflow_call:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout calling repo
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+
+      - name: Fetch rules from .github repo
+        run: npx rulesync@latest fetch laurigates/.github --features rules,ignore --conflict overwrite
+
+      - name: Generate tool-specific files
+        run: npx rulesync@latest generate
+
+      - name: Check for changes
+        id: changes
+        run: |
+          git add -A
+          if git diff --cached --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create pull request
+        if: steps.changes.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@271a8d0340265f705b14b6d32b9829c1cb33d45e # v7.0.8
+        with:
+          commit-message: "chore: sync AI coding rules from .github repo"
+          title: "chore: sync AI coding rules"
+          body: |
+            ## Summary
+
+            - Synced AI coding rules from `laurigates/.github` via rulesync
+            - Updated tool-specific config for Claude Code, Copilot, Gemini CLI, and Cursor
+
+            ## Test plan
+
+            - [ ] Verify `.claude/rules/` files have correct `globs:` frontmatter
+            - [ ] Verify `.github/copilot-instructions.md` is generated
+            - [ ] Verify `.cursor/rules/` contains `.mdc` files
+            - [ ] Verify `GEMINI.md` or `.gemini/` is generated
+
+            🤖 Generated with rulesync
+          branch: chore/sync-ai-rules
+          delete-branch: true

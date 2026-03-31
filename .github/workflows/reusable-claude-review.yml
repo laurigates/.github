@@ -1,0 +1,116 @@
+name: Claude Code Review (Reusable)
+
+# Automated PR review using Claude Code. Reviews every PR for code quality,
+# potential bugs, security issues, test coverage, and documentation needs.
+# Skips release-please PRs and bot actors by default.
+#
+# Calling workflow should trigger on:
+#   pull_request:
+#     types: [opened, synchronize, reopened]
+#
+# Example caller:
+#
+#   on:
+#     pull_request:
+#       types: [opened, synchronize, reopened]
+#
+#   jobs:
+#     review:
+#       uses: laurigates/.github/.github/workflows/reusable-claude-review.yml@main
+#       secrets:
+#         CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+on:
+  workflow_call:
+    inputs:
+      skip_release_please:
+        description: 'Skip review on release-please PRs'
+        required: false
+        type: boolean
+        default: true
+      skip_bots:
+        description: 'Skip review when PR author is github-actions[bot]'
+        required: false
+        type: boolean
+        default: true
+      review_prompt:
+        description: 'Custom review prompt (replaces default)'
+        required: false
+        type: string
+        default: ''
+      claude_args:
+        description: 'Additional arguments for Claude Code'
+        required: false
+        type: string
+        default: '--max-turns 20'
+      additional_permissions:
+        description: 'Additional tool permissions for Claude Code'
+        required: false
+        type: string
+        default: ''
+      plugins:
+        description: 'Claude Code plugins to load'
+        required: false
+        type: string
+        default: ''
+      plugin_marketplaces:
+        description: 'Claude Code plugin marketplace URLs'
+        required: false
+        type: string
+        default: ''
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}-${{ github.repository }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  id-token: write
+
+jobs:
+  review:
+    if: >-
+      (!inputs.skip_release_please || !startsWith(github.head_ref, 'release-please--')) &&
+      (!inputs.skip_bots || github.actor != 'github-actions[bot]')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Claude Code Review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          allowed_bots: "claude[bot],claude"
+          track_progress: true
+          prompt: |
+            ${{ inputs.review_prompt || 'Review this pull request. Focus on:
+            - Code quality and best practices
+            - Potential bugs or security issues
+            - Test coverage gaps
+            - Documentation needs
+
+            IMPORTANT: Use built-in tools (Read, Grep, Glob) for file exploration.
+            Do NOT use Bash for find/grep operations - use the dedicated tools instead.' }}
+          claude_args: ${{ inputs.claude_args }}
+          additional_permissions: |
+            Read
+            Grep
+            Glob
+            Task
+            TodoWrite
+            Bash(git status *)
+            Bash(git diff *)
+            Bash(git log *)
+            Bash(git show *)
+            Bash(gh pr *)
+            ${{ inputs.additional_permissions }}
+          plugins: ${{ inputs.plugins }}
+          plugin_marketplaces: ${{ inputs.plugin_marketplaces }}

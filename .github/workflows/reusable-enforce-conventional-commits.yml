@@ -1,0 +1,198 @@
+name: Enforce Conventional Commits (Reusable)
+
+# Auto-fixes PR titles to follow the conventional commits specification.
+# Maps common verbs (e.g., "Add", "Fixed", "Upgrade") to canonical types
+# (feat, fix, build, etc.) and updates the title. Fails with a helpful
+# message if the title cannot be auto-fixed.
+#
+# Calling workflow should trigger on:
+#   pull_request:
+#     types: [opened, edited, synchronize]
+#
+# Example caller:
+#
+#   on:
+#     pull_request:
+#       types: [opened, edited, synchronize]
+#
+#   jobs:
+#     conventional-commits:
+#       uses: laurigates/.github/.github/workflows/reusable-enforce-conventional-commits.yml@main
+
+on:
+  workflow_call:
+    inputs:
+      extra_type_aliases:
+        description: 'JSON object of additional word→type mappings to merge with defaults (e.g., {"deploy": "ci", "infra": "chore"})'
+        required: false
+        type: string
+        default: '{}'
+
+permissions:
+  pull-requests: write
+
+jobs:
+  fix-pr-title:
+    name: Fix PR title
+    runs-on: ubuntu-latest
+    steps:
+      - name: Auto-fix PR title to conventional commits format
+        uses: actions/github-script@v7
+        env:
+          EXTRA_ALIASES: ${{ inputs.extra_type_aliases }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const VALID_TYPES = [
+              'feat', 'fix', 'perf', 'refactor', 'docs',
+              'chore', 'ci', 'test', 'style', 'build', 'revert'
+            ];
+
+            // Map common words/aliases to canonical types
+            const TYPE_ALIASES = {
+              // feat
+              feature: 'feat', features: 'feat', new: 'feat',
+              add: 'feat', adds: 'feat', added: 'feat',
+              enhancement: 'feat', enhance: 'feat',
+              implement: 'feat', implements: 'feat', implemented: 'feat',
+              introduce: 'feat', introduces: 'feat', introduced: 'feat',
+              create: 'feat', creates: 'feat', created: 'feat',
+              enable: 'feat', enables: 'feat', enabled: 'feat',
+              support: 'feat', supports: 'feat',
+              // fix
+              bugfix: 'fix', bug: 'fix', hotfix: 'fix', patch: 'fix',
+              fixes: 'fix', fixed: 'fix', resolve: 'fix', resolves: 'fix', resolved: 'fix',
+              correct: 'fix', corrects: 'fix', corrected: 'fix',
+              repair: 'fix', repairs: 'fix', repaired: 'fix',
+              // perf
+              improvement: 'perf', improve: 'perf', improves: 'perf', improved: 'perf',
+              optimize: 'perf', optimizes: 'perf', optimized: 'perf',
+              performance: 'perf', speed: 'perf', faster: 'perf',
+              // refactor
+              refactoring: 'refactor',
+              cleanup: 'refactor', clean: 'refactor',
+              remove: 'refactor', removed: 'refactor', removes: 'refactor',
+              delete: 'refactor', deleted: 'refactor', deletes: 'refactor',
+              migrate: 'refactor', migrates: 'refactor', migrated: 'refactor',
+              rename: 'refactor', renames: 'refactor', renamed: 'refactor',
+              move: 'refactor', moves: 'refactor', moved: 'refactor',
+              extract: 'refactor', extracts: 'refactor', extracted: 'refactor',
+              split: 'refactor', splits: 'refactor',
+              consolidate: 'refactor', consolidates: 'refactor', consolidated: 'refactor',
+              reorganize: 'refactor', reorganizes: 'refactor', reorganized: 'refactor',
+              restructure: 'refactor', restructures: 'refactor', restructured: 'refactor',
+              simplify: 'refactor', simplifies: 'refactor', simplified: 'refactor',
+              rewrite: 'refactor', rewrites: 'refactor', rewrote: 'refactor',
+              convert: 'refactor', converts: 'refactor', converted: 'refactor',
+              replace: 'refactor', replaces: 'refactor', replaced: 'refactor',
+              // style
+              standardize: 'style', standardizes: 'style', standardized: 'style',
+              normalize: 'style', normalizes: 'style', normalized: 'style',
+              format: 'style', formatting: 'style', formats: 'style', formatted: 'style',
+              lint: 'style', linting: 'style',
+              // docs
+              documentation: 'docs', doc: 'docs', readme: 'docs',
+              document: 'docs', documents: 'docs', documented: 'docs',
+              // chore
+              update: 'chore', updates: 'chore', updated: 'chore',
+              configure: 'chore', configures: 'chore', configured: 'chore',
+              setup: 'chore', disable: 'chore', switch: 'chore',
+              // build
+              upgrade: 'build', upgrades: 'build', upgraded: 'build',
+              dependency: 'build', dependencies: 'build', deps: 'build',
+              bump: 'build', pin: 'build', pins: 'build', pinned: 'build',
+              // test
+              testing: 'test', tests: 'test', spec: 'test',
+              // ci
+              pipeline: 'ci', workflow: 'ci',
+              // revert
+              rollback: 'revert',
+            };
+
+            // Merge extra aliases from input
+            let extraAliases = {};
+            try {
+              extraAliases = JSON.parse(process.env.EXTRA_ALIASES || '{}');
+            } catch (e) {
+              core.warning(`Could not parse extra_type_aliases: ${e.message}`);
+            }
+            const allAliases = { ...TYPE_ALIASES, ...extraAliases };
+
+            // Matches a valid conventional commit: type(scope)!: subject
+            const VALID_PATTERN = /^(feat|fix|perf|refactor|docs|chore|ci|test|style|build|revert)(\([^)]+\))?!?: .+/;
+
+            function attemptFix(title) {
+              // Already valid
+              if (VALID_PATTERN.test(title)) {
+                return { fixed: title, changed: false, reason: 'Already valid' };
+              }
+
+              // Pattern: word(scope)?: subject  OR  word: subject  (with any casing / alias)
+              const colonPattern = /^([A-Za-z]+)(\([^)]*\))?(!)?: (.+)$/;
+              const colonMatch = title.match(colonPattern);
+              if (colonMatch) {
+                const [, typePart, scope, bang, subject] = colonMatch;
+                const lower = typePart.toLowerCase();
+                const resolved = VALID_TYPES.includes(lower) ? lower : allAliases[lower];
+                if (resolved) {
+                  const fixed = `${resolved}${scope || ''}${bang || ''}: ${subject}`;
+                  return {
+                    fixed,
+                    changed: fixed !== title,
+                    reason: `Normalized type "${typePart}" → "${resolved}"`,
+                  };
+                }
+              }
+
+              // Pattern: verb at start of sentence ("Add feature X", "Fixed bug Y")
+              const words = title.trim().split(/\s+/);
+              if (words.length >= 2) {
+                const first = words[0].toLowerCase().replace(/:$/, '');
+                const resolved = VALID_TYPES.includes(first) ? first : allAliases[first];
+                if (resolved) {
+                  const rest = words.slice(1).join(' ');
+                  const subject = rest.charAt(0).toLowerCase() + rest.slice(1);
+                  return {
+                    fixed: `${resolved}: ${subject}`,
+                    changed: true,
+                    reason: `Inferred type "${resolved}" from leading word "${words[0]}"`,
+                  };
+                }
+              }
+
+              return { fixed: title, changed: false, reason: null };
+            }
+
+            const pr = context.payload.pull_request;
+            const originalTitle = pr.title;
+            const { fixed, changed, reason } = attemptFix(originalTitle);
+
+            if (!changed && VALID_PATTERN.test(fixed)) {
+              console.log(`✓ PR title already follows conventional commits format: "${originalTitle}"`);
+              return;
+            }
+
+            if (changed) {
+              console.log(`Fixing PR title: "${originalTitle}" → "${fixed}" (${reason})`);
+              await github.rest.pulls.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pr.number,
+                title: fixed,
+              });
+              console.log('✓ PR title updated successfully.');
+              return;
+            }
+
+            // Could not auto-fix — fail with helpful message
+            const types = VALID_TYPES.join(', ');
+            core.setFailed(
+              `PR title "${originalTitle}" does not follow conventional commits format and could not be auto-fixed.\n\n` +
+              `Expected format: <type>(<scope>): <subject>\n` +
+              `Valid types: ${types}\n\n` +
+              `Examples:\n` +
+              `  feat(auth): add OAuth2 support\n` +
+              `  fix: resolve null pointer in auth service\n` +
+              `  docs(readme): update installation steps\n\n` +
+              `Please update the PR title manually.`
+            );

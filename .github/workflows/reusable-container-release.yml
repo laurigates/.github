@@ -99,6 +99,9 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Strip the component prefix from the release-please tag to get the semver
+      # version, then construct the :next-{version} pre-release image reference.
+      # e.g. my-app-v1.2.3 with prefix my-app-v → version=1.2.3, next_image=…:next-1.2.3
       - name: Extract release version from tag
         id: version
         run: |
@@ -138,6 +141,7 @@ jobs:
             type=match,pattern=.*-v(\d+),group=1
 
       # ---- Fast path: promote the pre-built PR image -------------------------
+      # Manifest-only retag: no layer re-upload, completes in seconds.
       - name: Promote PR image to release tags
         if: steps.pr-image.outputs.exists == 'true'
         run: |
@@ -150,6 +154,7 @@ jobs:
           docker buildx imagetools create "${TAG_ARGS[@]}" "$SOURCE"
 
       # ---- Slow path: full rebuild (fallback) --------------------------------
+      # Reached when the :next-{version} image is not in GHCR.
       - name: Build and push (fallback — no pre-built PR image found)
         id: build-push
         if: steps.pr-image.outputs.exists != 'true'
@@ -204,7 +209,7 @@ jobs:
       - name: Upload Trivy scan results
         uses: github/codeql-action/upload-sarif@9e907b5e64f6b83e7804b09294d44122997950d6 # v4.32.3
         if: always()
-        continue-on-error: true
+        continue-on-error: true  # Code Scanning may not be available on all repos
         with:
           sarif_file: 'trivy-results.sarif'
 
