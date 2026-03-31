@@ -4,6 +4,12 @@ name: Fix Release-Please Conflicts (Reusable)
 # to main that change CHANGELOG.md, package.json, or the manifest), this workflow
 # deletes the stale branch and retriggers release-please to recreate it cleanly.
 #
+# Root cause: release-please creates a branch modifying 3 files (CHANGELOG.md,
+# package.json, .release-please-manifest.json). When a previous release PR is
+# squash-merged to main, those same files change on main, making the existing
+# release-please branch stale. The next release-please run may not be able to
+# force-push if GitHub has already marked the PR as conflicted.
+#
 # Calling workflow should trigger on:
 #   push:
 #     branches: [main]

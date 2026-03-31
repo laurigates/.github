@@ -36,7 +36,14 @@ The version is extracted from the version file (default: `package.json`) during 
 - **`reusable-fix-release-conflicts.yml`** — detects conflicted release-please PRs, closes them, deletes the branch, and retriggers release-please to recreate cleanly
 - **`reusable-auto-merge-image-updater.yml`** — creates, approves, and auto-merges ArgoCD Image Updater PRs in a single job (workaround for GITHUB_TOKEN anti-recursion)
 
-### Claude-Powered Analysis Workflows
+### Claude-Powered Workflows
+
+- **`reusable-claude.yml`** — enables `@claude` mentions in issues and PRs. Supports configurable runner, max turns, and system prompt for CI turn budget awareness. Posts continuation comments on max-turns exhaustion
+- **`reusable-claude-review.yml`** — automated PR review using Claude Code. Skips release-please PRs and bot actors by default
+- **`reusable-auto-fix.yml`** — analyzes failed CI workflows and either auto-fixes (commit + push) or opens a GitHub issue. Includes flood guards and recent-fix detection to prevent loops
+- **`reusable-enforce-conventional-commits.yml`** — auto-fixes PR titles to conventional commits format with 80+ verb-to-type mappings
+
+#### Claude-Powered Analysis Workflows
 
 Security, quality, and accessibility workflows use `anthropics/claude-code-action@v1` with `--model haiku`:
 - **Security**: `reusable-security-{secrets,deps,owasp}.yml`
@@ -47,8 +54,8 @@ All require `CLAUDE_CODE_OAUTH_TOKEN` secret. They analyze changed files in PRs 
 
 ### Other
 
-- **`reusable-claude.yml`** — enables `@claude` mentions in issues and PRs
 - **`reusable-renovate.yml`** — runs Renovate for dependency updates
+- **`reusable-sync-ai-rules.yml`** — syncs AI coding rules from this `.github` repo into calling repos via rulesync, creating a PR with tool-specific configs for Claude Code, Copilot, Gemini, and Cursor
 
 ## Conventions
 

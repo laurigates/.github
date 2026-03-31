@@ -1,0 +1,289 @@
+name: Auto-fix Workflow Failures (Reusable)
+
+# Analyzes failed GitHub Actions workflows using Claude Code and either
+# auto-fixes the issue (commit + push) or opens a GitHub issue if the
+# failure requires manual intervention.
+#
+# Calling workflow should trigger on:
+#   workflow_run:
+#     workflows: ["CI", "Lint", ...]
+#     types: [completed]
+#
+# The caller must pass workflow_run context as inputs since reusable
+# workflows don't have access to the parent's event payload.
+#
+# Example caller:
+#
+#   on:
+#     workflow_run:
+#       workflows: ["CI", "Lint"]
+#       types: [completed]
+#
+#   jobs:
+#     auto-fix:
+#       if: >-
+#         github.event.workflow_run.conclusion == 'failure' &&
+#         !startsWith(github.event.workflow_run.head_commit.message, 'fix(auto):') &&
+#         (github.event.workflow_run.actor.type != 'Bot' ||
+#          github.event.workflow_run.actor.login == 'claude[bot]' ||
+#          github.event.workflow_run.actor.login == 'claude') &&
+#         github.event.workflow_run.head_branch != 'main' &&
+#         github.event.workflow_run.head_branch != 'master'
+#       uses: laurigates/.github/.github/workflows/reusable-auto-fix.yml@main
+#       with:
+#         branch: ${{ github.event.workflow_run.head_branch }}
+#         run_id: ${{ github.event.workflow_run.id }}
+#         workflow_name: ${{ github.event.workflow_run.name }}
+#         head_sha: ${{ github.event.workflow_run.head_sha }}
+#       secrets:
+#         CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+on:
+  workflow_call:
+    inputs:
+      branch:
+        description: 'Branch where the workflow failed'
+        required: true
+        type: string
+      run_id:
+        description: 'Run ID of the failed workflow'
+        required: true
+        type: string
+      workflow_name:
+        description: 'Name of the failed workflow'
+        required: true
+        type: string
+      head_sha:
+        description: 'Commit SHA that triggered the failed workflow'
+        required: true
+        type: string
+      pr_number:
+        description: 'Associated PR number (auto-detected if not provided)'
+        required: false
+        type: string
+        default: ''
+      max_auto_fix_prs:
+        description: 'Maximum number of open auto-fix PRs before skipping (flood guard)'
+        required: false
+        type: number
+        default: 2
+      auto_fixable_description:
+        description: 'Markdown describing auto-fixable failure types for the Claude prompt'
+        required: false
+        type: string
+        default: |
+          - Linting errors (formatting, style violations)
+          - Missing or malformed configuration files
+          - Type errors with obvious fixes
+          - Import ordering or unused import issues
+          - Conventional commit format violations in PR titles
+      not_auto_fixable_description:
+        description: 'Markdown describing failures that should become issues instead'
+        required: false
+        type: string
+        default: |
+          - GitHub Actions infrastructure failures (runner issues, network timeouts)
+          - Permission or token errors
+          - External service outages
+          - Complex architectural problems requiring design decisions
+          - Flaky tests with no clear root cause
+          - Issues requiring secrets or credentials changes
+          - Failures in workflows not related to code changes on this branch
+      claude_args:
+        description: 'Additional arguments for Claude Code (e.g., "--model sonnet --max-turns 30")'
+        required: false
+        type: string
+        default: '--model sonnet --max-turns 30'
+      additional_permissions:
+        description: 'Additional tool permissions for Claude Code'
+        required: false
+        type: string
+        default: ''
+      plugins:
+        description: 'Claude Code plugins to load'
+        required: false
+        type: string
+        default: ''
+      plugin_marketplaces:
+        description: 'Claude Code plugin marketplace URLs'
+        required: false
+        type: string
+        default: ''
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
+      PAT_TOKEN:
+        description: 'PAT for pushing commits (falls back to GITHUB_TOKEN)'
+        required: false
+
+concurrency:
+  group: auto-fix-${{ inputs.branch }}-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  actions: read
+  id-token: write
+
+jobs:
+  auto-fix:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout failed branch
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.branch }}
+          fetch-depth: 0
+          token: ${{ secrets.PAT_TOKEN || github.token }}
+
+      - name: Gather failure context
+        id: context
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CI_CONTEXT_DIR: ${{ runner.temp }}/ci-failure-context
+        run: |
+          RUN_ID="${{ inputs.run_id }}"
+          BRANCH="${{ inputs.branch }}"
+
+          # Save failure context to runner temp dir (auto-cleaned by GitHub)
+          mkdir -p "${CI_CONTEXT_DIR}"
+          echo "context_dir=${CI_CONTEXT_DIR}" >> "$GITHUB_OUTPUT"
+
+          # Get failed job logs (truncated to last 65536 bytes)
+          gh run view "$RUN_ID" --log-failed 2>&1 | tail -c 65536 > "${CI_CONTEXT_DIR}/failure-logs.txt" || echo "Could not retrieve logs" > "${CI_CONTEXT_DIR}/failure-logs.txt"
+
+          # Get structured failed jobs summary
+          gh run view "$RUN_ID" --json jobs \
+            -q '.jobs[] | select(.conclusion == "failure") | "Job: \(.name)\nStatus: \(.conclusion)\nSteps:\n" + ([.steps[] | select(.conclusion == "failure") | "  - \(.name): \(.conclusion)"] | join("\n"))' \
+            > "${CI_CONTEXT_DIR}/failed-jobs.txt" 2>/dev/null || echo "Could not retrieve job details" > "${CI_CONTEXT_DIR}/failed-jobs.txt"
+
+          # Find associated PR number (use input if provided, otherwise detect)
+          PR_NUMBER="${{ inputs.pr_number }}"
+          if [ -z "$PR_NUMBER" ]; then
+            PR_NUMBER=$(gh pr list --head "$BRANCH" --json number --jq '.[0].number' 2>/dev/null || echo "")
+          fi
+          echo "pr_number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
+
+          # Check if we already have a recent auto-fix commit on this branch
+          RECENT_FIX=$(git log --oneline -5 --format='%s' | grep -c 'fix(auto):\|fix:.*resolve CI failure' || true)
+          echo "recent_fix_count=$RECENT_FIX" >> "$GITHUB_OUTPUT"
+
+      - name: Check for PR flood guard
+        id: dedup
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Skip if too many open auto-fix PRs already exist
+          EXISTING_PRS=$(gh pr list \
+            --search "auto-fix in:title head:auto-fix/" \
+            --state open \
+            --json number \
+            -q 'length')
+
+          MAX_PRS="${{ inputs.max_auto_fix_prs }}"
+          if [ "${EXISTING_PRS}" -gt "${MAX_PRS}" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::Skipping auto-fix: ${EXISTING_PRS} auto-fix PRs already open (max: ${MAX_PRS})"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip if already attempted fix
+        if: steps.context.outputs.recent_fix_count != '0'
+        run: |
+          echo "::notice::Skipping auto-fix - a recent fix commit already exists on this branch. Manual intervention may be needed."
+          echo "Recent commits:"
+          git log --oneline -5
+
+      - name: Analyze and fix with Claude
+        if: steps.context.outputs.recent_fix_count == '0' && steps.dedup.outputs.skip != 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          allowed_bots: "claude[bot],claude"
+          claude_args: ${{ inputs.claude_args }}
+          direct_prompt: |
+            A GitHub Actions workflow has failed on branch `${{ inputs.branch }}`.
+            Your job is to analyze the failure, determine if it can be auto-fixed, and either fix it or open an issue.
+
+            ## Failure Details
+
+            - **Workflow:** ${{ inputs.workflow_name }}
+            - **Branch:** ${{ inputs.branch }}
+            - **Run ID:** ${{ inputs.run_id }}
+            - **Commit:** ${{ inputs.head_sha }}
+            - **Associated PR:** ${{ steps.context.outputs.pr_number }}
+
+            ## Step 1: Read the failure logs
+
+            Read the file `${{ steps.context.outputs.context_dir }}/failed-jobs.txt` for a summary of which jobs and steps failed.
+            Read the file `${{ steps.context.outputs.context_dir }}/failure-logs.txt` for the detailed failure output.
+
+            ## Step 2: Analyze the failure
+
+            Determine the root cause. Common failure types:
+
+            **Auto-fixable (you should fix these):**
+            ${{ inputs.auto_fixable_description }}
+
+            **NOT auto-fixable (open an issue instead):**
+            ${{ inputs.not_auto_fixable_description }}
+
+            ## Step 3: Take action
+
+            ### If auto-fixable:
+            1. Read the relevant source files to understand the issue
+            2. Make the necessary fixes
+            3. Stage and commit the changes:
+               ```
+               git add <specific-files>
+               git commit -m "fix(auto): resolve CI failure in ${{ inputs.workflow_name }}"
+               ```
+            4. Push to the branch: `git push origin ${{ inputs.branch }}`
+            5. If PR ${{ steps.context.outputs.pr_number }} exists, comment on it:
+               ```
+               gh pr comment ${{ steps.context.outputs.pr_number }} --body "Auto-fix applied for CI failure in **${{ inputs.workflow_name }}**. The workflow should re-run automatically."
+               ```
+
+            ### If NOT auto-fixable:
+            1. Create a GitHub issue with detailed analysis:
+               ```
+               gh issue create \
+                 --title "CI failure: <brief description of the problem>" \
+                 --body "<detailed analysis with logs, root cause, and suggested manual steps>" \
+                 --label "bug,ci-failure"
+               ```
+               Note: If the labels don't exist, omit the --label flag and mention the suggested labels in the body.
+            2. If PR ${{ steps.context.outputs.pr_number }} exists, comment on it linking to the created issue.
+
+            ## Important rules
+            - Read the project rules in `.claude/rules/` or `CLAUDE.md` for commit format and code standards
+            - Do NOT amend existing commits - always create new commits
+            - Only fix issues directly related to the CI failure
+            - Do not make unrelated improvements or refactoring
+            - If unsure whether something is fixable, err on the side of opening an issue
+          additional_permissions: |
+            Read
+            Write
+            Edit
+            Grep
+            Glob
+            Task
+            TodoWrite
+            Bash(git status *)
+            Bash(git diff *)
+            Bash(git log *)
+            Bash(git show *)
+            Bash(git add *)
+            Bash(git commit *)
+            Bash(git push *)
+            Bash(git checkout *)
+            Bash(git branch *)
+            Bash(gh pr *)
+            Bash(gh issue *)
+            Bash(gh run *)
+            ${{ inputs.additional_permissions }}
+          plugins: ${{ inputs.plugins }}
+          plugin_marketplaces: ${{ inputs.plugin_marketplaces }}
