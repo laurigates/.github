@@ -20,6 +20,21 @@ on:
         type: number
         required: false
         default: 30
+      additional_permissions:
+        description: 'Additional tool permissions for Claude Code'
+        required: false
+        type: string
+        default: ''
+      plugins:
+        description: 'Claude Code plugins to load'
+        required: false
+        type: string
+        default: ''
+      plugin_marketplaces:
+        description: 'Claude Code plugin marketplace URLs'
+        required: false
+        type: string
+        default: ''
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
@@ -64,6 +79,9 @@ jobs:
             ${{ inputs.claude_args }}
           additional_permissions: |
             actions: read
+            ${{ inputs.additional_permissions }}
+          plugins: ${{ inputs.plugins }}
+          plugin_marketplaces: ${{ inputs.plugin_marketplaces }}
 
       - name: Detect failure type
         id: failure-type
