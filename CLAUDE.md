@@ -34,6 +34,7 @@ The version is extracted from the version file (default: `package.json`) during 
 
 - **`reusable-release-please.yml`** — wraps `googleapis/release-please-action`, requires a PAT (`MY_RELEASE_PLEASE_TOKEN`) since GITHUB_TOKEN can't trigger downstream workflows
 - **`reusable-fix-release-conflicts.yml`** — detects conflicted release-please PRs, closes them, deletes the branch, and retriggers release-please to recreate cleanly
+- **`reusable-clear-autorelease-labels.yml`** — manual escape hatch (`workflow_dispatch` caller) that strips a stale `autorelease: pending` label from closed PRs. When the release/tag step fails, the merged release PR keeps the `pending` label and every subsequent run re-attempts the same failed release; clearing it lets release-please move on. Supports a `dry_run` input
 - **`reusable-auto-merge-image-updater.yml`** — creates, approves, and auto-merges ArgoCD Image Updater PRs in a single job (workaround for GITHUB_TOKEN anti-recursion)
 
 ### Claude-Powered Workflows
