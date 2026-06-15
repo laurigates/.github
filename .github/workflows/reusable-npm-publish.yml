@@ -1,0 +1,78 @@
+name: Reusable — npm publish (OIDC trusted publishing)
+
+# Publishes an npm package via OIDC trusted publishing — no NPM_TOKEN.
+#
+# The CALLER's job must grant `id-token: write`. The package's trusted publisher
+# must be configured on npmjs.com (or via `npm trust github`) to point at the
+# caller repo and its release workflow filename. Provenance is generated
+# automatically; npm is upgraded to satisfy the >= 11.5.1 requirement.
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: "Node.js version for setup-node"
+        type: string
+        default: "22"
+      use-bun:
+        description: "Set up Bun (for bun-based install/build)"
+        type: boolean
+        default: true
+      install-command:
+        description: "Dependency install command"
+        type: string
+        default: "bun install --frozen-lockfile"
+      build-command:
+        description: "Build command (empty string to skip)"
+        type: string
+        default: "bun run build"
+      package-access:
+        description: "Value for `npm publish --access`"
+        type: string
+        default: "public"
+      working-directory:
+        description: "Directory containing the package to publish"
+        type: string
+        default: "."
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # OIDC token for npm trusted publishing
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Bun
+        if: ${{ inputs.use-bun }}
+        uses: oven-sh/setup-bun@v2
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Upgrade npm for trusted publishing
+        # Trusted publishing requires npm >= 11.5.1; the bundled npm may be older.
+        run: npm install -g npm@latest
+
+      - name: Install dependencies
+        env:
+          INSTALL_COMMAND: ${{ inputs.install-command }}
+        run: $INSTALL_COMMAND
+
+      - name: Build
+        if: ${{ inputs.build-command != '' }}
+        env:
+          BUILD_COMMAND: ${{ inputs.build-command }}
+        run: $BUILD_COMMAND
+
+      - name: Publish to npm (OIDC trusted publishing)
+        # No NODE_AUTH_TOKEN — npm auto-detects the OIDC environment.
+        run: npm publish --access ${{ inputs.package-access }}
