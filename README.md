@@ -28,7 +28,6 @@ Call these from any repo using `uses: laurigates/.github/.github/workflows/<name
 | `reusable-release-please.yml` | Automated releases via release-please |
 | `reusable-auto-merge-image-updater.yml` | Auto-merge ArgoCD Image Updater PRs |
 | `reusable-fix-release-conflicts.yml` | Auto-resolve release-please merge conflicts |
-| `reusable-renovate.yml` | Dependency updates via Renovate |
 | `reusable-claude.yml` | Claude Code @-mention support in issues and PRs |
 
 ### Security (Claude-powered)

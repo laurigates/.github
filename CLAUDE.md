@@ -55,7 +55,6 @@ All require `CLAUDE_CODE_OAUTH_TOKEN` secret. They analyze changed files in PRs 
 
 ### Other
 
-- **`reusable-renovate.yml`** — runs Renovate for dependency updates
 - **`reusable-sync-ai-rules.yml`** — syncs AI coding rules from this `.github` repo into calling repos via rulesync, creating a PR with tool-specific configs for Claude Code, Copilot, Gemini, and Cursor
 
 ## Conventions
