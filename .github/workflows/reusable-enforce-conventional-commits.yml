@@ -2,7 +2,8 @@ name: Enforce Conventional Commits (Reusable)
 
 # Auto-fixes PR titles to follow the conventional commits specification.
 # Maps common verbs (e.g., "Add", "Fixed", "Upgrade") to canonical types
-# (feat, fix, build, etc.) and updates the title. Fails with a helpful
+# (feat, fix, build, etc.) and updates the title. Strips leading emoji and
+# decorative characters, moving them into the subject. Fails with a helpful
 # message if the title cannot be auto-fixed.
 #
 # Calling workflow should trigger on:
@@ -192,20 +193,47 @@ jobs:
             const VALID_PATTERN = /^(feat|fix|perf|refactor|docs|chore|ci|test|style|build|revert)(\([^)]+\))?!?: .+/;
 
             function attemptFix(title) {
+              // Strip leading non-letter characters (emoji, decorative symbols,
+              // punctuation, whitespace) so titles like "🚀 feat: ..." or
+              // "🚀 Add ..." are handled. Preserved decorations are moved into
+              // the subject to retain the author's intent.
+              const decorations = (title.match(/^([^A-Za-z]*)/)[1] || '').trim();
+              const cleaned = title.replace(/^[^A-Za-z]+/, '');
+
+              if (!cleaned) {
+                // Title contains no letters — cannot determine a type
+                return { fixed: title, changed: false, reason: null };
+              }
+
+              // Insert preserved decorations after the ": " in a conventional title
+              const withDecorations = (conventionalTitle) => {
+                if (!decorations) return conventionalTitle;
+                return conventionalTitle.replace(
+                  /^((?:[A-Za-z]+)(?:\([^)]*\))?(?:!)?: )(.+)$/,
+                  `$1${decorations} $2`
+                );
+              };
+
               // Already valid
-              if (VALID_PATTERN.test(title)) {
-                return { fixed: title, changed: false, reason: 'Already valid' };
+              if (VALID_PATTERN.test(cleaned)) {
+                const fixed = withDecorations(cleaned);
+                return {
+                  fixed,
+                  changed: fixed !== title,
+                  reason: decorations ? 'Moved leading emoji/decorations into subject' : 'Already valid',
+                };
               }
 
               // Pattern: word(scope)?: subject  OR  word: subject  (with any casing / alias)
               const colonPattern = /^([A-Za-z]+)(\([^)]*\))?(!)?: (.+)$/;
-              const colonMatch = title.match(colonPattern);
+              const colonMatch = cleaned.match(colonPattern);
               if (colonMatch) {
                 const [, typePart, scope, bang, subject] = colonMatch;
                 const lower = typePart.toLowerCase();
                 const resolved = VALID_TYPES.includes(lower) ? lower : allAliases[lower];
                 if (resolved) {
-                  const fixed = `${resolved}${scope || ''}${bang || ''}: ${subject}`;
+                  let fixed = `${resolved}${scope || ''}${bang || ''}: ${subject}`;
+                  fixed = withDecorations(fixed);
                   return {
                     fixed,
                     changed: fixed !== title,
@@ -215,15 +243,17 @@ jobs:
               }
 
               // Pattern: verb at start of sentence ("Add feature X", "Fixed bug Y")
-              const words = title.trim().split(/\s+/);
+              const words = cleaned.trim().split(/\s+/);
               if (words.length >= 2) {
                 const first = words[0].toLowerCase().replace(/:$/, '');
                 const resolved = VALID_TYPES.includes(first) ? first : allAliases[first];
                 if (resolved) {
                   const rest = words.slice(1).join(' ');
                   const subject = rest.charAt(0).toLowerCase() + rest.slice(1);
+                  let fixed = `${resolved}: ${subject}`;
+                  fixed = withDecorations(fixed);
                   return {
-                    fixed: `${resolved}: ${subject}`,
+                    fixed,
                     changed: true,
                     reason: `Inferred type "${resolved}" from leading word "${words[0]}"`,
                   };
