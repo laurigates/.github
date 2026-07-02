@@ -48,8 +48,8 @@ jobs:
   analyze:
     runs-on: ubuntu-latest
     outputs:
-      count: ${{ steps.scan.outputs.total }}
-      high: ${{ steps.scan.outputs.high }}
+      count: ${{ fromJSON(steps.scan.outputs.structured_output || '{}').total_issues }}
+      high: ${{ fromJSON(steps.scan.outputs.structured_output || '{}').high_severity }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -78,7 +78,10 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          claude_args: "--model ${{ inputs.model }} --max-turns ${{ inputs.max-turns }}"
+          claude_args: >-
+            --model ${{ inputs.model }}
+            --max-turns ${{ inputs.max-turns }}
+            --json-schema '{"type":"object","properties":{"total_issues":{"type":"integer","description":"Total code smells detected"},"high_severity":{"type":"integer","description":"High severity issues"}},"required":["total_issues","high_severity"]}'
           prompt: |
             Analyze these files for code smells and anti-patterns.
             Minimum severity to report: ${{ inputs.severity-threshold }}
@@ -116,10 +119,7 @@ jobs:
 
             Group findings by severity (high first).
 
-            At the end, output machine-readable counts:
-            ```
-            TOTAL_ISSUES: <number>
-            HIGH_SEVERITY: <number>
-            ```
+            Report the final counts in the structured output fields:
+            total_issues (all issues) and high_severity (high severity only).
 
             Leave a PR comment with findings, grouping by file then severity.

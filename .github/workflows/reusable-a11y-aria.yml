@@ -43,8 +43,8 @@ jobs:
   analyze:
     runs-on: ubuntu-latest
     outputs:
-      count: ${{ steps.scan.outputs.total }}
-      critical: ${{ steps.scan.outputs.critical }}
+      count: ${{ fromJSON(steps.scan.outputs.structured_output || '{}').total_issues }}
+      critical: ${{ fromJSON(steps.scan.outputs.structured_output || '{}').critical_issues }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -73,7 +73,10 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          claude_args: "--model ${{ inputs.model }} --max-turns ${{ inputs.max-turns }}"
+          claude_args: >-
+            --model ${{ inputs.model }}
+            --max-turns ${{ inputs.max-turns }}
+            --json-schema '{"type":"object","properties":{"total_issues":{"type":"integer","description":"Total ARIA issues detected"},"critical_issues":{"type":"integer","description":"Critical ARIA misuse issues"}},"required":["total_issues","critical_issues"]}'
           prompt: |
             Audit ARIA implementation in changed components.
 
@@ -128,10 +131,7 @@ jobs:
 
             Reference: https://www.w3.org/WAI/ARIA/apg/patterns/
 
-            At the end, output machine-readable counts:
-            ```
-            TOTAL_ISSUES: <number>
-            CRITICAL_ISSUES: <number>
-            ```
+            Report the final counts in the structured output fields:
+            total_issues (all issues) and critical_issues (critical severity only).
 
             Leave a PR comment with findings grouped by severity.

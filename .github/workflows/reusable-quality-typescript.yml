@@ -48,8 +48,8 @@ jobs:
   analyze:
     runs-on: ubuntu-latest
     outputs:
-      any: ${{ steps.scan.outputs.any-count }}
-      total: ${{ steps.scan.outputs.total }}
+      any: ${{ fromJSON(steps.scan.outputs.structured_output || '{}').any_count }}
+      total: ${{ fromJSON(steps.scan.outputs.structured_output || '{}').total_issues }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -78,7 +78,10 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          claude_args: "--model ${{ inputs.model }} --max-turns ${{ inputs.max-turns }}"
+          claude_args: >-
+            --model ${{ inputs.model }}
+            --max-turns ${{ inputs.max-turns }}
+            --json-schema '{"type":"object","properties":{"any_count":{"type":"integer","description":"Number of explicit any usages found"},"total_issues":{"type":"integer","description":"Total type safety issues found"}},"required":["any_count","total_issues"]}'
           prompt: |
             Review TypeScript changes for type safety issues.
             Strict mode: ${{ inputs.strict-mode }}
@@ -115,10 +118,7 @@ jobs:
             - **Current** - The problematic code
             - **Suggested** - Type-safe alternative
 
-            At the end, output machine-readable counts:
-            ```
-            ANY_COUNT: <number>
-            TOTAL_ISSUES: <number>
-            ```
+            Report the final counts in the structured output fields:
+            any_count (explicit any usages) and total_issues (all issues).
 
             Leave a PR comment with findings grouped by severity.
