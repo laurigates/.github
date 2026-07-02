@@ -84,7 +84,7 @@ upstream-changes days="14":
 # Validation
 ####################
 
-# Validate YAML syntax of all workflows
+# Validate workflows: YAML syntax + actionlint (shellcheck pass-through off)
 [group: "validate"]
 lint:
     #!/usr/bin/env bash
@@ -101,4 +101,13 @@ lint:
     else
         echo "$errors file(s) have YAML errors."
         exit 1
+    fi
+    if command -v mise >/dev/null 2>&1; then
+        # -shellcheck= disables shellcheck integration: its style findings on
+        # run: blocks are accepted pre-existing noise; actionlint still checks
+        # expressions, action inputs, and workflow structure.
+        mise exec aqua:rhysd/actionlint@latest -- actionlint -shellcheck= -oneline .github/workflows/*.yml \
+            && echo "actionlint: clean"
+    else
+        echo "skip: mise not found - actionlint not run"
     fi
