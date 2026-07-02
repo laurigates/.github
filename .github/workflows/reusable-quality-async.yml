@@ -43,8 +43,8 @@ jobs:
   analyze:
     runs-on: ubuntu-latest
     outputs:
-      count: ${{ steps.scan.outputs.total }}
-      rejections: ${{ steps.scan.outputs.rejections }}
+      count: ${{ fromJSON(steps.scan.outputs.structured_output || '{}').total_issues }}
+      rejections: ${{ fromJSON(steps.scan.outputs.structured_output || '{}').unhandled_rejections }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -73,7 +73,10 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          claude_args: "--model ${{ inputs.model }} --max-turns ${{ inputs.max-turns }}"
+          claude_args: >-
+            --model ${{ inputs.model }}
+            --max-turns ${{ inputs.max-turns }}
+            --json-schema '{"type":"object","properties":{"total_issues":{"type":"integer","description":"Total async pattern issues found"},"unhandled_rejections":{"type":"integer","description":"Potential unhandled promise rejections"}},"required":["total_issues","unhandled_rejections"]}'
           prompt: |
             Review async code patterns for potential issues.
 
@@ -107,10 +110,7 @@ jobs:
             - **Risk** - What could go wrong
             - **Fix** - How to handle properly with code example
 
-            At the end, output machine-readable counts:
-            ```
-            TOTAL_ISSUES: <number>
-            UNHANDLED_REJECTIONS: <number>
-            ```
+            Report the final counts in the structured output fields:
+            total_issues (all issues) and unhandled_rejections (potential unhandled rejections).
 
             Leave a PR comment with findings grouped by severity.

@@ -43,8 +43,8 @@ jobs:
   audit:
     runs-on: ubuntu-latest
     outputs:
-      count: ${{ steps.analyze.outputs.vulnerabilities }}
-      critical: ${{ steps.analyze.outputs.critical }}
+      count: ${{ fromJSON(steps.analyze.outputs.structured_output || '{}').total_vulnerabilities }}
+      critical: ${{ fromJSON(steps.analyze.outputs.structured_output || '{}').critical_high }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -138,7 +138,10 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          claude_args: "--model ${{ inputs.model }} --max-turns ${{ inputs.max-turns }}"
+          claude_args: >-
+            --model ${{ inputs.model }}
+            --max-turns ${{ inputs.max-turns }}
+            --json-schema '{"type":"object","properties":{"total_vulnerabilities":{"type":"integer","description":"Total vulnerabilities found"},"critical_high":{"type":"integer","description":"Critical and high severity vulnerabilities"}},"required":["total_vulnerabilities","critical_high"]}'
           prompt: |
             Analyze the dependency security audit results for this project.
 
@@ -167,16 +170,13 @@ jobs:
 
             Check transitive dependencies — identify the direct dep that pulls in vulnerable transitive deps.
 
-            At the end, output machine-readable counts:
-            ```
-            TOTAL_VULNERABILITIES: <number>
-            CRITICAL_HIGH: <number>
-            ```
+            Report the final counts in the structured output fields:
+            total_vulnerabilities (all findings) and critical_high (critical + high severity).
 
             Leave a PR comment with findings and recommended actions.
 
       - name: Check for critical/high issues
-        if: inputs.fail-on-high && steps.analyze.outputs.critical > 0
+        if: inputs.fail-on-high && fromJSON(steps.analyze.outputs.structured_output || '{}').critical_high > 0
         run: |
-          echo "::error::Found ${{ steps.analyze.outputs.critical }} critical/high severity vulnerabilities"
+          echo "::error::Found ${{ fromJSON(steps.analyze.outputs.structured_output || '{}').critical_high }} critical/high severity vulnerabilities"
           exit 1

@@ -51,9 +51,9 @@ jobs:
   analyze:
     runs-on: ubuntu-latest
     outputs:
-      count: ${{ steps.scan.outputs.total }}
-      level-a: ${{ steps.scan.outputs.level-a }}
-      level-aa: ${{ steps.scan.outputs.level-aa }}
+      count: ${{ fromJSON(steps.scan.outputs.structured_output || '{}').total_issues }}
+      level-a: ${{ fromJSON(steps.scan.outputs.structured_output || '{}').level_a_issues }}
+      level-aa: ${{ fromJSON(steps.scan.outputs.structured_output || '{}').level_aa_issues }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -82,7 +82,10 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          claude_args: "--model ${{ inputs.model }} --max-turns ${{ inputs.max-turns }}"
+          claude_args: >-
+            --model ${{ inputs.model }}
+            --max-turns ${{ inputs.max-turns }}
+            --json-schema '{"type":"object","properties":{"total_issues":{"type":"integer","description":"Total WCAG violations detected"},"level_a_issues":{"type":"integer","description":"Level A violations"},"level_aa_issues":{"type":"integer","description":"Level AA violations"}},"required":["total_issues","level_a_issues","level_aa_issues"]}'
           prompt: |
             Review frontend changes for WCAG 2.1 ${{ inputs.wcag-level }} compliance.
             Focus on static code analysis patterns.
@@ -151,11 +154,7 @@ jobs:
 
             Prioritize Level A issues at the top.
 
-            At the end, output machine-readable counts:
-            ```
-            TOTAL_ISSUES: <number>
-            LEVEL_A: <number>
-            LEVEL_AA: <number>
-            ```
+            Report the final counts in the structured output fields:
+            total_issues (all violations), level_a_issues, and level_aa_issues.
 
             Leave a PR comment with findings grouped by WCAG level.

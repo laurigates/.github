@@ -48,8 +48,8 @@ jobs:
   scan:
     runs-on: ubuntu-latest
     outputs:
-      issue-count: ${{ steps.analyze.outputs.issues }}
-      critical-count: ${{ steps.analyze.outputs.critical }}
+      issue-count: ${{ fromJSON(steps.analyze.outputs.structured_output || '{}').total_issues }}
+      critical-count: ${{ fromJSON(steps.analyze.outputs.structured_output || '{}').critical_issues }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -78,7 +78,10 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          claude_args: "--model ${{ inputs.model }} --max-turns ${{ inputs.max-turns }}"
+          claude_args: >-
+            --model ${{ inputs.model }}
+            --max-turns ${{ inputs.max-turns }}
+            --json-schema '{"type":"object","properties":{"total_issues":{"type":"integer","description":"Total security issues found"},"critical_issues":{"type":"integer","description":"Critical severity issues found"}},"required":["total_issues","critical_issues"]}'
           prompt: |
             Analyze these files for OWASP Top 10 2021 security vulnerabilities.
 
@@ -149,16 +152,13 @@ jobs:
             - **Code Snippet** - The vulnerable code
             - **Remediation** - How to fix it with code example
 
-            At the end, output machine-readable counts:
-            ```
-            TOTAL_ISSUES: <number>
-            CRITICAL_ISSUES: <number>
-            ```
+            Report the final counts in the structured output fields:
+            total_issues (all issues) and critical_issues (critical severity only).
 
             Leave a PR comment with findings grouped by severity (Critical first).
 
       - name: Check for critical issues
-        if: inputs.fail-on-critical && steps.analyze.outputs.critical > 0
+        if: inputs.fail-on-critical && fromJSON(steps.analyze.outputs.structured_output || '{}').critical_issues > 0
         run: |
-          echo "::error::Found ${{ steps.analyze.outputs.critical }} critical security issues"
+          echo "::error::Found ${{ fromJSON(steps.analyze.outputs.structured_output || '{}').critical_issues }} critical security issues"
           exit 1
