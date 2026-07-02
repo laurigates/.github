@@ -24,9 +24,17 @@ on:
         required: false
         type: string
         default: 'build: automatic image update'
+      app-id:
+        description: 'GitHub App ID. When set, generates an App installation token (via APP_PRIVATE_KEY) for PR creation/approval instead of AUTO_MERGE_PAT.'
+        required: false
+        type: string
+        default: ''
     secrets:
       AUTO_MERGE_PAT:
-        description: 'PAT for approving the PR (needs a different user from the PR author)'
+        description: 'PAT for approving the PR (needs a different user from the PR author). Required when app-id is empty and branch protection requires an approval.'
+        required: false
+      APP_PRIVATE_KEY:
+        description: 'GitHub App private key. Required when app-id is set.'
         required: false
 
 permissions:
@@ -38,6 +46,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+
+      - name: Generate GitHub App token
+        id: app-token
+        if: inputs.app-id != ''
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ inputs.app-id }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
 
       - name: Create Pull Request
         id: create-pr
@@ -61,12 +77,21 @@ jobs:
           echo "Created/found PR: $PR_URL"
 
       - name: Approve PR
+        # Approval comes from an identity other than the PR author
+        # (github-actions[bot], which created the PR above): the CI GitHub App
+        # token when app-id is set, otherwise AUTO_MERGE_PAT. Best-effort —
+        # auto-merge proceeds on its own when no approval is required.
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AUTO_MERGE_PAT || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.AUTO_MERGE_PAT || secrets.GITHUB_TOKEN }}
         run: gh pr review --approve "${{ github.ref_name }}"
 
       - name: Enable auto-merge
+        # Run outside the checkout so gh skips local-clone cleanup. With
+        # --delete-branch, gh otherwise tries `git checkout -B main origin/main`,
+        # which fails in a fetch-depth=1 checkout that only has the PR branch.
+        working-directory: ${{ runner.temp }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: gh pr merge --auto --delete-branch --${{ inputs.merge-method }} "${{ github.ref_name }}"
