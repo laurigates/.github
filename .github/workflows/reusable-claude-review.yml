@@ -42,7 +42,7 @@ on:
         description: 'Additional arguments for Claude Code'
         required: false
         type: string
-        default: '--max-turns 20'
+        default: '--model opus --max-turns 50'
       additional_permissions:
         description: 'Additional tool permissions for Claude Code'
         required: false

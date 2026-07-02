@@ -19,7 +19,12 @@ on:
         description: 'Maximum number of agentic turns'
         type: number
         required: false
-        default: 30
+        default: 50
+      model:
+        description: 'Claude model to use'
+        required: false
+        type: string
+        default: 'opus'
       additional_permissions:
         description: 'Additional tool permissions for Claude Code'
         required: false
@@ -74,6 +79,7 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           claude_args: >-
+            --model ${{ inputs.model }}
             --max-turns ${{ inputs.max_turns }}
             --system-prompt "You have a limited turn budget in CI. For multi-step tasks: commit and push partial progress early — do not wait until everything is done. After each push, update your comment with completed and remaining work. Prioritize working increments over completing everything at once."
             ${{ inputs.claude_args }}

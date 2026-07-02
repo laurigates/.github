@@ -12,7 +12,12 @@ on:
         description: 'Maximum Claude analysis turns'
         required: false
         type: number
-        default: 5
+        default: 50
+      model:
+        description: 'Claude model to use'
+        required: false
+        type: string
+        default: 'sonnet'
       fail-on-high:
         description: 'Fail workflow if high/critical vulnerabilities found'
         required: false
@@ -133,7 +138,7 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          claude_args: "--model haiku --max-turns ${{ inputs.max-turns }}"
+          claude_args: "--model ${{ inputs.model }} --max-turns ${{ inputs.max-turns }}"
           prompt: |
             Analyze the dependency security audit results for this project.
 

@@ -93,7 +93,7 @@ on:
         description: 'Additional arguments for Claude Code (e.g., "--model sonnet --max-turns 30")'
         required: false
         type: string
-        default: '--model sonnet --max-turns 30'
+        default: '--model opus --max-turns 50'
       additional_permissions:
         description: 'Additional tool permissions for Claude Code'
         required: false
