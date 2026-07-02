@@ -18,6 +18,26 @@ on:
         required: false
         type: string
         default: 'sonnet'
+      allowed-bots:
+        description: "Comma-separated bot usernames allowed to trigger analysis (e.g. 'renovate[bot]')"
+        required: false
+        type: string
+        default: 'renovate[bot]'
+      use-sticky-comment:
+        description: 'Maintain a single PR comment instead of posting a new comment per run'
+        required: false
+        type: boolean
+        default: true
+      max-budget-usd:
+        description: 'Maximum spend per run in USD (0 = no budget limit)'
+        required: false
+        type: number
+        default: 0
+      timeout-minutes:
+        description: 'Job timeout in minutes'
+        required: false
+        type: number
+        default: 30
       fail-on-high:
         description: 'Fail workflow if high/critical vulnerabilities found'
         required: false
@@ -42,6 +62,7 @@ permissions:
 jobs:
   audit:
     runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
     outputs:
       count: ${{ fromJSON(steps.analyze.outputs.structured_output || '{}').total_vulnerabilities }}
       critical: ${{ fromJSON(steps.analyze.outputs.structured_output || '{}').critical_high }}
@@ -138,9 +159,12 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          allowed_bots: ${{ inputs.allowed-bots }}
+          use_sticky_comment: ${{ inputs.use-sticky-comment }}
           claude_args: >-
             --model ${{ inputs.model }}
             --max-turns ${{ inputs.max-turns }}
+            ${{ inputs.max-budget-usd > 0 && format('--max-budget-usd {0}', inputs.max-budget-usd) || '' }}
             --json-schema '{"type":"object","properties":{"total_vulnerabilities":{"type":"integer","description":"Total vulnerabilities found"},"critical_high":{"type":"integer","description":"Critical and high severity vulnerabilities"}},"required":["total_vulnerabilities","critical_high"]}'
           prompt: |
             Analyze the dependency security audit results for this project.

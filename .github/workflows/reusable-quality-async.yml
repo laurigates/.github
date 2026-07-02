@@ -18,6 +18,26 @@ on:
         required: false
         type: string
         default: 'opus'
+      allowed-bots:
+        description: "Comma-separated bot usernames allowed to trigger analysis (e.g. 'renovate[bot]')"
+        required: false
+        type: string
+        default: ''
+      use-sticky-comment:
+        description: 'Maintain a single PR comment instead of posting a new comment per run'
+        required: false
+        type: boolean
+        default: true
+      max-budget-usd:
+        description: 'Maximum spend per run in USD (0 = no budget limit)'
+        required: false
+        type: number
+        default: 0
+      timeout-minutes:
+        description: 'Job timeout in minutes'
+        required: false
+        type: number
+        default: 30
       file-limit:
         description: 'Maximum number of changed files to analyze'
         required: false
@@ -42,6 +62,7 @@ permissions:
 jobs:
   analyze:
     runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
     outputs:
       count: ${{ fromJSON(steps.scan.outputs.structured_output || '{}').total_issues }}
       rejections: ${{ fromJSON(steps.scan.outputs.structured_output || '{}').unhandled_rejections }}
@@ -73,9 +94,12 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          allowed_bots: ${{ inputs.allowed-bots }}
+          use_sticky_comment: ${{ inputs.use-sticky-comment }}
           claude_args: >-
             --model ${{ inputs.model }}
             --max-turns ${{ inputs.max-turns }}
+            ${{ inputs.max-budget-usd > 0 && format('--max-budget-usd {0}', inputs.max-budget-usd) || '' }}
             --json-schema '{"type":"object","properties":{"total_issues":{"type":"integer","description":"Total async pattern issues found"},"unhandled_rejections":{"type":"integer","description":"Potential unhandled promise rejections"}},"required":["total_issues","unhandled_rejections"]}'
           prompt: |
             Review async code patterns for potential issues.
