@@ -94,6 +94,11 @@ on:
         required: false
         type: string
         default: '--model opus --max-turns 50'
+      timeout_minutes:
+        description: 'Job timeout in minutes'
+        required: false
+        type: number
+        default: 30
       additional_permissions:
         description: 'Additional tool permissions for Claude Code'
         required: false
@@ -130,6 +135,7 @@ permissions:
 jobs:
   auto-fix:
     runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout_minutes }}
     steps:
       - name: Checkout failed branch
         uses: actions/checkout@v6
