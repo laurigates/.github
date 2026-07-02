@@ -46,10 +46,10 @@ The version is extracted from the version file (default: `package.json`) during 
 
 #### Claude-Powered Analysis Workflows
 
-Security, quality, and accessibility workflows use `anthropics/claude-code-action@v1` with `--model haiku`:
-- **Security**: `reusable-security-{secrets,deps,owasp}.yml`
-- **Quality**: `reusable-quality-{code-smell,async,typescript}.yml`
-- **Accessibility**: `reusable-a11y-{aria,wcag}.yml`
+Security, quality, and accessibility workflows use `anthropics/claude-code-action@v1`. Each exposes `max-turns` (default 50) and `model` inputs — opus for deep-reasoning jobs, sonnet for the more mechanical ones:
+- **Security**: `reusable-security-{secrets,deps}.yml` (sonnet), `reusable-security-owasp.yml` (opus)
+- **Quality**: `reusable-quality-{code-smell,typescript}.yml` (sonnet), `reusable-quality-async.yml` (opus)
+- **Accessibility**: `reusable-a11y-aria.yml` (sonnet), `reusable-a11y-wcag.yml` (opus)
 
 All require `CLAUDE_CODE_OAUTH_TOKEN` secret. They analyze changed files in PRs and post findings as PR comments.
 

@@ -169,8 +169,8 @@ jobs:
           GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
         run: |
           cat <<'PROMPT_EOF' | npx @anthropic-ai/claude-code --print \
-            --model haiku \
-            --max-turns 20 \
+            --model sonnet \
+            --max-turns 50 \
             --allowedTools "Read,Edit,Grep,Glob,TodoWrite,Bash(git status *),Bash(git diff *),Bash(git log *),Bash(git show *),Bash(git add *),Bash(git commit *),Bash(git push *),Bash(git merge *),Bash(gh pr *),Bash(jq *)" \
             -
           You are resolving merge conflicts on PR #${{ matrix.pr_number }}: "${{ steps.pr.outputs.title }}"
