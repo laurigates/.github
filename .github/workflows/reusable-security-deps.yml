@@ -19,10 +19,10 @@ on:
         type: string
         default: 'sonnet'
       allowed-bots:
-        description: "Comma-separated bot usernames allowed to trigger analysis (e.g. 'renovate[bot]')"
+        description: "Comma-separated bot usernames allowed to trigger analysis, or '*' for any bot. Defaults to '*' because dependency PRs are bot-authored and re-runs replay the original bot-sender event"
         required: false
         type: string
-        default: 'renovate[bot]'
+        default: '*'
       use-sticky-comment:
         description: 'Maintain a single PR comment instead of posting a new comment per run'
         required: false
@@ -128,8 +128,9 @@ jobs:
               npm audit --json > audit-results.json 2>&1 || true
               ;;
             bun)
-              # Bun doesn't have built-in audit, use npm
-              npm audit --json > audit-results.json 2>&1 || true
+              # bun audit reads bun.lock natively (Bun >=1.2.15); no install needed.
+              # npm audit ENOLOCKs here since the repo has no package-lock.json.
+              bun audit --json > audit-results.json 2>&1 || true
               ;;
             pnpm)
               pnpm audit --json > audit-results.json 2>&1 || true
@@ -159,6 +160,10 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Dependency PRs are bot-authored (Renovate, release-please). On a
+          # re-run GitHub replays the original pull_request event whose sender
+          # is the bot, so the action's human-actor guard blocks it without
+          # this. Audit-and-comment is read-only with a fixed prompt — safe.
           allowed_bots: ${{ inputs.allowed-bots }}
           use_sticky_comment: ${{ inputs.use-sticky-comment }}
           claude_args: >-
