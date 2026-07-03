@@ -19,11 +19,26 @@ jobs:
         with:
           node-version: "22"
 
+      # --path .rulesync: rulesync >= 9 resolves features relative to the repo
+      # root of the source repo (GET /contents/rules), so the .rulesync/ layout
+      # must be addressed explicitly or fetch 404s and returns zero files.
       - name: Fetch rules from .github repo
-        run: npx rulesync@latest fetch laurigates/.github --features rules,ignore --conflict overwrite
+        run: npx rulesync@latest fetch laurigates/.github --features rules,ignore --conflict overwrite --path .rulesync
 
+      # fetch exits 0 even when it fetches nothing, and generate then fails
+      # (or silently no-ops) — fail fast with a pointer to the rules source.
+      - name: Verify rules were fetched
+        run: |
+          [ -n "$(find .rulesync/rules -name '*.md' -print -quit 2>/dev/null)" ] || {
+            echo "::error::rulesync fetch produced no rule files — check the .rulesync/rules/ source in laurigates/.github"
+            exit 1
+          }
+
+      # Explicit targets/features: consumer repos have no rulesync.jsonc
+      # (fetch does not pull it), and the no-config default is the agentsmd
+      # target only, which generates nothing for these rules.
       - name: Generate tool-specific files
-        run: npx rulesync@latest generate
+        run: npx rulesync@latest generate --targets claudecode,copilot,antigravity-cli,cursor --features rules,ignore
 
       - name: Check for changes
         id: changes
@@ -45,14 +60,14 @@ jobs:
             ## Summary
 
             - Synced AI coding rules from `laurigates/.github` via rulesync
-            - Updated tool-specific config for Claude Code, Copilot, Gemini CLI, and Cursor
+            - Updated tool-specific config for Claude Code, Copilot, Antigravity CLI, and Cursor
 
             ## Test plan
 
             - [ ] Verify `.claude/rules/` files have correct `globs:` frontmatter
-            - [ ] Verify `.github/copilot-instructions.md` is generated
+            - [ ] Verify `.github/instructions/` contains `.instructions.md` files
             - [ ] Verify `.cursor/rules/` contains `.mdc` files
-            - [ ] Verify `GEMINI.md` or `.gemini/` is generated
+            - [ ] Verify `.agents/rules/` and `.geminiignore` are generated
 
             🤖 Generated with rulesync
           branch: chore/sync-ai-rules

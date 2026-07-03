@@ -1,0 +1,7 @@
+{
+  "$schema": "https://github.com/dyoshikawa/rulesync/releases/latest/download/config-schema.json",
+  // rulesync v9 removed the "geminicli" target; "antigravity-cli" is its upstream-designated successor.
+  "targets": ["claudecode", "copilot", "antigravity-cli", "cursor"],
+  "features": ["rules", "ignore"],
+  "delete": false
+}
