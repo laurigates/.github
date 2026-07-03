@@ -13,10 +13,33 @@ on:
         required: false
         type: string
         default: '.release-please-manifest.json'
+      app-id:
+        description: 'GitHub App ID. When set, uses an App token (via APP_PRIVATE_KEY) instead of MY_RELEASE_PLEASE_TOKEN.'
+        required: false
+        type: string
+        default: ''
+      runner:
+        description: 'Runner label'
+        required: false
+        type: string
+        default: 'ubuntu-latest'
+      timeout-minutes:
+        description: 'Job timeout in minutes'
+        required: false
+        type: number
+        default: 15
+      skip-on-release-commit:
+        description: 'Skip the job when the head commit message starts with "chore(main): release" to prevent cascading releases.'
+        required: false
+        type: boolean
+        default: false
     secrets:
       MY_RELEASE_PLEASE_TOKEN:
-        description: 'PAT with contents:write and pull-requests:write scopes'
-        required: true
+        description: 'PAT with contents:write and pull-requests:write scopes. Required when app-id is empty.'
+        required: false
+      APP_PRIVATE_KEY:
+        description: 'GitHub App private key. Required when app-id is set.'
+        required: false
     outputs:
       release_created:
         description: 'Whether a release was created'
@@ -36,14 +59,27 @@ permissions:
 
 jobs:
   release-please:
-    runs-on: ubuntu-latest
+    # Skip release-please's own merge commits when skip-on-release-commit is true.
+    if: >-
+      inputs.skip-on-release-commit != true ||
+      !startsWith(github.event.head_commit.message, 'chore(main): release')
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
+      - name: Generate GitHub App token
+        id: app-token
+        if: inputs.app-id != ''
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ inputs.app-id }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
       - uses: googleapis/release-please-action@v4.4.0
         id: release
         with:
-          token: ${{ secrets.MY_RELEASE_PLEASE_TOKEN }}
+          token: ${{ inputs.app-id != '' && steps.app-token.outputs.token || secrets.MY_RELEASE_PLEASE_TOKEN }}
           config-file: ${{ inputs.config-file }}
           manifest-file: ${{ inputs.manifest-file }}
