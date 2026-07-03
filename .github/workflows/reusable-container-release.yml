@@ -56,6 +56,14 @@ on:
         required: false
         type: boolean
         default: true
+    secrets:
+      secret-build-args:
+        description: |
+          Additional newline-separated KEY=VALUE Docker build arguments whose values are secrets.
+          Used only by the fallback rebuild path — ignored on the fast-path promotion, which
+          inherits the layers built by reusable-container-build.yml. Pass the same secrets as
+          the PR-phase caller so the fallback rebuild produces an equivalent image.
+        required: false
     outputs:
       version:
         description: 'Released version'
@@ -82,7 +90,7 @@ jobs:
     outputs:
       version: ${{ steps.meta.outputs.version }}
       tags: ${{ steps.meta.outputs.tags }}
-      promoted: ${{ steps.pr-image.outputs.exists }}
+      promoted: ${{ steps.pr-image.outputs.exists == 'true' && steps.freshness.outputs.stale != 'true' }}
       signed: ${{ steps.cosign-sign.outputs.signed }}
     steps:
       - name: Checkout repository
@@ -119,10 +127,45 @@ jobs:
           if docker manifest inspect "${PR_IMAGE}" > /dev/null 2>&1; then
             echo "exists=true" >> $GITHUB_OUTPUT
             echo "image=${PR_IMAGE}" >> $GITHUB_OUTPUT
-            echo "PR image found — will promote instead of rebuilding"
+            echo "PR image found — will check freshness before promoting"
           else
             echo "exists=false" >> $GITHUB_OUTPUT
             echo "PR image not found in GHCR — will fall back to full rebuild"
+          fi
+
+      # Guard against the build-once/promote race: if main moved forward between
+      # the PR image being built and the release tag being pushed, the cached
+      # PR image is stale and would silently ship the wrong code. We compare the
+      # build-context tree hash baked into the PR image's labels against the
+      # tree hash at the release commit.
+      - name: Verify PR image matches release commit
+        id: freshness
+        if: steps.pr-image.outputs.exists == 'true'
+        env:
+          PR_IMAGE: ${{ steps.pr-image.outputs.image }}
+          CONTEXT: ${{ inputs.context }}
+        run: |
+          set -euo pipefail
+          PR_TREE=$(docker buildx imagetools inspect "$PR_IMAGE" --format '{{json .Image}}' \
+            | jq -r '.config.Labels."io.github.laurigates.build.context-tree" // empty')
+          if [ -z "$PR_TREE" ]; then
+            echo "::warning::PR image has no io.github.laurigates.build.context-tree label (built before this guard landed) — falling back to rebuild"
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -z "$CONTEXT" ] || [ "$CONTEXT" = "." ]; then
+            RELEASE_TREE=$(git rev-parse "HEAD^{tree}")
+          else
+            RELEASE_TREE=$(git rev-parse "HEAD:${CONTEXT}")
+          fi
+          echo "PR image build context tree: ${PR_TREE}"
+          echo "Release commit context tree: ${RELEASE_TREE}"
+          if [ "$PR_TREE" = "$RELEASE_TREE" ]; then
+            echo "stale=false" >> "$GITHUB_OUTPUT"
+            echo "Build context unchanged since PR image was built — safe to promote"
+          else
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::Build context changed since PR image was built — will rebuild from release commit"
           fi
 
       - name: Extract Docker metadata (release version tags)
@@ -142,7 +185,7 @@ jobs:
       # ---- Fast path: promote the pre-built PR image -------------------------
       # Manifest-only retag: no layer re-upload, completes in seconds.
       - name: Promote PR image to release tags
-        if: steps.pr-image.outputs.exists == 'true'
+        if: steps.pr-image.outputs.exists == 'true' && steps.freshness.outputs.stale != 'true'
         run: |
           SOURCE="${{ steps.pr-image.outputs.image }}"
           TAG_ARGS=()
@@ -153,10 +196,11 @@ jobs:
           docker buildx imagetools create "${TAG_ARGS[@]}" "$SOURCE"
 
       # ---- Slow path: full rebuild (fallback) --------------------------------
-      # Reached when the :next-{version} image is not in GHCR.
-      - name: Build and push (fallback — no pre-built PR image found)
+      # Reached when the :next-{version} image is not in GHCR, or when its
+      # build-context tree no longer matches the release commit.
+      - name: Build and push (fallback — PR image missing or stale)
         id: build-push
-        if: steps.pr-image.outputs.exists != 'true'
+        if: steps.pr-image.outputs.exists != 'true' || steps.freshness.outputs.stale == 'true'
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: ${{ inputs.context }}
@@ -169,6 +213,7 @@ jobs:
             COMMIT_SHA=${{ github.sha }}
             GIT_BRANCH=${{ github.ref_name }}
             ${{ inputs.build-args }}
+            ${{ secrets.secret-build-args }}
           cache-from: type=gha,scope=${{ inputs.cache-scope }}
           cache-to: type=gha,mode=max,scope=${{ inputs.cache-scope }}
           provenance: mode=max
@@ -184,7 +229,16 @@ jobs:
         id: release-digest
         run: |
           FIRST_TAG=$(echo '${{ steps.meta.outputs.tags }}' | head -n1)
-          DIGEST=$(docker buildx imagetools inspect "${FIRST_TAG}" --format '{{.Manifest.Digest}}')
+          # Extract the top-level digest from imagetools inspect text output.
+          # --format '{{.Manifest.Digest}}' fails for OCI index/manifest list
+          # types (no .Digest field), producing multi-line output that breaks
+          # $GITHUB_OUTPUT parsing. The text output has a top-level
+          # "Digest: sha256:..." line (unindented, unlike sub-manifest lines).
+          DIGEST=$(docker buildx imagetools inspect "${FIRST_TAG}" | grep -m1 '^Digest:' | awk '{print $2}')
+          if [ -z "${DIGEST}" ]; then
+            echo "::error::Failed to extract digest from imagetools inspect output"
+            exit 1
+          fi
           echo "digest=${DIGEST}" >> $GITHUB_OUTPUT
           echo "image=ghcr.io/${{ inputs.image-name }}@${DIGEST}" >> $GITHUB_OUTPUT
 
@@ -207,16 +261,19 @@ jobs:
       - name: Job summary
         if: always()
         run: |
-          PROMOTED="${{ steps.pr-image.outputs.exists }}"
+          PR_IMAGE_EXISTS="${{ steps.pr-image.outputs.exists }}"
+          STALE="${{ steps.freshness.outputs.stale }}"
           SIGNED="${{ steps.cosign-sign.outputs.signed }}"
           DIGEST="${{ steps.release-digest.outputs.digest }}"
           echo "## Container Release: \`${{ inputs.image-name }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Version**: \`${{ steps.meta.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
-          if [ "$PROMOTED" = "true" ]; then
+          if [ "$PR_IMAGE_EXISTS" = "true" ] && [ "$STALE" != "true" ]; then
             echo "- **Method**: Promoted from pre-built PR image (fast path)" >> $GITHUB_STEP_SUMMARY
             echo "- **Source**: \`${{ steps.version.outputs.next_image }}\`" >> $GITHUB_STEP_SUMMARY
+          elif [ "$PR_IMAGE_EXISTS" = "true" ] && [ "$STALE" = "true" ]; then
+            echo "- **Method**: Full rebuild (PR image was stale — main moved between PR build and release)" >> $GITHUB_STEP_SUMMARY
           else
-            echo "- **Method**: Full rebuild (fallback)" >> $GITHUB_STEP_SUMMARY
+            echo "- **Method**: Full rebuild (no pre-built PR image found)" >> $GITHUB_STEP_SUMMARY
           fi
           if [ "$SIGNED" = "true" ]; then
             echo "- **Signing**: Signed with cosign (keyless/Sigstore)" >> $GITHUB_STEP_SUMMARY
