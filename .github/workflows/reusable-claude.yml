@@ -99,11 +99,40 @@ jobs:
         id: failure-type
         if: steps.claude.outcome == 'failure'
         run: |
-          if [[ -f "${{ steps.claude.outputs.execution_file }}" ]] && grep -q "error_max_turns" "${{ steps.claude.outputs.execution_file }}"; then
-            echo "type=max-turns" >> "$GITHUB_OUTPUT"
+          EXEC_FILE="${{ steps.claude.outputs.execution_file }}"
+          STRUCTURED_OUTPUT='${{ steps.claude.outputs.structured_output }}'
+          SUBTYPE="unknown"
+          NUM_TURNS="0"
+          ERRORS=""
+          if [[ -f "$EXEC_FILE" ]]; then
+            SUBTYPE=$(jq -r '[.[] | select(.type == "result")] | last | .subtype // "unknown"' "$EXEC_FILE" 2>/dev/null || echo "unknown")
+            NUM_TURNS=$(jq -r '[.[] | select(.type == "result")] | last | .num_turns // 0' "$EXEC_FILE" 2>/dev/null || echo "0")
+            ERRORS=$(jq -r '[.[] | select(.type == "result")] | last | [.errors // [] | .[]] | join("; ")' "$EXEC_FILE" 2>/dev/null || echo "")
+          elif [[ -n "$STRUCTURED_OUTPUT" ]]; then
+            # Fall back to the action's structured_output when the exec file was
+            # never written (e.g. SDK crash after error_max_turns).
+            SUBTYPE=$(jq -r '.subtype // .conclusion // "no-execution-file"' <<<"$STRUCTURED_OUTPUT" 2>/dev/null || echo "no-execution-file")
+            NUM_TURNS=$(jq -r '.num_turns // 0' <<<"$STRUCTURED_OUTPUT" 2>/dev/null || echo "0")
           else
-            echo "type=error" >> "$GITHUB_OUTPUT"
+            # Leave ERRORS empty — the follow-up comment links to the workflow
+            # logs where the real error is visible, rather than rendering a
+            # misleading "Error: Execution file not found".
+            SUBTYPE="no-execution-file"
           fi
+
+          {
+            echo "subtype=${SUBTYPE}"
+            echo "num_turns=${NUM_TURNS}"
+            echo "errors=${ERRORS}"
+          } >> "$GITHUB_OUTPUT"
+
+          case "$SUBTYPE" in
+            error_max_turns)        TYPE="max-turns" ;;
+            error_during_execution) TYPE="execution-error" ;;
+            error_max_budget_usd)   TYPE="budget-exceeded" ;;
+            *)                      TYPE="error" ;;
+          esac
+          echo "type=${TYPE}" >> "$GITHUB_OUTPUT"
 
       - name: Post continuation comment on failure
         if: steps.claude.outcome == 'failure'
@@ -114,20 +143,54 @@ jobs:
             if (!issueNumber) return;
 
             const failureType = '${{ steps.failure-type.outputs.type }}';
+            const numTurns = '${{ steps.failure-type.outputs.num_turns }}';
+            const errors = '${{ steps.failure-type.outputs.errors }}';
             const branchName = '${{ steps.claude.outputs.branch_name }}';
+            const sessionId = '${{ steps.claude.outputs.session_id }}';
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
 
             const lines = [];
 
-            if (failureType === 'max-turns') {
-              lines.push(
-                '⚠️ **Claude ran out of turns before completing the task.**',
-                '',
-                'Progress so far is captured in the comment above.',
-              );
-              if (branchName) {
-                lines.push('', `Partial work was pushed to branch \`${branchName}\`.`);
-              }
+            switch (failureType) {
+              case 'max-turns':
+                lines.push(
+                  `⚠️ **Claude ran out of turns** (used ${numTurns} turns).`,
+                  '',
+                  'Progress so far is captured in the comment above.',
+                );
+                break;
+              case 'execution-error':
+                lines.push(
+                  `❌ **Claude encountered an error during execution** (after ${numTurns} turns).`,
+                  '',
+                );
+                if (errors) {
+                  lines.push(`Error: \`${errors}\``, '');
+                }
+                lines.push('Progress so far may be captured in the comment above.');
+                break;
+              case 'budget-exceeded':
+                lines.push(`❌ **Claude exceeded its budget** (${numTurns} turns).`);
+                break;
+              default:
+                lines.push('❌ **Claude encountered an error.**');
+                if (errors) {
+                  lines.push('', `Error: \`${errors}\``);
+                } else {
+                  lines.push(
+                    '',
+                    `No execution summary was produced. See the [workflow logs](${runUrl}) for the underlying error.`,
+                  );
+                }
+                break;
+            }
+
+            if (branchName) {
+              lines.push('', `Partial work was pushed to branch \`${branchName}\`.`);
+            }
+
+            // Show continuation instructions for recoverable failures
+            if (['max-turns', 'execution-error'].includes(failureType)) {
               lines.push(
                 '',
                 'To continue, reply with:',
@@ -135,11 +198,12 @@ jobs:
                 'Continue where you left off @claude',
                 '```',
               );
-            } else {
-              lines.push('❌ **Claude encountered an error.**');
             }
 
             lines.push('', `[View workflow run](${runUrl})`);
+            if (sessionId) {
+              lines.push(`<sub>Session: \`${sessionId}\`</sub>`);
+            }
 
             await github.rest.issues.createComment({
               owner: context.repo.owner,
