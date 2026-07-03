@@ -49,6 +49,14 @@ on:
         required: false
         type: string
         default: "jq -r '.version' package.json"
+    secrets:
+      secret-build-args:
+        description: |
+          Additional newline-separated KEY=VALUE Docker build arguments whose values are secrets.
+          Use for tokens that must reach the build but should not appear in the `build-args` input.
+          Values are masked in logs. The caller typically populates this with secrets from its
+          own repository, e.g. passing a Sentry auth token or an NPM registry token.
+        required: false
     outputs:
       pre-release-tag:
         description: 'The full pre-release image reference pushed (ghcr.io/…:next-{version})'
@@ -99,6 +107,21 @@ jobs:
           TAG="ghcr.io/${{ inputs.image-name }}:next-${{ steps.version.outputs.version }}"
           echo "pre-release-tag=${TAG}" >> $GITHUB_OUTPUT
 
+      # Tree-hash of the build context at the commit being built. The release
+      # job uses this to detect main moving forward between PR build and release
+      # tag, which would otherwise cause a stale image to be promoted unchanged.
+      - name: Compute build context tree hash
+        id: tree
+        run: |
+          CONTEXT="${{ inputs.context }}"
+          if [ -z "$CONTEXT" ] || [ "$CONTEXT" = "." ]; then
+            TREE=$(git rev-parse "HEAD^{tree}")
+          else
+            TREE=$(git rev-parse "HEAD:${CONTEXT}")
+          fi
+          echo "hash=${TREE}" >> $GITHUB_OUTPUT
+          echo "Build context tree hash: ${TREE}"
+
       - name: Build and push pre-release image
         id: build-push
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
@@ -108,10 +131,16 @@ jobs:
           platforms: ${{ inputs.platforms }}
           push: true
           tags: ${{ steps.tag.outputs.pre-release-tag }}
+          # Labels read by reusable-container-release.yml to verify the cached
+          # PR image is still current before promoting it to the release tag.
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            io.github.laurigates.build.context-tree=${{ steps.tree.outputs.hash }}
           build-args: |
             COMMIT_SHA=${{ github.sha }}
             GIT_BRANCH=${{ github.ref_name }}
             ${{ inputs.build-args }}
+            ${{ secrets.secret-build-args }}
           cache-from: type=gha,scope=${{ inputs.cache-scope }}
           cache-to: type=gha,mode=max,scope=${{ inputs.cache-scope }}
           # SBOM and provenance deferred to the release/promote job
