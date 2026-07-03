@@ -38,6 +38,11 @@ on:
         required: false
         type: number
         default: 30
+      max-diff-lines:
+        description: 'Skip Claude analysis when the total PR diff exceeds this many lines (0 disables the gate)'
+        required: false
+        type: number
+        default: 3000
       fail-on-high:
         description: 'Fail workflow if high/critical vulnerabilities found'
         required: false
@@ -92,12 +97,33 @@ jobs:
             done
           fi
 
+          # Only pull_request events have a base ref to diff against; the gate is inert otherwise
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            # numstat prints '-' for binary files; awk sums those as 0
+            DIFF_LINES=$(git diff --numstat origin/${{ github.base_ref }}...HEAD 2>/dev/null | awk '{s+=$1+$2} END {print s+0}' || true)
+          else
+            DIFF_LINES=0
+          fi
+
           echo "lockfiles=$CHANGED" >> $GITHUB_OUTPUT
+          echo "diff_lines=$DIFF_LINES" >> $GITHUB_OUTPUT
+          if [ "${{ inputs.max-diff-lines }}" -gt 0 ] && [ "$DIFF_LINES" -gt "${{ inputs.max-diff-lines }}" ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
           if [ -n "$CHANGED" ]; then
             echo "has_lockfiles=true" >> $GITHUB_OUTPUT
           else
             echo "has_lockfiles=false" >> $GITHUB_OUTPUT
           fi
+
+      - name: Diff-size skip notice
+        if: steps.changed.outputs.skip == 'true'
+        run: |
+          MSG="Dependency Security Audit: skipping Claude analysis — PR diff ${{ steps.changed.outputs.diff_lines }} lines exceeds max-diff-lines ${{ inputs.max-diff-lines }}"
+          echo "::notice::$MSG"
+          echo "$MSG" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Setup Node.js
         if: contains(fromJSON('["npm", "bun", "pnpm", "yarn"]'), inputs.package-manager)
@@ -156,7 +182,7 @@ jobs:
 
       - name: Claude Dependency Analysis
         id: analyze
-        if: steps.audit-cmd.outputs.results != ''
+        if: steps.audit-cmd.outputs.results != '' && steps.changed.outputs.skip != 'true'
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

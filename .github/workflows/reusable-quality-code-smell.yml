@@ -43,6 +43,11 @@ on:
         required: false
         type: number
         default: 30
+      max-diff-lines:
+        description: 'Skip Claude analysis when the total PR diff exceeds this many lines (0 disables the gate)'
+        required: false
+        type: number
+        default: 3000
       severity-threshold:
         description: 'Minimum severity to report (low, medium, high)'
         required: false
@@ -82,20 +87,47 @@ jobs:
         run: |
           set -f
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            FILES=$(git diff --name-only origin/${{ github.base_ref }}...HEAD -- ${{ inputs.file-patterns }} 2>/dev/null | head -n ${{ inputs.file-limit }} || echo "")
+            RANGE="origin/${{ github.base_ref }}...HEAD"
           else
-            FILES=$(git diff --name-only HEAD~1 -- ${{ inputs.file-patterns }} 2>/dev/null | head -n ${{ inputs.file-limit }} || echo "")
+            RANGE="HEAD~1"
           fi
+          ALL_FILES=$(git diff --name-only "$RANGE" -- ${{ inputs.file-patterns }} 2>/dev/null || echo "")
           set +f
+          FILES=$(echo "$ALL_FILES" | head -n ${{ inputs.file-limit }} || true)
+          TOTAL_FILES=$(echo "$ALL_FILES" | grep -c '.' || true)
           FILE_COUNT=$(echo "$FILES" | grep -c '.' || true)
+          # numstat prints '-' for binary files; awk sums those as 0
+          DIFF_LINES=$(git diff --numstat "$RANGE" 2>/dev/null | awk '{s+=$1+$2} END {print s+0}' || true)
           echo "count=$FILE_COUNT" >> $GITHUB_OUTPUT
+          echo "diff_lines=$DIFF_LINES" >> $GITHUB_OUTPUT
+          echo "total_files=$TOTAL_FILES" >> $GITHUB_OUTPUT
+          if [ "${{ inputs.max-diff-lines }}" -gt 0 ] && [ "$DIFF_LINES" -gt "${{ inputs.max-diff-lines }}" ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+          if [ "$TOTAL_FILES" -gt "${{ inputs.file-limit }}" ]; then
+            echo "truncated=true" >> $GITHUB_OUTPUT
+            MSG="Code Smell Detection: analyzing only the first ${{ inputs.file-limit }} of $TOTAL_FILES matched files"
+            echo "::notice::$MSG"
+            echo "$MSG" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "truncated=false" >> $GITHUB_OUTPUT
+          fi
           echo "files<<EOF" >> $GITHUB_OUTPUT
           echo "$FILES" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
+      - name: Diff-size skip notice
+        if: steps.changed.outputs.skip == 'true'
+        run: |
+          MSG="Code Smell Detection: skipping Claude analysis — PR diff ${{ steps.changed.outputs.diff_lines }} lines exceeds max-diff-lines ${{ inputs.max-diff-lines }}"
+          echo "::notice::$MSG"
+          echo "$MSG" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Claude Code Smell Analysis
         id: scan
-        if: steps.changed.outputs.count != '0'
+        if: steps.changed.outputs.count != '0' && steps.changed.outputs.skip != 'true'
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -112,6 +144,7 @@ jobs:
 
             ## Files to analyze
             ${{ steps.changed.outputs.files }}
+            ${{ steps.changed.outputs.truncated == 'true' && 'NOTE: the analyzed file list was truncated — say so in your comment.' || '' }}
 
             ## Complexity Smells (High Severity)
             - Functions over 50 lines / single responsibility violations
