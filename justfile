@@ -80,6 +80,21 @@ upstream-changes days="14":
         -- '.github/workflows/reusable-*.yml' \
     | head -50
 
+# Fail if upstream-org identifiers leaked into this repo's sources
+[group: "sync"]
+leak-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    paths=(.github/workflows)
+    [[ -f rulesync.jsonc ]] && paths+=(rulesync.jsonc)
+    [[ -d .rulesync ]] && paths+=(.rulesync)
+    if rg -in 'fvh|forumvirium' "${paths[@]}"; then
+        echo ""
+        echo "Upstream identifiers leaked — sanitize before committing (see .claude/skills/sync-upstream-workflows.md)."
+        exit 1
+    fi
+    echo "leak-check: clean"
+
 ####################
 # Validation
 ####################
