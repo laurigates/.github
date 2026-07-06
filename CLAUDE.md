@@ -43,6 +43,7 @@ The version is extracted from the version file (default: `package.json`) during 
 - **`reusable-claude-review.yml`** — automated PR review using Claude Code. Skips release-please PRs and bot actors by default
 - **`reusable-auto-fix.yml`** — analyzes failed CI workflows and either auto-fixes (commit + push) or opens a GitHub issue. Includes flood guards and recent-fix detection to prevent loops
 - **`reusable-enforce-conventional-commits.yml`** — auto-fixes PR titles to conventional commits format with 80+ verb-to-type mappings
+- **`reusable-changelog-review.yml`** — scheduled upstream-changelog triage (Claude Code's changelog by default). Two-job shape: a pure-bash pre-check gate (version compare against a tracking JSON, skip-if-existing-open-issue idempotency, excerpt slicing, caller-supplied analyzer script) followed by one opus triage run that opens a single tracking issue and a single JSON-ratchet PR. The schedule lives in the caller (`workflow_call` cannot carry one); the repo-specific keyword→file mapping stays in the calling repo via the required `analyzer-script` input. Model/effort default to opus/medium via inputs
 
 #### Claude-Powered Analysis Workflows
 
