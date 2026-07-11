@@ -14,7 +14,7 @@ on:
         type: string
         default: '.release-please-manifest.json'
       app-id:
-        description: 'GitHub App ID. When set, uses an App token (via APP_PRIVATE_KEY) instead of MY_RELEASE_PLEASE_TOKEN.'
+        description: 'GitHub App client ID (or numeric App ID; client ID recommended). When set, uses an App token (via APP_PRIVATE_KEY) instead of MY_RELEASE_PLEASE_TOKEN.'
         required: false
         type: string
         default: ''
@@ -74,7 +74,7 @@ jobs:
         if: inputs.app-id != ''
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ inputs.app-id }}
+          client-id: ${{ inputs.app-id }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
 
       - uses: googleapis/release-please-action@v4.4.0

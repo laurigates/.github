@@ -19,7 +19,7 @@ on:
         type: string
         default: 'false'
       app-id:
-        description: 'Renovate GitHub App ID. When set, generates an App token (via APP_PRIVATE_KEY) instead of using GITHUB_TOKEN.'
+        description: 'Renovate GitHub App client ID (or numeric App ID; client ID recommended). When set, generates an App token (via APP_PRIVATE_KEY) instead of using GITHUB_TOKEN.'
         required: false
         type: string
         default: ''
@@ -78,7 +78,7 @@ jobs:
         if: inputs.app-id != ''
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ inputs.app-id }}
+          client-id: ${{ inputs.app-id }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
 
@@ -102,7 +102,7 @@ jobs:
             echo "RENOVATE_REPOSITORIES=$DEFAULT_REPOSITORY" >> "$GITHUB_ENV"
           fi
 
-      - uses: renovatebot/github-action@v46.1.15
+      - uses: renovatebot/github-action@v46.1.16
         with:
           token: ${{ inputs.app-id != '' && steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
           configurationFile: ${{ inputs.config-file }}
