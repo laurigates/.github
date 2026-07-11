@@ -1,0 +1,114 @@
+name: Renovate (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      config-file:
+        description: 'Path to renovate config file'
+        required: false
+        type: string
+        default: 'renovate.json'
+      log-level:
+        description: 'Renovate log level'
+        required: false
+        type: string
+        default: 'info'
+      dry-run:
+        description: 'Dry run mode (false, full, lookup)'
+        required: false
+        type: string
+        default: 'false'
+      app-id:
+        description: 'Renovate GitHub App ID. When set, generates an App token (via APP_PRIVATE_KEY) instead of using GITHUB_TOKEN.'
+        required: false
+        type: string
+        default: ''
+      bot-username:
+        description: 'RENOVATE_USERNAME (e.g. <renovate-bot>[bot]). Only applies when app-id is set.'
+        required: false
+        type: string
+        default: ''
+      bot-git-author:
+        description: 'RENOVATE_GIT_AUTHOR full author string (e.g. "bot <bot[bot]@users.noreply.github.com>"). Only applies when app-id is set.'
+        required: false
+        type: string
+        default: ''
+      timeout-minutes:
+        description: 'Job timeout in minutes'
+        required: false
+        type: number
+        default: 60
+      repositories:
+        description: 'Explicit RENOVATE_REPOSITORIES value (space- or comma-separated owner/repo slugs). Overrides the default of scanning only the calling repo. Ignored when autodiscover is enabled.'
+        required: false
+        type: string
+        default: ''
+      autodiscover:
+        description: 'Set to true to autodiscover every repository the App installation can access (RENOVATE_AUTODISCOVER), optionally narrowed by autodiscover-filter. Takes precedence over repositories.'
+        required: false
+        type: string
+        default: 'false'
+      autodiscover-filter:
+        description: 'RENOVATE_AUTODISCOVER_FILTER value (e.g. <owner>/*) scoping autodiscovery. Only applies when autodiscover is true.'
+        required: false
+        type: string
+        default: ''
+    secrets:
+      APP_PRIVATE_KEY:
+        description: 'Renovate App private key. Required iff app-id is set.'
+        required: false
+
+concurrency:
+  group: renovate-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  packages: read
+
+jobs:
+  renovate:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        if: inputs.app-id != ''
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ inputs.app-id }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - uses: actions/checkout@v6
+
+      - name: Resolve Renovate target repositories
+        env:
+          AUTODISCOVER: ${{ inputs.autodiscover }}
+          AUTODISCOVER_FILTER: ${{ inputs.autodiscover-filter }}
+          REPOSITORIES: ${{ inputs.repositories }}
+          DEFAULT_REPOSITORY: ${{ github.repository }}
+        run: |
+          if [ "$AUTODISCOVER" = "true" ]; then
+            {
+              echo "RENOVATE_AUTODISCOVER=true"
+              echo "RENOVATE_AUTODISCOVER_FILTER=$AUTODISCOVER_FILTER"
+            } >> "$GITHUB_ENV"
+          elif [ -n "$REPOSITORIES" ]; then
+            echo "RENOVATE_REPOSITORIES=$REPOSITORIES" >> "$GITHUB_ENV"
+          else
+            echo "RENOVATE_REPOSITORIES=$DEFAULT_REPOSITORY" >> "$GITHUB_ENV"
+          fi
+
+      - uses: renovatebot/github-action@v46.1.15
+        with:
+          token: ${{ inputs.app-id != '' && steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
+          configurationFile: ${{ inputs.config-file }}
+        env:
+          LOG_LEVEL: ${{ inputs.log-level }}
+          RENOVATE_DRY_RUN: ${{ inputs.dry-run != 'false' && inputs.dry-run || '' }}
+          RENOVATE_USERNAME: ${{ inputs.bot-username }}
+          RENOVATE_GIT_AUTHOR: ${{ inputs.bot-git-author }}
+          RENOVATE_HOST_RULES: "[{\"matchHost\":\"ghcr.io\",\"hostType\":\"docker\",\"username\":\"x-access-token\",\"password\":\"${{ inputs.app-id != '' && steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}\"}]"

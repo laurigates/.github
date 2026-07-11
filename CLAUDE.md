@@ -57,6 +57,7 @@ All require `CLAUDE_CODE_OAUTH_TOKEN` secret. They analyze changed files in PRs 
 ### Other
 
 - **`reusable-sync-ai-rules.yml`** — syncs AI coding rules from this `.github` repo into calling repos via rulesync, creating a PR with tool-specific configs for Claude Code, Copilot, Gemini, and Cursor
+- **`reusable-renovate.yml`** — centralized Renovate runner. Auths via a GitHub App token when `app-id` is set (with `APP_PRIVATE_KEY` secret), falling back to `GITHUB_TOKEN` otherwise. Scopes targets via `repositories` or `autodiscover`/`autodiscover-filter` inputs (default: the calling repo only); includes a ghcr.io host rule for container digest lookups
 
 ## Conventions
 
