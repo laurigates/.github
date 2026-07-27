@@ -62,7 +62,7 @@ All require `CLAUDE_CODE_OAUTH_TOKEN` secret. They analyze changed files in PRs 
 
   Two details worth not re-deriving:
   - The job's `if:` is a deliberately loose `contains()` pre-filter; a **guard step** then applies the action's exact regex and skips the action when the mention is only a substring (`/october`). Without it, such a comment spins a runner and fails red on the action's own throw. The comment body reaches the guard via `env:`, never interpolated into the script — it is attacker-controlled.
-  - The action is pinned to a release SHA, but **pinning does not fully close the floating-version exposure**: `action.yml`'s first step `curl`s the *latest* opencode CLI release at runtime regardless of the pin. The pin covers the wrapper, not the binary it installs.
+  - The action is pinned to a release SHA, but **pinning does not fully close the floating-version exposure**: `action.yml`'s first step `curl`s the *latest* opencode CLI release at runtime regardless of the pin. The pin covers the wrapper, not the binary it installs. Fix proposed upstream in [anomalyco/opencode#39147](https://github.com/anomalyco/opencode/pull/39147) — runs the installer bundled at the pinned ref and adds a `version` input passed to the installer. If it lands, bump the pinned SHA and set `version` in the reusable workflow to close the gap; until then the caveat stands.
 
   Auth defaults to the OpenCode App OIDC exchange (`id-token: write`), which needs the [opencode-agent App](https://github.com/apps/opencode-agent) installed on the calling repo; set `use_github_token: true` to use `GITHUB_TOKEN` instead. Note the action requires the commenting actor to hold **write or admin** permission, so outside contributors cannot drive it.
 
