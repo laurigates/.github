@@ -25,7 +25,7 @@ Call these from any repo using `uses: laurigates/.github/.github/workflows/<name
 |----------|-------------|
 | `reusable-container-build.yml` | PR phase: build and push `:next-{version}` pre-release image to GHCR |
 | `reusable-container-release.yml` | Release phase: promote pre-built image to semver tags (or fallback rebuild) + Trivy scan |
-| `reusable-release-please.yml` | Automated releases via release-please |
+| `reusable-release-please.yml` | Automated releases via release-please (+ missed-release guard) |
 | `reusable-auto-merge-image-updater.yml` | Auto-merge ArgoCD Image Updater PRs |
 | `reusable-fix-release-conflicts.yml` | Auto-resolve release-please merge conflicts |
 | `reusable-claude.yml` | Claude Code @-mention support in issues and PRs |
@@ -86,6 +86,37 @@ jobs:
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 ```
+
+## Missed-Release Guard
+
+release-please can discard every commit in a push and still exit green. Its
+conventional-commit parser throws on some commit bodies — and repos with
+`squash_merge_commit_message = PR_BODY` get the PR description as the commit
+body, so a fenced code block in a PR description is enough to trigger it. The
+run logs `Considering: 0 commits`, no release PR appears, and the outcome is
+indistinguishable from "nothing releasable landed".
+
+`reusable-release-please.yml` re-checks the pushed range whenever release-please
+reports neither a release PR nor a release. If the range still contains
+conventional commits that should have released, it annotates the run and writes
+the offending subjects to the job summary.
+
+```yaml
+uses: laurigates/.github/.github/workflows/reusable-release-please.yml@main
+with:
+  missed-release-check: error   # warn (default) | error | off
+  releasable-types: feat,fix,perf,revert
+```
+
+The guard also exposes a `missed_release` output for callers that want to fan
+out (notify, open an issue) instead of failing the job.
+
+Two caveats: the guard only fires when release-please produced *nothing*, so a
+run where one commit parsed and another was dropped still under-releases
+silently; and the durable fix for the root cause is repo settings, not CI —
+switch release-please-managed repos to
+`squash_merge_commit_message = COMMIT_MESSAGES` so the squash body is the
+authored commit message rather than the PR description.
 
 ## Container Signing
 
