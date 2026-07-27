@@ -33,6 +33,19 @@ on:
         required: false
         type: boolean
         default: false
+      missed-release-check:
+        description: >-
+          Guard against release-please silently considering zero commits (e.g. a
+          conventional-commit parse error on a squash body). "warn" annotates,
+          "error" fails the job, "off" disables the check.
+        required: false
+        type: string
+        default: 'warn'
+      releasable-types:
+        description: 'Comma-separated conventional-commit types the guard treats as release-worthy.'
+        required: false
+        type: string
+        default: 'feat,fix,perf,revert'
     secrets:
       MY_RELEASE_PLEASE_TOKEN:
         description: 'PAT with contents:write and pull-requests:write scopes. Required when app-id is empty.'
@@ -47,6 +60,9 @@ on:
       tag_name:
         description: 'The tag name of the release'
         value: ${{ jobs.release-please.outputs.tag_name }}
+      missed_release:
+        description: 'true when releasable commits were pushed but release-please produced neither a release PR nor a release'
+        value: ${{ jobs.release-please.outputs.missed_release }}
 
 # Prevent concurrent runs racing on the release-please branch.
 concurrency:
@@ -68,6 +84,7 @@ jobs:
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
+      missed_release: ${{ steps.missed-release.outputs.missed_release }}
     steps:
       - name: Generate GitHub App token
         id: app-token
@@ -83,3 +100,102 @@ jobs:
           token: ${{ inputs.app-id != '' && steps.app-token.outputs.token || secrets.MY_RELEASE_PLEASE_TOKEN }}
           config-file: ${{ inputs.config-file }}
           manifest-file: ${{ inputs.manifest-file }}
+
+      # release-please can drop every commit in the pushed range and still exit
+      # green — e.g. its conventional-commit parser throws on a squash body (repos
+      # with squash_merge_commit_message = PR_BODY get the PR description as the
+      # commit body, and a fenced code block there is enough to break the parse).
+      # The symptom is the *absence* of a release PR, indistinguishable from
+      # "nothing releasable landed". This step makes that non-event visible.
+      - name: Check for releasable commits release-please did not consider
+        id: missed-release
+        if: >-
+          github.event_name == 'push' &&
+          inputs.missed-release-check != 'off' &&
+          steps.release.outputs.releases_created != 'true' &&
+          steps.release.outputs.prs_created != 'true'
+        env:
+          GH_TOKEN: ${{ inputs.app-id != '' && steps.app-token.outputs.token || github.token }}
+          REPO: ${{ github.repository }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+          MODE: ${{ inputs.missed-release-check }}
+          TYPES: ${{ inputs.releasable-types }}
+        run: |
+          set -euo pipefail
+
+          if [ "$MODE" != 'warn' ] && [ "$MODE" != 'error' ]; then
+            echo "::error::missed-release-check must be one of warn, error, off (got '$MODE')"
+            exit 1
+          fi
+
+          # Branch creation pushes an all-zero "before" — no range to inspect.
+          if [ -z "$BEFORE" ] || [ -z "$(printf '%s' "$BEFORE" | tr -d '0')" ]; then
+            echo "No usable push range (before='$BEFORE') — skipping check."
+            exit 0
+          fi
+
+          TYPES_RE=$(printf '%s' "$TYPES" | tr -d '[:space:]' | tr ',' '|')
+          if [ -z "$TYPES_RE" ]; then
+            echo "releasable-types is empty — skipping check."
+            exit 0
+          fi
+          export TYPES_RE
+
+          # A force-push or pruned commit makes the range unresolvable; that is
+          # not evidence of a swallowed release, so stay quiet.
+          if ! COMPARE=$(gh api "repos/$REPO/compare/$BEFORE...$AFTER" 2>/dev/null); then
+            echo "::notice::Could not compare $BEFORE...$AFTER — skipping missed-release check."
+            exit 0
+          fi
+
+          RELEASABLE=$(printf '%s' "$COMPARE" | jq -c '
+            [ .commits[]
+              | { sha: .sha[0:7],
+                  subject: (.commit.message | split("\n")[0]),
+                  message: .commit.message }
+              | select(.subject | test("^chore\\((main|master)\\): release") | not)
+              | select(
+                  (.subject | test("^(" + env.TYPES_RE + ")(\\([^()]*\\))?!?:")) or
+                  (.message | test("(^|\n)BREAKING[ -]CHANGE"))
+                )
+            ]')
+          COUNT=$(printf '%s' "$RELEASABLE" | jq 'length')
+
+          if [ "$COUNT" -eq 0 ]; then
+            echo "missed_release=false" >> "$GITHUB_OUTPUT"
+            echo "No release PR was expected: the pushed range holds no releasable commits."
+            exit 0
+          fi
+
+          echo "missed_release=true" >> "$GITHUB_OUTPUT"
+
+          SUBJECTS=$(printf '%s' "$RELEASABLE" | jq -r '.[] | "- `\(.sha)` \(.subject)"')
+
+          {
+            echo "### release-please produced no release for $COUNT releasable commit(s)"
+            echo
+            echo "Pushed range: \`$BEFORE\` → \`$AFTER\`"
+            echo
+            echo "$SUBJECTS"
+            echo
+            echo "release-please reported neither a release PR nor a release. The usual"
+            echo "cause is a conventional-commit parse error on one of these commits'"
+            echo "bodies — with \`squash_merge_commit_message = PR_BODY\`, the PR"
+            echo "description becomes the commit body, and a fenced code block there can"
+            echo "throw the parser (\"unexpected token at L:C\"), discarding every commit"
+            echo "in the range."
+            echo
+            echo "Fixes: check this run's release-please log for a parse error, then land"
+            echo "a fence-free commit restating the change, or switch the repo to"
+            echo "\`squash_merge_commit_message = COMMIT_MESSAGES\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "$SUBJECTS"
+
+          MSG="release-please cut no release despite $COUNT releasable commit(s) in $BEFORE...$AFTER — check the release-please log for a conventional-commit parse error."
+          if [ "$MODE" = 'error' ]; then
+            echo "::error::$MSG"
+            exit 1
+          fi
+          echo "::warning::$MSG"
