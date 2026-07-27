@@ -54,6 +54,18 @@ Security, quality, and accessibility workflows use `anthropics/claude-code-actio
 
 All require `CLAUDE_CODE_OAUTH_TOKEN` secret. They analyze changed files in PRs and post findings as PR comments.
 
+### OpenCode-Powered Workflows
+
+- **`reusable-opencode.yml`** — enables `/opencode` (or `/oc`) mentions in issue comments and PR review comments, via `anomalyco/opencode/github`. Requires the `OPENCODE_API_KEY` secret (pushed by gitops to repos flagged `opencode = true`).
+
+  **There is no automatic-review mode, by construction.** The action's `github/index.ts` opens with `assertContextEvent("issue_comment", "pull_request_review_comment")` and throws `Unsupported event type` on anything else, then throws again unless the body matches `/(?:^|\s)(?:\/opencode|\/oc)(?=$|\s)/`. A `pull_request`-triggered caller therefore cannot work — the only route to automatic review is a shim that posts a `/oc` comment on PR open, which needs a PAT or App token (comments made with `GITHUB_TOKEN` do not trigger workflows).
+
+  Two details worth not re-deriving:
+  - The job's `if:` is a deliberately loose `contains()` pre-filter; a **guard step** then applies the action's exact regex and skips the action when the mention is only a substring (`/october`). Without it, such a comment spins a runner and fails red on the action's own throw. The comment body reaches the guard via `env:`, never interpolated into the script — it is attacker-controlled.
+  - The action is pinned to a release SHA, but **pinning does not fully close the floating-version exposure**: `action.yml`'s first step `curl`s the *latest* opencode CLI release at runtime regardless of the pin. The pin covers the wrapper, not the binary it installs.
+
+  Auth defaults to the OpenCode App OIDC exchange (`id-token: write`), which needs the [opencode-agent App](https://github.com/apps/opencode-agent) installed on the calling repo; set `use_github_token: true` to use `GITHUB_TOKEN` instead. Note the action requires the commenting actor to hold **write or admin** permission, so outside contributors cannot drive it.
+
 ### Other
 
 - **`reusable-sync-ai-rules.yml`** — syncs AI coding rules from this `.github` repo into calling repos via rulesync, creating a PR with tool-specific configs for Claude Code, Copilot, Gemini, and Cursor

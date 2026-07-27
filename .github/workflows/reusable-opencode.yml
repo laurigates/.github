@@ -1,0 +1,120 @@
+name: OpenCode (Reusable)
+
+# Enables /opencode (or /oc) mentions in issue comments and PR review comments.
+#
+# The upstream action is mention-only by construction: github/index.ts opens with
+# assertContextEvent("issue_comment", "pull_request_review_comment") and throws
+# `Unsupported event type` on anything else, then throws again if the comment body
+# does not match /(?:^|\s)(?:\/opencode|\/oc)(?=$|\s)/. There is therefore no
+# pull_request-triggered "automatic review" mode to expose here — callers must wire
+# the two comment events below.
+#
+# Auth: OIDC App-token exchange (id-token: write). This requires the opencode-agent
+# GitHub App (https://github.com/apps/opencode-agent) to be installed on the calling
+# repo. The simpler alternative — use_github_token: true — is exposed via the
+# `use_github_token` input for repos without the App installed.
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: 'Runner label for the job'
+        type: string
+        required: false
+        default: 'ubuntu-latest'
+      model:
+        description: 'Model to use, in provider/model form'
+        type: string
+        required: false
+        default: 'opencode/glm-5.2'
+      agent:
+        description: 'Primary agent to use (falls back to default_agent from config, or "build")'
+        type: string
+        required: false
+        default: ''
+      variant:
+        description: 'Model variant for provider-specific reasoning effort (e.g. high, max, minimal)'
+        type: string
+        required: false
+        default: ''
+      prompt:
+        description: 'Custom prompt overriding the action default'
+        type: string
+        required: false
+        default: ''
+      share:
+        description: 'Share the opencode session (upstream defaults to true for public repos)'
+        type: string
+        required: false
+        default: ''
+      use_github_token:
+        description: 'Use GITHUB_TOKEN directly instead of the OpenCode App OIDC exchange. Set true when the opencode-agent App is not installed.'
+        type: boolean
+        required: false
+        default: false
+      timeout_minutes:
+        description: 'Job timeout in minutes'
+        type: number
+        required: false
+        default: 45
+    secrets:
+      OPENCODE_API_KEY:
+        required: true
+
+concurrency:
+  group: opencode-${{ github.event.issue.number || github.event.pull_request.number }}-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+  id-token: write
+
+jobs:
+  opencode:
+    # Cheap pre-filter only — the authoritative token-boundary check is the guard
+    # step below, which mirrors the action's own regex. Keeping this loose avoids
+    # false negatives; the guard prevents the action from throwing on a false
+    # positive such as "/october".
+    if: |
+      github.event.sender.type != 'Bot' &&
+      (contains(github.event.comment.body, '/oc') || contains(github.event.comment.body, '/opencode'))
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    steps:
+      - name: Check mention is a whole token
+        id: guard
+        env:
+          # Passed via env, never interpolated into the script body — comment text
+          # is attacker-controlled and would otherwise be a shell-injection vector.
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          set -euo pipefail
+          if grep -qE '(^|[[:space:]])(/opencode|/oc)($|[[:space:]])' <<<"$COMMENT_BODY"; then
+            echo "match=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "match=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Comment contains '/oc' or '/opencode' only as a substring, not as a whole token — skipping."
+          fi
+
+      - name: Checkout repository
+        if: steps.guard.outputs.match == 'true'
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Run opencode
+        if: steps.guard.outputs.match == 'true'
+        uses: anomalyco/opencode/github@02981844b88aed33f06f1527da6c58d137975069 # v1.18.7
+        env:
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          model: ${{ inputs.model }}
+          agent: ${{ inputs.agent }}
+          variant: ${{ inputs.variant }}
+          prompt: ${{ inputs.prompt }}
+          share: ${{ inputs.share }}
+          use_github_token: ${{ inputs.use_github_token }}
