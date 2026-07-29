@@ -21,6 +21,33 @@ All workflows are **reusable** (`workflow_call`) and called from other repos via
 uses: laurigates/.github/.github/workflows/reusable-<name>.yml@main
 ```
 
+### Runner selection: `ubuntu-slim` for API-only jobs
+
+Jobs whose entire body is GitHub-API churn — `gh` calls, `actions/github-script`,
+`create-github-app-token`, release-please, label/PR bookkeeping — run on
+**`ubuntu-slim`** (1 CPU, $0.002/min vs $0.006/min). Everything else stays on
+`ubuntu-latest`.
+
+`ubuntu-slim` is an *unprivileged container*, not a VM, and carries no hosted
+tool cache. It therefore **cannot** run:
+
+- anything needing a Docker daemon — including actions that only *look* like
+  plain composites: `renovatebot/github-action`, `trufflesecurity/trufflehog`,
+  `pypa/gh-action-pypi-publish` (`gitleaks/gitleaks-action` is `node24`, so it
+  is fine)
+- `container:` / `services:` jobs, `sudo`/`apt-get`, mounts, kernel features
+- Go, Rust, Java/Gradle/Maven, .NET, Ruby, PHP, Swift, Android, browsers,
+  databases, kubectl/helm, CMake/Bazel, CodeQL — none are preinstalled
+
+Preinstalled and safe to rely on: bash, Node 24, Python 3.12, gcc/g++, git+LFS,
+`gh`, jq, yq, curl, zstd, AWS/Azure/gcloud CLI. `actions/setup-node` /
+`setup-python` still work but must *download* the runtime (no tool cache), so
+prefer slim for jobs that don't need one.
+
+When a job in a reusable workflow is split (a cheap gate + an expensive Claude
+step), put only the gate on slim — see `reusable-changelog-review.yml` and
+`reusable-auto-resolve-conflicts.yml`.
+
 ### Container Build/Release (build-once/promote pattern)
 
 The container workflows implement a two-phase pattern:

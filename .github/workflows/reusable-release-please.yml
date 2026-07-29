@@ -22,7 +22,8 @@ on:
         description: 'Runner label'
         required: false
         type: string
-        default: 'ubuntu-latest'
+        # release-please is a pure GitHub-API job — no build, no toolchain.
+        default: 'ubuntu-slim'
       timeout-minutes:
         description: 'Job timeout in minutes'
         required: false

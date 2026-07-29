@@ -122,7 +122,9 @@ permissions:
 
 jobs:
   check-changelog:
-    runs-on: ubuntu-latest
+    # ubuntu-slim: pure bash gate (curl/grep/jq/gh). The `claude-triage` job
+    # below stays on ubuntu-latest.
+    runs-on: ubuntu-slim
     outputs:
       has_updates: ${{ steps.compare.outputs.has_updates }}
       latest_version: ${{ steps.compare.outputs.latest_version }}

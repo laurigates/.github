@@ -40,7 +40,8 @@ concurrency:
 
 jobs:
   clear-labels:
-    runs-on: ubuntu-latest
+    # ubuntu-slim: pure `gh` API calls, no checkout, no toolchain.
+    runs-on: ubuntu-slim
     steps:
       - name: Strip label from closed PRs
         env:

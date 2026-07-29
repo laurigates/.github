@@ -43,7 +43,9 @@ permissions:
 
 jobs:
   find-conflicts:
-    runs-on: ubuntu-latest
+    # ubuntu-slim: pure `gh` API calls. The `resolve` job below stays on
+    # ubuntu-latest — it checks out and runs claude-code-action.
+    runs-on: ubuntu-slim
     outputs:
       matrix: ${{ steps.find.outputs.matrix }}
       has_conflicts: ${{ steps.find.outputs.has_conflicts }}

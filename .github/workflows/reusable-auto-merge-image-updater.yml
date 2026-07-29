@@ -43,7 +43,8 @@ permissions:
 
 jobs:
   create-and-merge:
-    runs-on: ubuntu-latest
+    # ubuntu-slim: checkout + `gh` PR create/approve/merge, no toolchain.
+    runs-on: ubuntu-slim
     steps:
       - uses: actions/checkout@v6
 
