@@ -41,7 +41,8 @@ permissions:
 
 jobs:
   fix-conflicts:
-    runs-on: ubuntu-latest
+    # ubuntu-slim: pure `gh` API calls, no checkout, no toolchain.
+    runs-on: ubuntu-slim
     steps:
       - name: Wait for release-please to finish
         if: github.event_name == 'push'
