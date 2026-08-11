@@ -40,6 +40,17 @@ jobs:
           additional_permissions: |
             actions: read
 
+          plugin_marketplaces: |
+            https://github.com/laurigates/claude-plugins.git
+          plugins: |
+            configure-plugin@laurigates-claude-plugins
+            health-plugin@laurigates-claude-plugins
+            hooks-plugin@laurigates-claude-plugins
+            github-actions-plugin@laurigates-claude-plugins
+            git-plugin@laurigates-claude-plugins
+            code-quality-plugin@laurigates-claude-plugins
+            tools-plugin@laurigates-claude-plugins
+
           # Optional: Give a custom prompt to Claude. If this is not specified, Claude will perform the instructions specified in the comment that tagged it.
           # prompt: 'Update the pull request description to include a summary of changes.'
 
