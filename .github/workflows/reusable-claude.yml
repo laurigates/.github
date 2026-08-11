@@ -11,7 +11,7 @@ on:
         type: string
         default: 'ubuntu-slim'
       claude_args:
-        description: 'Additional arguments for Claude Code (appended after default --max-turns and --system-prompt)'
+        description: 'Additional arguments for Claude Code (appended after default --max-turns, --allowedTools, and --system-prompt)'
         type: string
         required: false
         default: ''
@@ -20,6 +20,18 @@ on:
         type: number
         required: false
         default: 50
+      allowed_tools:
+        description: >-
+          Comma-separated list of additional tools to allow beyond the action defaults
+          (Glob, Grep, LS, Read, git commit/push). Passed to --allowedTools.
+          Default covers the common polyglot stack: file editing, Python (uv/pytest/ruff),
+          TypeScript (bun/biome), just task runner, pre-commit hooks, and
+          GitHub MCP server tools for issue management (mcp__github__*).
+          Listing any mcp__github__* tool causes the action to mount
+          ghcr.io/github/github-mcp-server automatically.
+        type: string
+        required: false
+        default: 'Edit,Write,Bash(uv *),Bash(pytest *),Bash(python *),Bash(ruff *),Bash(bun *),Bash(biome *),Bash(node *),Bash(just *),Bash(pre-commit *),Bash(make *),mcp__github__get_issue,mcp__github__list_issues,mcp__github__list_issue_types,mcp__github__search_issues,mcp__github__create_issue,mcp__github__update_issue,mcp__github__add_issue_comment,mcp__github__get_issue_comments,mcp__github__add_sub_issue,mcp__github__list_sub_issues'
       model:
         description: 'Claude model to use'
         required: false
@@ -87,7 +99,15 @@ jobs:
           claude_args: >-
             --model ${{ inputs.model }}
             --max-turns ${{ inputs.max_turns }}
-            --system-prompt "You have a limited turn budget in CI. For multi-step tasks: commit and push partial progress early — do not wait until everything is done. After each push, update your comment with completed and remaining work. Prioritize working increments over completing everything at once."
+            --allowedTools "${{ inputs.allowed_tools }}"
+            --system-prompt "You have a limited turn budget of ${{ inputs.max_turns }} turns in CI.
+
+            Strategy:
+            1. ACT FIRST — produce visible output early. Do not spend many turns reading files before posting results.
+            2. For CODE CHANGES: commit and push partial progress early. Do not wait until everything is done.
+            3. For ANALYSIS/REVIEW tasks: post your findings incrementally. Use a checklist in your comment so partial progress is visible even if you run out of turns.
+            4. After each milestone, update your comment with completed and remaining work.
+            5. If you realize the task will exceed your budget, summarize what is done and what remains so a continuation can pick up where you left off."
             ${{ inputs.claude_args }}
           additional_permissions: |
             actions: read
