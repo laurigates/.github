@@ -32,7 +32,10 @@ on:
         description: 'Maximum spend per run in USD (0 = no budget limit)'
         required: false
         type: number
-        default: 0
+        # Non-zero by default: an unbounded budget lets a retry loop burn
+        # indefinitely. Observed 32 turns / $2.30 on one run, most of it the
+        # model retrying a tool call it was never permitted to make.
+        default: 5
       timeout-minutes:
         description: 'Job timeout in minutes'
         required: false
@@ -137,7 +140,7 @@ jobs:
             --model ${{ inputs.model }}
             --max-turns ${{ inputs.max-turns }}
             ${{ inputs.max-budget-usd > 0 && format('--max-budget-usd {0}', inputs.max-budget-usd) || '' }}
-            --json-schema '{"type":"object","properties":{"total_issues":{"type":"integer","description":"Total security issues found"},"critical_issues":{"type":"integer","description":"Critical severity issues found"}},"required":["total_issues","critical_issues"]}'
+            --json-schema '{"type":"object","properties":{"total_issues":{"type":"integer","description":"Total security issues found"},"critical_issues":{"type":"integer","description":"Critical severity issues found"},"findings":{"type":"array","description":"Every issue found, most severe first","items":{"type":"object","properties":{"file":{"type":"string"},"line":{"type":"integer"},"severity":{"type":"string","enum":["Critical","High","Medium","Low"]},"category":{"type":"string","description":"OWASP category, e.g. A01:2021 - Broken Access Control"},"description":{"type":"string"},"remediation":{"type":"string"}},"required":["file","severity","category","description"]}}},"required":["total_issues","critical_issues","findings"]}'
           prompt: |
             Analyze these files for OWASP Top 10 2021 security vulnerabilities.
 
@@ -209,13 +212,70 @@ jobs:
             - **Code Snippet** - The vulnerable code
             - **Remediation** - How to fix it with code example
 
-            Report the final counts in the structured output fields:
-            total_issues (all issues) and critical_issues (critical severity only).
+            ## Reporting
 
-            Leave a PR comment with findings grouped by severity (Critical first).
+            Report everything through the structured output fields -- that is
+            the only channel that reaches a human:
+
+            - total_issues: all issues found
+            - critical_issues: critical severity only
+            - findings: one entry per issue, most severe first, each with
+              file, line, severity, category, description and remediation
+
+            The workflow renders `findings` into the job summary. Do NOT try to
+            post a PR comment or use any GitHub write tool -- you have no
+            permission to do so, the attempt will be denied, and the finding
+            will be lost. An issue you report only in prose is an issue nobody
+            will ever read.
+
+      # Findings reach humans through the job summary and file annotations,
+      # never a PR comment: the action is granted no comment tool, so asking
+      # Claude to post one only produced denials and discarded the findings.
+      # Both channels here work with the permissions the job already holds.
+      - name: Publish findings
+        if: always() && steps.analyze.outcome == 'success'
+        env:
+          # Read via env, never interpolated into the script body: this is
+          # model-generated text crossing into a shell.
+          STRUCTURED_OUTPUT: ${{ steps.analyze.outputs.structured_output }}
+        run: |
+          if [ -z "${STRUCTURED_OUTPUT:-}" ]; then
+            echo "OWASP scan produced no structured output." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          printf '%s' "$STRUCTURED_OUTPUT" | jq -r '
+            "## OWASP Security Scan",
+            "",
+            "**\(.total_issues // 0) issue(s) — \(.critical_issues // 0) critical**",
+            "",
+            ((.findings // [])
+              | if length == 0 then ["No findings reported."]
+                else map(
+                  "### \(.severity) — \(.category)",
+                  "",
+                  "`\(.file)\(if .line then ":\(.line)" else "" end)`",
+                  "",
+                  .description,
+                  "",
+                  (if .remediation then "**Remediation:** \(.remediation)" else empty end),
+                  ""
+                )
+                end
+              | .[])
+          ' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Check for critical issues
         if: inputs.fail-on-critical && fromJSON(steps.analyze.outputs.structured_output || '{}').critical_issues > 0
+        env:
+          STRUCTURED_OUTPUT: ${{ steps.analyze.outputs.structured_output }}
         run: |
-          echo "::error::Found ${{ fromJSON(steps.analyze.outputs.structured_output || '{}').critical_issues }} critical security issues"
+          # File-anchored annotations render on the PR's Files tab, so a
+          # blocking finding is visible where the code is.
+          printf '%s' "$STRUCTURED_OUTPUT" | jq -r '
+            (.findings // [])
+            | map(select(.severity == "Critical"))
+            | .[]
+            | "::error file=\(.file)\(if .line then ",line=\(.line)" else "" end)::[\(.category)] \(.description)"
+          '
+          echo "::error::Found ${{ fromJSON(steps.analyze.outputs.structured_output || '{}').critical_issues }} critical security issues - see the job summary for details"
           exit 1
