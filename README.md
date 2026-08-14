@@ -118,6 +118,31 @@ switch release-please-managed repos to
 `squash_merge_commit_message = COMMIT_MESSAGES` so the squash body is the
 authored commit message rather than the PR description.
 
+## Finding the Release PR
+
+A release PR is opened by a bot and mentions nobody, so it shows up in none of
+GitHub's dashboard or mobile feeds — not `author:@me`, not `review-requested:@me`,
+not even `involves:@me`. `reusable-release-please.yml` assigns it instead, which
+puts it in the **Assigned** tab and under `is:open is:pr assignee:@me`.
+
+This is on by default and assigns the repository owner; no caller change is
+needed. To assign someone else, or several people:
+
+```yaml
+uses: laurigates/.github/.github/workflows/reusable-release-please.yml@main
+with:
+  pr-assignees: alice,bob   # default: the repository owner; 'none' disables
+```
+
+`@me` is deliberately not accepted — `gh` resolves it to the token owner, which
+is the GitHub App bot whenever `app-id` is set. Use literal usernames.
+
+The step assigns whatever PR release-please created or updated in the run, and
+falls back to any open `release-please--branches--*` PR when the run touched
+none, so an already-open release PR gets picked up too. A failed assignment
+(unknown username, or one without repository access) warns rather than failing
+the release.
+
 ## Container Signing
 
 Release images are signed with [Sigstore cosign](https://docs.sigstore.dev/) using keyless mode (OIDC identity from GitHub Actions). Signatures are recorded in the [Rekor](https://docs.sigstore.dev/logging/overview/) public transparency log.

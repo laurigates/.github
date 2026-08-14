@@ -47,6 +47,14 @@ on:
         required: false
         type: string
         default: 'feat,fix,perf,revert'
+      pr-assignees:
+        description: >-
+          Comma-separated GitHub usernames to assign to the release PR, so it
+          surfaces under assignee:@me in the GitHub web and mobile dashboards.
+          Defaults to the repository owner; set to 'none' to disable.
+        required: false
+        type: string
+        default: ''
     secrets:
       MY_RELEASE_PLEASE_TOKEN:
         description: 'PAT with contents:write and pull-requests:write scopes. Required when app-id is empty.'
@@ -101,6 +109,62 @@ jobs:
           token: ${{ inputs.app-id != '' && steps.app-token.outputs.token || secrets.MY_RELEASE_PLEASE_TOKEN }}
           config-file: ${{ inputs.config-file }}
           manifest-file: ${{ inputs.manifest-file }}
+
+      # A release PR is bot-authored and mentions nobody, so it matches none of
+      # GitHub's dashboard/mobile feeds — not author:@me, not review-requested:@me,
+      # not even involves:@me. Assigning is the only thing that files it under a
+      # human. Runs before the missed-release guard so an `error`-mode failure
+      # there cannot skip it.
+      #
+      # @me is unusable: gh resolves it to the *token* owner, which is the App
+      # bot whenever app-id is set. The assignee must be a literal username.
+      - name: Assign the release PR
+        id: assign
+        env:
+          GH_TOKEN: ${{ inputs.app-id != '' && steps.app-token.outputs.token || secrets.MY_RELEASE_PLEASE_TOKEN || github.token }}
+          REPO: ${{ github.repository }}
+          ASSIGNEES: ${{ inputs.pr-assignees || github.repository_owner }}
+          PRS_JSON: ${{ steps.release.outputs.prs }}
+        run: |
+          set -euo pipefail
+
+          # '' means "fall back to the owner", so the opt-out needs a sentinel.
+          if [ -z "$ASSIGNEES" ] || [ "$ASSIGNEES" = 'none' ]; then
+            echo "pr-assignees disabled — skipping."
+            exit 0
+          fi
+
+          # `prs` is set whenever release-please created *or updated* a PR this
+          # run, and each PullRequest object carries .number — so this covers
+          # every run that touches the PR, and the manifest/monorepo case where
+          # there is more than one.
+          NUMBERS=$(printf '%s' "${PRS_JSON:-}" \
+            | jq -r 'if type == "array" then .[].number else empty end' 2>/dev/null || true)
+
+          # release-please touched nothing this run (no releasable commits, or a
+          # swallowed parse). Assign whatever release PR is already open, so an
+          # existing one still gets filed and a previously failed assign heals.
+          if [ -z "$NUMBERS" ]; then
+            NUMBERS=$(gh pr list --repo "$REPO" --state open --limit 30 \
+              --json number,headRefName \
+              --jq '.[] | select(.headRefName | startswith("release-please--branches--")) | .number' \
+              2>/dev/null || true)
+          fi
+
+          if [ -z "$NUMBERS" ]; then
+            echo "No open release PR to assign."
+            exit 0
+          fi
+
+          # Never fail the release over bookkeeping: an unknown username, or one
+          # without repo access, warns instead of turning a good run red.
+          for n in $NUMBERS; do
+            if gh pr edit "$n" --repo "$REPO" --add-assignee "$ASSIGNEES" >/dev/null; then
+              echo "Assigned $ASSIGNEES to PR #$n"
+            else
+              echo "::warning::Could not assign '$ASSIGNEES' to PR #$n — check the usernames exist and have repository access, and that the token grants issues:write."
+            fi
+          done
 
       # release-please can drop every commit in the pushed range and still exit
       # green — e.g. its conventional-commit parser throws on a squash body (repos
