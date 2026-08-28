@@ -146,10 +146,28 @@ jobs:
           CONTEXT: ${{ inputs.context }}
         run: |
           set -euo pipefail
-          PR_TREE=$(docker buildx imagetools inspect "$PR_IMAGE" --format '{{json .Image}}' \
-            | jq -r '.config.Labels."io.github.laurigates.build.context-tree" // empty')
+          INSPECT=$(docker buildx imagetools inspect "$PR_IMAGE" --format '{{json .Image}}')
+          # `.Image` has two shapes, and reading only the first one is why this
+          # check reported every multi-platform image as unlabelled:
+          #   single-platform tag  -> one image config, labels at .config.Labels
+          #   multi-platform index -> a map of "os/arch" -> image config, so
+          #                           .config.Labels is null at the top level
+          # Attestation manifests (provenance/SBOM) are not represented in
+          # `.Image`, so there is no unknown/unknown entry to filter out.
+          # Every platform is built from one context and must agree; a
+          # disagreement is unexplained, so it falls back to a rebuild.
+          PR_TREE=$(printf '%s' "$INSPECT" | jq -r '
+            (if has("config") then [.] else [.[]] end)
+            | map(.config.Labels["io.github.laurigates.build.context-tree"] // "")
+            | unique
+            | if length == 1 and .[0] != "" then .[0] else "" end')
           if [ -z "$PR_TREE" ]; then
-            echo "::warning::PR image has no io.github.laurigates.build.context-tree label (built before this guard landed) — falling back to rebuild"
+            # Report what was observed. The previous wording asserted a cause
+            # ("built before this guard landed"), which read as self-healing and
+            # sent the diagnosis of a permanent lookup bug down an age theory.
+            PLATFORMS=$(printf '%s' "$INSPECT" \
+              | jq -r 'if has("config") then "single-platform" else (keys | join(",")) end')
+            echo "::warning::Could not read a single agreed io.github.laurigates.build.context-tree label from ${PR_IMAGE} (inspected: ${PLATFORMS}) — falling back to rebuild"
             echo "stale=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -251,12 +269,32 @@ jobs:
           cosign sign "${{ steps.release-digest.outputs.image }}"
           echo "signed=true" >> $GITHUB_OUTPUT
 
+      # `version` is pinned explicitly rather than left to the action's default.
+      # trivy-action 0.34.0 defaulted to Trivy v0.69.1, which exists as a git
+      # tag but has no GitHub release and therefore no downloadable asset — so
+      # setup-trivy's install script resolved the tag, failed to fetch the
+      # binary, and exited 1 before any scan ran. Every release job using this
+      # workflow went red on a scan that never executed. An upstream default is
+      # a value someone else can withdraw; state the version here so a repeat
+      # is a bump we make, not a break we inherit.
       - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@c1824fd6edce30d7ab345a9989de00bbd46ef284 # 0.34.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ghcr.io/${{ inputs.image-name }}:${{ steps.meta.outputs.version }}
+          version: 'v0.70.0'
           format: 'table'
           severity: ${{ inputs.scan-severity }}
+          # Report only what someone can act on. The Debian base carries
+          # CRITICALs with no fix available (perl-base, among others); failing
+          # the release on those makes the gate unsatisfiable, and an
+          # unsatisfiable gate is one nobody reads.
+          ignore-unfixed: true
+          # Without this the action leaves TRIVY_EXIT_CODE unset and Trivy exits
+          # 0, so findings are printed and nothing acts on them. This step runs
+          # after the image is pushed, so a failure here marks the release
+          # rather than preventing publication — the blocking gate belongs in
+          # the PR-phase build, before a vulnerable image is ever tagged.
+          exit-code: '1'
 
       - name: Job summary
         if: always()
