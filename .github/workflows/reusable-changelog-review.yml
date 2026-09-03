@@ -103,6 +103,14 @@ on:
         required: false
         default: 25
         type: number
+      max-versions-per-run:
+        description: 'Cap on upstream versions triaged in one run; the excerpt is windowed to the OLDEST N after lastCheckedVersion and the ratchet stops there, so the next run picks up the remainder. 0 disables windowing.'
+        required: false
+        # 25 matches the review-stall threshold the first consumer's analyzer
+        # already enforces (it emits TYPE=oversized_batch above 25 versions),
+        # so the default window never trips the caller's own warning.
+        default: 25
+        type: number
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
@@ -133,6 +141,12 @@ jobs:
       candidate_rules: ${{ steps.analyze.outputs.candidates }}
       deprecated_tokens: ${{ steps.analyze.outputs.deprecated_tokens }}
       analysis_status: ${{ steps.analyze.outputs.analysis_status }}
+      # Upper bound of the range this run actually triages. Equals
+      # latest_version unless the excerpt was windowed (see the analyze step);
+      # the triage job ratchets to THIS, never to latest_version.
+      effective_latest: ${{ steps.analyze.outputs.effective_latest }}
+      windowed: ${{ steps.analyze.outputs.windowed }}
+      total_new_versions: ${{ steps.analyze.outputs.total_new_versions }}
       existing_issue: ${{ steps.existing.outputs.issue_number }}
       should_skip: ${{ steps.existing.outputs.should_skip }}
     steps:
@@ -204,6 +218,49 @@ jobs:
             echo "has_updates=false" >> "$GITHUB_OUTPUT"
           fi
           echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+
+      # Provision every label the pipeline will reference, BEFORE anything
+      # uses one. `gh issue create --label <unknown>` hard-fails, and in the
+      # triage prompt that call is the job's last line — the whole analysis is
+      # already paid for by then. `gh issue list --label` is likewise happier
+      # with a label that exists.
+      #
+      # The colour is a QUOTED string: bare `5319e7` is a YAML 1.2 float
+      # (5319 x 10^7), which reaches `gh label create` as `53190000000` and
+      # earns an HTTP 422. Same bug that was killing claude-plugins' docs-index
+      # audit.
+      #
+      # Create-if-missing, not `--force`: --force rewrites an existing label's
+      # colour and description, so a shared label like `maintenance` would be
+      # recoloured every Monday.
+      - name: Ensure tracking labels exist
+        if: steps.compare.outputs.has_updates == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          TRACKING_LABEL: ${{ inputs.tracking-label }}
+          ISSUE_LABELS: ${{ inputs.issue-labels }}
+          LABEL_COLOR: '5319e7'
+        run: |
+          set -uo pipefail
+          # A label that cannot be provisioned is a warning, not a failure: the
+          # label may exist under different casing, or the token may lack the
+          # scope. Failing here would throw away a run that could still triage.
+          printf '%s\n%s\n' "$TRACKING_LABEL" "${ISSUE_LABELS//,/$'\n'}" \
+            | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' \
+            | grep -v '^$' \
+            | sort -u \
+            | while IFS= read -r label; do
+                if out=$(gh label create "$label" \
+                          --repo "$GITHUB_REPOSITORY" \
+                          --color "$LABEL_COLOR" \
+                          --description "Upstream changelog triage" 2>&1); then
+                  echo "created label: $label"
+                elif printf '%s' "$out" | grep -qi 'already exists'; then
+                  echo "label present: $label"
+                else
+                  echo "::warning::could not provision label '$label': $out"
+                fi
+              done
 
       # Skip-if-exists check: if a tracking issue already covers this range,
       # don't re-triage. This makes the workflow idempotent and prevents the
@@ -280,6 +337,7 @@ jobs:
           TRACKED: ${{ steps.read_tracked.outputs.tracked_version }}
           LATEST: ${{ steps.extract.outputs.latest_version }}
           ANALYZER_SCRIPT: ${{ inputs.analyzer-script }}
+          MAX_VERSIONS: ${{ inputs.max-versions-per-run }}
         run: |
           set -euo pipefail
 
@@ -302,17 +360,50 @@ jobs:
             exit 1
           fi
 
-          # Cap the excerpt to keep the Claude phase bounded even when the
-          # gap is huge. A 200KB excerpt gives plenty of room for a year's
-          # worth of versions without overwhelming the prompt cache.
-          EXCERPT_BYTES=$(wc -c < /tmp/excerpt.md)
-          if [ "$EXCERPT_BYTES" -gt 204800 ]; then
-            echo "::warning::Excerpt is $EXCERPT_BYTES bytes — truncating to 200KB for triage"
-            head -c 204800 /tmp/excerpt.md > /tmp/excerpt-trimmed.md
-            mv /tmp/excerpt-trimmed.md /tmp/excerpt.md
+          # Window a large backlog instead of truncating it. The excerpt is
+          # newest-first, so the old `head -c 204800` kept the NEWEST bytes and
+          # silently dropped the oldest versions — while the triage job still
+          # ratcheted lastCheckedVersion to $LATEST, permanently skipping them.
+          # A 2.1.185 → 2.1.259 catch-up is 61 versions / ~216KB and hit that
+          # path exactly.
+          #
+          # Instead: keep the OLDEST $MAX_VERSIONS versions after $TRACKED and
+          # ratchet only to the top of that window. The range is then covered
+          # in order, and the next scheduled run continues from where this one
+          # stopped (LATEST still exceeds the new tracked version, so the
+          # skip-if-exists check lets it through).
+          TOTAL_NEW=$(grep -cE '^## \[?[0-9]+\.[0-9]+\.[0-9]+' /tmp/excerpt.md || true)
+          EFFECTIVE_LATEST="$LATEST"
+          WINDOWED=false
+          if [ "${MAX_VERSIONS:-0}" -gt 0 ] && [ "$TOTAL_NEW" -gt "$MAX_VERSIONS" ]; then
+            SKIP=$((TOTAL_NEW - MAX_VERSIONS))
+            # Drop the newest $SKIP version blocks (and the pre-first-header
+            # preamble); what remains is the oldest $MAX_VERSIONS, still
+            # newest-first within the window.
+            awk -v skip="$SKIP" '
+              /^## \[?[0-9]+\.[0-9]+\.[0-9]+/ { n++ }
+              n > skip { print }
+            ' /tmp/excerpt.md > /tmp/excerpt-window.md
+            mv /tmp/excerpt-window.md /tmp/excerpt.md
+            EFFECTIVE_LATEST=$(grep -oP '## \[?\K[0-9]+\.[0-9]+\.[0-9]+' /tmp/excerpt.md | head -1 || true)
+            if [ -z "$EFFECTIVE_LATEST" ]; then
+              echo "::error::Windowing produced an excerpt with no version header"
+              exit 1
+            fi
+            WINDOWED=true
+            echo "::warning::$TOTAL_NEW new versions ($TRACKED → $LATEST) exceeds max-versions-per-run=$MAX_VERSIONS — triaging $TRACKED → $EFFECTIVE_LATEST this run; the remainder follows on the next run"
           fi
 
-          echo "Excerpt: $(wc -l < /tmp/excerpt.md) lines, $(wc -c < /tmp/excerpt.md) bytes ($TRACKED → $LATEST)"
+          EXCERPT_BYTES=$(wc -c < /tmp/excerpt.md)
+          echo "Excerpt: $(wc -l < /tmp/excerpt.md) lines, $EXCERPT_BYTES bytes ($TRACKED → $EFFECTIVE_LATEST of $TOTAL_NEW new versions)"
+
+          # Loud, not lossy. With windowing off (max-versions-per-run: 0) the
+          # caller has opted into an unbounded excerpt; warn rather than
+          # silently trim, because trimming while still ratcheting to the top
+          # of the range is how versions get skipped for good.
+          if [ "$EXCERPT_BYTES" -gt 204800 ]; then
+            echo "::warning::Excerpt is $EXCERPT_BYTES bytes with windowing disabled — set max-versions-per-run to bound the triage run"
+          fi
 
           # Delegate keyword counting, the deprecation dimension, and the
           # deprecation→code candidate bridge to the caller's analyzer script
@@ -323,7 +414,7 @@ jobs:
             exit 1
           fi
           ANALYSIS=$(bash "$ANALYZER_SCRIPT" \
-            --excerpt /tmp/excerpt.md --repo-dir "$PWD" --tracked "$TRACKED" --latest "$LATEST")
+            --excerpt /tmp/excerpt.md --repo-dir "$PWD" --tracked "$TRACKED" --latest "$EFFECTIVE_LATEST")
           echo "$ANALYSIS"
 
           # `|| true` on each: a field the analyzer doesn't emit makes grep
@@ -342,6 +433,9 @@ jobs:
           {
             echo "summary=$SUMMARY"
             echo "analysis_status=$ANALYSIS_STATUS"
+            echo "effective_latest=$EFFECTIVE_LATEST"
+            echo "windowed=$WINDOWED"
+            echo "total_new_versions=$TOTAL_NEW"
             echo "deprecated_tokens=$DEPRECATED_TOKENS"
             echo "candidates<<__CHANGELOG_REVIEW_EOF__"
             echo "$CANDIDATE_LIST"
@@ -389,14 +483,49 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Same token the checkout used, so `gh issue create` and `git push`
+          # inside the run authenticate as the identity that owns the branch.
+          # On the PAT, the pushed branch also triggers downstream workflows.
+          github_token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
           # Triage is intentionally small-scope work — no rule edits, no
           # multi-PR juggling. 25 turns is enough headroom for: read inputs,
           # categorize changes, open one issue, ratchet the JSON, open one
           # PR. If it can't finish in 25 turns, the prompt is wrong and we
           # want to fail fast rather than burn $60 on a misdiagnosis loop.
-          claude_args: "--model ${{ inputs.model }} --effort ${{ inputs.effort }} --max-turns ${{ inputs.max-turns }}"
+          #
+          # The tool boundary belongs in `--allowedTools`. It used to sit in
+          # `additional_permissions:`, but that input takes a GitHub permissions
+          # MAP ("actions: read") — a Claude tool list there declared a sandbox
+          # that was never applied, so the action's default policy denied every
+          # `gh issue create` / `git push`. The SDK exits 0 on a permission
+          # denial, so the run went green with nothing filed: 13 consecutive
+          # weeks of that in laurigates/claude-plugins (last issue #1733,
+          # 2.1.138 → 2.1.185). The discriminating evidence is the job log's
+          # `SDK options:` block — `allowedTools` absent entirely, and
+          # `permission_denials_count` 6–15 instead of 0–1.
+          #
+          # Deltas from that inert list:
+          #   - WebFetch/WebSearch stay OUT: the prompt says the pre-sliced
+          #     excerpt is the authoritative input, so that contract is now
+          #     enforced rather than merely asserted. A blocked WebFetch is
+          #     exactly why a HEALTHY run still shows one permission denial —
+          #     never gate on `permission_denials_count > 0`.
+          #   - `gh` is narrowed to the verbs the prompt actually runs
+          #     (issue/pr/label create + issue list), not a blanket `gh *`.
+          #   - TodoWrite is a genuine grant, not decoration: since 2.1.233 the
+          #     todo/task tools are off by default on current models and naming
+          #     one in --allowedTools is the session-wide opt-in.
+          #
+          # One flag per line: laurigates/claude-plugins'
+          # scripts/check-workflow-model.sh matches `--model`/`--effort`
+          # anchored at line start inside a folded scalar.
+          claude_args: >-
+            --model ${{ inputs.model }}
+            --effort ${{ inputs.effort }}
+            --max-turns ${{ inputs.max-turns }}
+            --allowedTools "Read,Edit,Write,Grep,Glob,TodoWrite,Skill,Bash(git status *),Bash(git diff *),Bash(git log *),Bash(git switch *),Bash(git add *),Bash(git commit *),Bash(git push *),Bash(gh issue create *),Bash(gh issue list *),Bash(gh pr create *),Bash(gh label create *),Bash(jq *),Bash(cat *),Bash(date *)"
           prompt: |
-            You are TRIAGING upstream changelog changes from ${{ needs.check-changelog.outputs.previous_version }} to ${{ needs.check-changelog.outputs.latest_version }}.
+            You are TRIAGING upstream changelog changes from ${{ needs.check-changelog.outputs.previous_version }} to ${{ needs.check-changelog.outputs.effective_latest }}.
 
             **Triage means: open a tracking issue, ratchet the JSON state file, and open one tiny PR for the JSON change. DO NOT edit rule files. DO NOT open multiple PRs. Rule edits happen in follow-up work driven by the tracking issue.**
 
@@ -410,6 +539,7 @@ jobs:
               ${{ needs.check-changelog.outputs.candidate_rules }}
               ```
 
+            - **Windowed run?** `${{ needs.check-changelog.outputs.windowed }}` — when `true`, this is a catch-up run: `${{ needs.check-changelog.outputs.total_new_versions }}` versions are outstanding in total, and the excerpt covers only the OLDEST slice of them, up to ${{ needs.check-changelog.outputs.effective_latest }}. Upstream is actually at ${{ needs.check-changelog.outputs.latest_version }}. Ratchet to ${{ needs.check-changelog.outputs.effective_latest }} and **only** to that — the next scheduled run picks up the rest. Say so in the issue body.
             - **Deprecated identifiers referenced in this repo's code**: `${{ needs.check-changelog.outputs.deprecated_tokens }}`
               (empty = none). When non-empty, these are upstream tools/settings that were deprecated/removed/renamed AND are still named in our skills, hooks, or agents — treat each as a **High-impact** item and call out the referencing file(s) from the candidate list. This is the miss class from claude-plugins#1638 (TaskOutput stayed referenced in bash-antipatterns.sh).
 
@@ -417,7 +547,8 @@ jobs:
 
             - Use `TodoWrite` once at the start to plan, then minimal narration.
             - Read `excerpt.md` once. Read `${{ inputs.version-file }}` once. **Do not read rule files** — that's apply-phase work.
-            - Never use `WebFetch` for the changelog or for live docs — the excerpt is the authoritative input.
+            - Never use `WebFetch` for the changelog or for live docs — the excerpt is the authoritative input. `WebFetch`/`WebSearch` are not in your tool allowlist; a denial there is expected and is not an error to work around.
+            - The labels in `${{ inputs.issue-labels }}` were provisioned by the gate job before you started — pass them to `gh issue create` as-is. If one is somehow still missing, `gh label create` it rather than dropping the flag.
             - If you misdiagnose your own work (e.g. think a branch is empty), STOP and re-check with `git diff` / `git log` before destructive recovery. A previous run wasted ~75 minutes self-correcting a false alarm.
 
             ## Step 1: Read inputs in parallel
@@ -442,11 +573,11 @@ jobs:
 
             ```bash
             gh issue create \
-              --title "Review Claude Code changelog: ${{ needs.check-changelog.outputs.previous_version }} → ${{ needs.check-changelog.outputs.latest_version }}" \
+              --title "Review Claude Code changelog: ${{ needs.check-changelog.outputs.previous_version }} → ${{ needs.check-changelog.outputs.effective_latest }}" \
               --label "${{ inputs.issue-labels }}" \
               --assignee "${{ inputs.issue-assignee || github.repository_owner }}" \
               --body "$(cat <<'EOF'
-            Triage of upstream changelog ${{ needs.check-changelog.outputs.previous_version }} → ${{ needs.check-changelog.outputs.latest_version }}.
+            Triage of upstream changelog ${{ needs.check-changelog.outputs.previous_version }} → ${{ needs.check-changelog.outputs.effective_latest }}.
 
             **Keyword counts on excerpt:** ${{ needs.check-changelog.outputs.changes_summary }}
             **Deprecated identifiers still referenced in repo code:** ${{ needs.check-changelog.outputs.deprecated_tokens }}
@@ -476,24 +607,24 @@ jobs:
             ## Step 4: Ratchet `${{ inputs.version-file }}`
 
             Edit in place:
-            - `lastCheckedVersion` = `${{ needs.check-changelog.outputs.latest_version }}`
+            - `lastCheckedVersion` = `${{ needs.check-changelog.outputs.effective_latest }}`
             - `lastCheckedDate` = today (YYYY-MM-DD)
             - Prepend a new entry to `reviewedChanges` with `version`, `date`, `relevantChanges` (array of headline bullets), `actionsRequired` (array referencing the issue number from Step 3 — e.g. `"See issue #N for rule update plan"`)
 
             ## Step 5: Branch, commit, push, JSON-only PR
 
             ```bash
-            BR="chore/changelog-triage-${{ needs.check-changelog.outputs.latest_version }}"
+            BR="chore/changelog-triage-${{ needs.check-changelog.outputs.effective_latest }}"
             git switch -c "$BR"
             git add ${{ inputs.version-file }}
             git status --short      # confirm only the JSON is staged
-            git commit -m "${{ inputs.commit-type-scope }}: ratchet changelog tracking to ${{ needs.check-changelog.outputs.latest_version }}"
+            git commit -m "${{ inputs.commit-type-scope }}: ratchet changelog tracking to ${{ needs.check-changelog.outputs.effective_latest }}"
             git push -u origin "$BR"
             gh pr create \
-              --title "${{ inputs.commit-type-scope }}: ratchet changelog tracking to ${{ needs.check-changelog.outputs.latest_version }}" \
+              --title "${{ inputs.commit-type-scope }}: ratchet changelog tracking to ${{ needs.check-changelog.outputs.effective_latest }}" \
               --label "${{ inputs.issue-labels }}" \
               --assignee "${{ inputs.issue-assignee || github.repository_owner }}" \
-              --body "Ratchets \`${{ inputs.version-file }}\` to ${{ needs.check-changelog.outputs.latest_version }}. Rule edits are tracked in the linked triage issue.
+              --body "Ratchets \`${{ inputs.version-file }}\` to ${{ needs.check-changelog.outputs.effective_latest }}. Rule edits are tracked in the linked triage issue.
 
             Refs the triage issue opened in Step 3."
             ```
@@ -511,31 +642,5 @@ jobs:
 
             - Follow the repo's conventional-commits rule (if present) only if you need to deviate from the commit format above.
             - Create new commits — never amend.
-          additional_permissions: |
-            Read
-            Write
-            Edit
-            Grep
-            Glob
-            TodoWrite
-            Bash(git status *)
-            Bash(git diff *)
-            Bash(git log *)
-            Bash(git show *)
-            Bash(git add *)
-            Bash(git commit *)
-            Bash(git push *)
-            Bash(git switch *)
-            Bash(git branch *)
-            Bash(gh pr *)
-            Bash(gh issue *)
-            Bash(gh api *)
-            Bash(gh label *)
-            Bash(jq *)
-            Bash(cat *)
-            Bash(grep *)
-            Bash(wc *)
-            Bash(awk *)
-            Bash(date *)
           plugin_marketplaces: ${{ inputs.plugin-marketplaces }}
           plugins: ${{ inputs.plugins }}
