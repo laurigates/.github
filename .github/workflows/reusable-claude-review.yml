@@ -53,8 +53,26 @@ on:
         required: false
         type: number
         default: 30
+      allowed_tools:
+        description: >-
+          Comma-separated tools passed to --allowedTools, added to the action's own
+          defaults. Review is read-only work, so the default grants exploration,
+          read-only git, and `gh pr` — no Write/Edit, no push. This list USED to sit
+          in `additional_permissions`, where it was inert — see the comment at the
+          action step.
+        required: false
+        type: string
+        default: 'Read,Grep,Glob,Task,Agent,TodoWrite,Bash(git status *),Bash(git diff *),Bash(git log *),Bash(git show *),Bash(gh pr *)'
+      additional_allowed_tools:
+        description: 'Extra comma-separated tools appended to allowed_tools (replaces the old tool-list use of additional_permissions)'
+        required: false
+        type: string
+        default: ''
       additional_permissions:
-        description: 'Additional tool permissions for Claude Code'
+        description: >-
+          GitHub permissions map forwarded to the action, as "key: value" lines
+          (e.g. "actions: read" — note the job grants no actions scope by default).
+          NOT a Claude tool list — that is allowed_tools / additional_allowed_tools.
         required: false
         type: string
         default: ''
@@ -110,18 +128,24 @@ jobs:
 
             IMPORTANT: Use built-in tools (Read, Grep, Glob) for file exploration.
             Do NOT use Bash for find/grep operations - use the dedicated tools instead.' }}
-          claude_args: ${{ inputs.claude_args }}
-          additional_permissions: |
-            Read
-            Grep
-            Glob
-            Task
-            TodoWrite
-            Bash(git status *)
-            Bash(git diff *)
-            Bash(git log *)
-            Bash(git show *)
-            Bash(gh pr *)
-            ${{ inputs.additional_permissions }}
+          # The tool boundary belongs in `--allowedTools`. It used to sit in
+          # `additional_permissions:`, but that input takes a GitHub permissions
+          # MAP ("actions: read"), not a Claude tool list, so the list was inert.
+          # Review survived on the action's default policy where the triage and
+          # auto-fix workflows did not — those need `gh`/`git` writes, and the SDK
+          # exits 0 on a permission denial, so they went green having done nothing.
+          # Converted here too so the declaration matches what is actually granted.
+          #
+          # --allowedTools is ADDITIVE over the action's defaults, so this widens
+          # rather than restricts. `allowed_tools` is a separate input from
+          # `claude_args` on purpose: a caller overriding claude_args must not
+          # silently drop the tool grant.
+          claude_args: >-
+            ${{ inputs.claude_args }}
+            --allowedTools "${{ inputs.allowed_tools }}${{ inputs.additional_allowed_tools && format(',{0}', inputs.additional_allowed_tools) || '' }}"
+          # A real GitHub permissions map now — pass-through only. This job's
+          # `permissions:` grants no `actions` scope, so a caller wanting Claude
+          # to read CI results must widen both.
+          additional_permissions: ${{ inputs.additional_permissions }}
           plugins: ${{ inputs.plugins }}
           plugin_marketplaces: ${{ inputs.plugin_marketplaces }}

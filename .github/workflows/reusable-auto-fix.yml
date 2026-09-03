@@ -99,8 +99,26 @@ on:
         required: false
         type: number
         default: 30
+      allowed_tools:
+        description: >-
+          Comma-separated tools passed to --allowedTools, added to the action's own
+          defaults. The default covers exactly what the prompt runs: read/edit, the
+          git commit-and-push path, and the gh calls for PR comments and issue
+          creation. This list USED to sit in `additional_permissions`, where it was
+          inert — see the comment at the action step.
+        required: false
+        type: string
+        default: 'Read,Write,Edit,Grep,Glob,Task,Agent,TodoWrite,Bash(git status *),Bash(git diff *),Bash(git log *),Bash(git show *),Bash(git add *),Bash(git commit *),Bash(git push *),Bash(git checkout *),Bash(git branch *),Bash(gh pr *),Bash(gh issue *),Bash(gh run *)'
+      additional_allowed_tools:
+        description: 'Extra comma-separated tools appended to allowed_tools (replaces the old tool-list use of additional_permissions)'
+        required: false
+        type: string
+        default: ''
       additional_permissions:
-        description: 'Additional tool permissions for Claude Code'
+        description: >-
+          GitHub permissions map forwarded to the action, as "key: value" lines
+          (e.g. "actions: read"). NOT a Claude tool list — that is allowed_tools /
+          additional_allowed_tools.
         required: false
         type: string
         default: ''
@@ -209,7 +227,27 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           allowed_bots: "claude[bot],claude"
-          claude_args: ${{ inputs.claude_args }}
+          # The tool boundary belongs in `--allowedTools`. It used to sit in
+          # `additional_permissions:`, but that input takes a GitHub permissions
+          # MAP ("actions: read"), not a Claude tool list — so the list was inert,
+          # the action's default policy denied the `git commit`/`git push` and
+          # `gh issue create` this prompt exists to run, and the SDK EXITS 0 on a
+          # permission denial. A run therefore went green having fixed nothing.
+          # Same defect, same fix as reusable-changelog-review.yml; the shape here
+          # mirrors reusable-claude.yml, which had it right all along.
+          #
+          # --allowedTools is ADDITIVE over the action's defaults, so this widens
+          # rather than restricts. `allowed_tools` is a separate input from
+          # `claude_args` on purpose: a caller overriding claude_args (to change
+          # --model or --max-turns) must not silently drop the tool grant.
+          #
+          # Task and Agent are both listed: Agent is the current subagent tool,
+          # Task the legacy name, and an unmatched name is simply never used.
+          # Naming TodoWrite is a real grant — since 2.1.233 the todo/task tools
+          # are off by default on current models and listing one is the opt-in.
+          claude_args: >-
+            ${{ inputs.claude_args }}
+            --allowedTools "${{ inputs.allowed_tools }}${{ inputs.additional_allowed_tools && format(',{0}', inputs.additional_allowed_tools) || '' }}"
           prompt: |
             A GitHub Actions workflow has failed on branch `${{ inputs.branch }}`.
             Your job is to analyze the failure, determine if it can be auto-fixed, and either fix it or open an issue.
@@ -270,26 +308,11 @@ jobs:
             - Only fix issues directly related to the CI failure
             - Do not make unrelated improvements or refactoring
             - If unsure whether something is fixable, err on the side of opening an issue
+          # A real GitHub permissions map now. `actions: read` is what lets
+          # Claude read CI results — the whole point of this workflow — and the
+          # job-level `permissions:` above already grants it.
           additional_permissions: |
-            Read
-            Write
-            Edit
-            Grep
-            Glob
-            Task
-            TodoWrite
-            Bash(git status *)
-            Bash(git diff *)
-            Bash(git log *)
-            Bash(git show *)
-            Bash(git add *)
-            Bash(git commit *)
-            Bash(git push *)
-            Bash(git checkout *)
-            Bash(git branch *)
-            Bash(gh pr *)
-            Bash(gh issue *)
-            Bash(gh run *)
+            actions: read
             ${{ inputs.additional_permissions }}
           plugins: ${{ inputs.plugins }}
           plugin_marketplaces: ${{ inputs.plugin_marketplaces }}

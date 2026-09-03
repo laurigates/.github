@@ -43,7 +43,11 @@ on:
         type: number
         default: 45
       additional_permissions:
-        description: 'Additional tool permissions for Claude Code'
+        description: >-
+          GitHub permissions map forwarded to the action, as "key: value" lines
+          (e.g. "actions: read"). NOT a Claude tool list — that is allowed_tools.
+          Putting a tool list here is silently inert; it is what broke
+          reusable-changelog-review.yml and reusable-auto-fix.yml.
         required: false
         type: string
         default: ''
