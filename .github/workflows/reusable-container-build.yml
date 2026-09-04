@@ -49,6 +49,34 @@ on:
         required: false
         type: string
         default: "jq -r '.version' package.json"
+      scan-mode:
+        description: |
+          'advisory' (default): scan the pushed :next-{version} image and
+          annotate the release PR, never failing it. 'block': fail the PR check
+          on findings. 'off': skip the scan. Default is advisory on purpose — a
+          CVE published against an unchanged base image would otherwise block
+          every unrelated release with no code fix available. The authoritative
+          gate lives in reusable-container-release.yml, which re-scans the same
+          bytes immediately before creating any release tag and also covers the
+          rebuild path this workflow cannot see.
+        required: false
+        type: string
+        default: 'advisory'
+      scan-severity:
+        description: 'Trivy severity levels that constitute a finding'
+        required: false
+        type: string
+        default: 'CRITICAL,HIGH'
+      scan-ignore-unfixed:
+        description: 'Ignore findings with no fix available'
+        required: false
+        type: boolean
+        default: true
+      scan-trivy-version:
+        description: 'Trivy binary version used by the advisory scan'
+        required: false
+        type: string
+        default: 'v0.70.0'
     secrets:
       secret-build-args:
         description: |
@@ -83,6 +111,25 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Fails on a bad configuration before a build is paid for. Necessary
+      # because the two expressions that consume scan-mode fail in opposite
+      # directions: `if: inputs.scan-mode != 'off'` still runs the scan for an
+      # unrecognised value, but `continue-on-error: ${{ inputs.scan-mode !=
+      # 'block' }}` soft-fails it — so a caller writing `blocking`, `enforce` or
+      # `true` would get an advisory check with no signal that the enforcement
+      # they asked for was discarded.
+      - name: Validate scan configuration
+        env:
+          MODE: ${{ inputs.scan-mode }}
+          SEVERITY: ${{ inputs.scan-severity }}
+        run: |
+          set -euo pipefail
+          case "$MODE" in
+            advisory|block|off) ;;
+            *) echo "::error::scan-mode must be 'advisory', 'block' or 'off', got '${MODE}'. Refusing to build under a scan mode this workflow does not understand."; exit 1 ;;
+          esac
+          [ -n "$SEVERITY" ] || { echo "::error::scan-severity must not be empty"; exit 1; }
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
@@ -147,10 +194,45 @@ jobs:
           provenance: false
           sbom: false
 
+      # Scanned by digest, not by tag: two runs can race on :next-{version}
+      # (release-please's push and a relock run, which is why the caller carries
+      # a concurrency group), so scanning the tag could report on the other
+      # run's image.
+      - name: Scan pre-release image (advisory)
+        id: scan
+        if: inputs.scan-mode != 'off'
+        continue-on-error: ${{ inputs.scan-mode != 'block' }}
+        uses: laurigates/.github/.github/actions/scan-image@main
+        with:
+          image: ghcr.io/${{ inputs.image-name }}@${{ steps.build-push.outputs.digest }}
+          severity: ${{ inputs.scan-severity }}
+          ignore-unfixed: ${{ inputs.scan-ignore-unfixed }}
+          trivy-version: ${{ inputs.scan-trivy-version }}
+          registry-username: ${{ github.actor }}
+          registry-password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Job summary
         if: always()
+        env:
+          SCAN_MODE: ${{ inputs.scan-mode }}
+          SCAN_RESULT: ${{ steps.scan.outputs.result }}
+          SCAN_PLATFORMS: ${{ steps.scan.outputs.platforms-scanned }}
+          SCAN_OUTCOME: ${{ steps.scan.outcome }}
         run: |
           echo "## Container Build: \`${{ inputs.image-name }}\` (PR pre-release)" >> $GITHUB_STEP_SUMMARY
           echo "- **Image**: \`${{ steps.tag.outputs.pre-release-tag }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Digest**: \`${{ steps.build-push.outputs.digest }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Purpose**: Pre-built for promotion on merge — no rebuild needed after tag push" >> $GITHUB_STEP_SUMMARY
+          # The mode is printed unconditionally so a skipped scan is visible
+          # rather than looking like a pass.
+          echo "- **Scan**: mode \`${SCAN_MODE}\`, result \`${SCAN_RESULT:-not-run}\` (${SCAN_PLATFORMS:-0} platform manifest(s))" >> $GITHUB_STEP_SUMMARY
+          # Discriminated on the composite's `result`, not on the step outcome:
+          # the scan step also fails when Trivy itself fails (DB pull, network),
+          # and calling that "findings" sends the operator to `.trivyignore` for
+          # a broken scanner. Same reasoning as the warn-mode step in
+          # reusable-container-release.yml.
+          if [ "${SCAN_RESULT:-}" = "findings" ]; then
+            echo "  - Findings present. The release job will refuse to publish this image unless they are fixed, \`.trivyignore\`d, or \`scan-enforcement: warn\` is set there." >> $GITHUB_STEP_SUMMARY
+          elif [ "${SCAN_OUTCOME:-}" = "failure" ]; then
+            echo "  - The scan did not complete — read the scan step's log. This is a scanner failure, not a vulnerability report." >> $GITHUB_STEP_SUMMARY
+          fi

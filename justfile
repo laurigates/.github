@@ -85,7 +85,7 @@ upstream-changes days="14":
 leak-check:
     #!/usr/bin/env bash
     set -euo pipefail
-    paths=(.github/workflows)
+    paths=(.github/workflows .github/actions)
     [[ -f rulesync.jsonc ]] && paths+=(rulesync.jsonc)
     [[ -d .rulesync ]] && paths+=(.rulesync)
     if rg -in 'fvh|forumvirium' "${paths[@]}"; then
@@ -105,16 +105,21 @@ lint:
     #!/usr/bin/env bash
     set -euo pipefail
     errors=0
+    shopt -s nullglob
     # yq, not `python3 -c "import yaml"`: the CI job runs on ubuntu-slim, which
     # ships yq but no PyYAML, so the Python form passes here and fails there.
-    for f in .github/workflows/*.yml; do
+    # Composite actions are shipped from this repo too and are consumed by the
+    # reusable workflows, so they belong in the same syntax gate. actionlint
+    # below only understands workflow files, hence the separate YAML pass.
+    for f in .github/workflows/*.yml .github/actions/*/action.yml; do
         if ! yq -e 'tag == "!!map"' "$f" >/dev/null; then
             echo "INVALID: $f"
             errors=$((errors + 1))
         fi
     done
+    shopt -u nullglob
     if [[ $errors -eq 0 ]]; then
-        echo "All workflow files are valid YAML."
+        echo "All workflow and action files are valid YAML."
     else
         echo "$errors file(s) have YAML errors."
         exit 1

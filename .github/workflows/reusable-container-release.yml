@@ -63,10 +63,34 @@ on:
         type: string
         default: 'app'
       scan-severity:
-        description: 'Trivy severity levels to report'
+        description: 'Trivy severity levels that block publication'
         required: false
         type: string
         default: 'CRITICAL,HIGH'
+      scan-ignore-unfixed:
+        description: >
+          Ignore findings with no fix available. Default true: the Debian base
+          carries unfixable CRITICALs, and an unsatisfiable gate is one nobody
+          reads. Load-bearing now that the gate blocks publication.
+        required: false
+        type: boolean
+        default: true
+      scan-trivy-version:
+        description: 'Trivy binary version used by the gate'
+        required: false
+        type: string
+        default: 'v0.70.0'
+      scan-enforcement:
+        description: |
+          'block' (default): actionable findings stop publication — no release
+          tag is created. 'warn': publish the release tags, then fail the job,
+          which reproduces the pre-gate behaviour exactly. Any other value is a
+          hard error; an unrecognised enforcement mode must never fall through
+          to permissive. Prefer a reviewed `.trivyignore` at the repo root
+          (honoured — this job checks out the release commit) over 'warn'.
+        required: false
+        type: string
+        default: 'block'
       enable-signing:
         description: 'Sign release images with cosign (keyless/Sigstore)'
         required: false
@@ -114,6 +138,12 @@ on:
       signed:
         description: 'true if signed with cosign'
         value: ${{ jobs.release.outputs.signed }}
+      digest:
+        description: 'Digest of the published release image'
+        value: ${{ jobs.release.outputs.digest }}
+      scan-result:
+        description: 'clean | findings'
+        value: ${{ jobs.release.outputs.scan-result }}
 
 permissions:
   contents: read
@@ -129,9 +159,24 @@ jobs:
       tags: ${{ steps.meta.outputs.tags }}
       promoted: ${{ steps.pr-image.outputs.exists == 'true' && steps.freshness.outputs.stale != 'true' }}
       signed: ${{ steps.cosign-sign.outputs.signed }}
+      digest: ${{ steps.candidate.outputs.digest }}
+      scan-result: ${{ steps.scan.outputs.result }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Fails on a bad configuration before a build is paid for.
+      - name: Validate scan configuration
+        env:
+          MODE: ${{ inputs.scan-enforcement }}
+          SEVERITY: ${{ inputs.scan-severity }}
+        run: |
+          set -euo pipefail
+          case "$MODE" in
+            block|warn) ;;
+            *) echo "::error::scan-enforcement must be 'block' or 'warn', got '${MODE}'. Refusing to publish under an enforcement mode this workflow does not understand."; exit 1 ;;
+          esac
+          [ -n "$SEVERITY" ] || { echo "::error::scan-severity must not be empty"; exit 1; }
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
@@ -160,10 +205,17 @@ jobs:
       # pushing :next-{version} (issue #51), so a bare existence check reads a
       # race as absence and rebuilds. Wait — but only while there is evidence
       # the build is still coming, and never longer than the ceiling.
+      #
+      # The probe resolves a DIGEST, not just a yes/no. This step is the only
+      # read of the mutable :next-{version} tag in the whole job: freshness, the
+      # scan and publication all operate on the digest, so a concurrent PR-phase
+      # build overwriting the tag mid-job cannot make the thing we validated
+      # differ from the thing we publish.
       - name: Wait for and check the pre-built PR image in GHCR
         id: pr-image
         env:
           PR_IMAGE: ${{ steps.version.outputs.next_image }}
+          IMAGE_NAME: ${{ inputs.image-name }}
           WAIT_CEILING: ${{ inputs.promote-wait-seconds }}
           BUILD_WORKFLOW: ${{ inputs.build-workflow }}
           REPO: ${{ github.repository }}
@@ -182,10 +234,21 @@ jobs:
           fi
           started=$(date +%s)
           matched=0; total=0; gate="not-evaluated"
+          PROBE_DIGEST=""
 
+          # On the found path `image` is the digest-pinned reference the probe resolved,
+          # so freshness, the scan and publication all address exactly the manifest that
+          # was inspected — a concurrent PR-phase build moving :next-{version} afterwards
+          # cannot change what ships. On the not-found path it stays the tag, which is
+          # only ever used in log messages from there on.
           emit() {
             { echo "exists=$1"
-              echo "image=${PR_IMAGE}"
+              if [ "$1" = "true" ]; then
+                echo "digest=${PROBE_DIGEST}"
+                echo "image=ghcr.io/${IMAGE_NAME}@${PROBE_DIGEST}"
+              else
+                echo "image=${PR_IMAGE}"
+              fi
               echo "waited=$(( $(date +%s) - started ))"
               echo "wait_gate=${gate}"
             } >> "$GITHUB_OUTPUT"
@@ -193,7 +256,25 @@ jobs:
 
           # One probe. Any non-zero is treated as "not there yet"; stderr is kept so a
           # transient registry error is diagnosable rather than silently read as absence.
-          probe() { PROBE_ERR=$(docker manifest inspect "$PR_IMAGE" 2>&1 >/dev/null); }
+          # A successful probe also resolves the digest, so nothing downstream re-reads
+          # the tag. `--format '{{.Manifest.Digest}}'` has no .Digest field on an OCI
+          # index and emits multi-line output that breaks $GITHUB_OUTPUT parsing; the
+          # text output carries one unindented top-level "Digest:" line. An inspect that
+          # succeeds without one yields no candidate, so it counts as "not there yet".
+          probe() {
+            local out err rc
+            err=$(mktemp)
+            out=$(docker buildx imagetools inspect "$PR_IMAGE" 2>"$err")
+            rc=$?
+            PROBE_ERR=$(cat "$err"); rm -f "$err"
+            [ "$rc" -eq 0 ] || return 1
+            PROBE_DIGEST=$(printf '%s\n' "$out" | grep -m1 '^Digest:' | awk '{print $2}')
+            if [ -z "$PROBE_DIGEST" ]; then
+              PROBE_ERR="inspect succeeded but returned no top-level 'Digest:' line"
+              return 1
+            fi
+            return 0
+          }
 
           # Three probes ~3s apart. A single inspect cannot tell "manifest unknown" from a
           # GHCR 5xx or an auth blip, and the shape this replaced read both as absence.
@@ -251,7 +332,7 @@ jobs:
 
           # ---- Fast path: the image is normally already there, and this costs nothing.
           if probe; then
-            echo "PR image found — will check freshness before promoting"
+            echo "PR image found at ${PROBE_DIGEST} — will check freshness before promoting"
             gate="not-needed"; emit true; exit 0
           fi
 
@@ -312,7 +393,7 @@ jobs:
           while [ "$(date +%s)" -lt "$deadline" ]; do
             sleep "$POLL_INTERVAL"
             if probe; then
-              echo "PR image appeared after $(( $(date +%s) - started ))s — will check freshness before promoting"
+              echo "PR image appeared at ${PROBE_DIGEST} after $(( $(date +%s) - started ))s — will check freshness before promoting"
               emit true; exit 0
             fi
             if ! $COUNTER; then break; fi
@@ -332,6 +413,24 @@ jobs:
           echo "::warning::Pre-built PR image ${PR_IMAGE} did not appear after $(( $(date +%s) - started ))s — falling back to full rebuild"
           emit false
 
+      # Hoisted out of the freshness step so the fallback rebuild can stamp the
+      # same label onto the candidate it pushes. Without it a rebuilt
+      # :next-{version} is unlabelled, and a re-run of this job reads it as
+      # stale — silently degrading every retry to a second full build.
+      - name: Compute release build context tree hash
+        id: release-tree
+        env:
+          CONTEXT: ${{ inputs.context }}
+        run: |
+          set -euo pipefail
+          if [ -z "$CONTEXT" ] || [ "$CONTEXT" = "." ]; then
+            TREE=$(git rev-parse "HEAD^{tree}")
+          else
+            TREE=$(git rev-parse "HEAD:${CONTEXT}")
+          fi
+          echo "hash=${TREE}" >> "$GITHUB_OUTPUT"
+          echo "Release commit context tree: ${TREE}"
+
       # Guard against the build-once/promote race: if main moved forward between
       # the PR image being built and the release tag being pushed, the cached
       # PR image is stale and would silently ship the wrong code. We compare the
@@ -342,7 +441,7 @@ jobs:
         if: steps.pr-image.outputs.exists == 'true'
         env:
           PR_IMAGE: ${{ steps.pr-image.outputs.image }}
-          CONTEXT: ${{ inputs.context }}
+          RELEASE_TREE: ${{ steps.release-tree.outputs.hash }}
         run: |
           set -euo pipefail
           # A bare assignment here fails the whole release job on a transient GHCR
@@ -392,11 +491,6 @@ jobs:
             echo "stale=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if [ -z "$CONTEXT" ] || [ "$CONTEXT" = "." ]; then
-            RELEASE_TREE=$(git rev-parse "HEAD^{tree}")
-          else
-            RELEASE_TREE=$(git rev-parse "HEAD:${CONTEXT}")
-          fi
           echo "PR image build context tree: ${PR_TREE}"
           echo "Release commit context tree: ${RELEASE_TREE}"
           if [ "$PR_TREE" = "$RELEASE_TREE" ]; then
@@ -421,23 +515,17 @@ jobs:
             type=match,pattern=.*-v(\d+\.\d+),group=1
             type=match,pattern=.*-v(\d+),group=1
 
-      # ---- Fast path: promote the pre-built PR image -------------------------
-      # Manifest-only retag: no layer re-upload, completes in seconds.
-      - name: Promote PR image to release tags
-        if: steps.pr-image.outputs.exists == 'true' && steps.freshness.outputs.stale != 'true'
-        run: |
-          SOURCE="${{ steps.pr-image.outputs.image }}"
-          TAG_ARGS=()
-          while IFS= read -r tag; do
-            [[ -n "$tag" ]] && TAG_ARGS+=(--tag "$tag")
-          done <<< "${{ steps.meta.outputs.tags }}"
-          echo "Promoting ${SOURCE} to ${#TAG_ARGS[@]} tags..."
-          docker buildx imagetools create "${TAG_ARGS[@]}" "$SOURCE"
-
-      # ---- Slow path: full rebuild (fallback) --------------------------------
-      # Reached when the :next-{version} image is not in GHCR, or when its
-      # build-context tree no longer matches the release commit.
-      - name: Build and push (fallback — PR image missing or stale)
+      # ---- Candidate production ---------------------------------------------
+      # Both paths converge on ONE digest, which is scanned and then retagged.
+      # Nothing between the gate and publication re-reads a tag.
+      #
+      # The rebuild pushes to :next-{version} rather than to a new staging tag.
+      # GITHUB_TOKEN cannot delete package versions (that needs a PAT with
+      # delete:packages, and this workflow's permissions block has no route to
+      # one), so a new tag class would have no cleanup path at all. This tag is
+      # already in the pattern, and in the two cases that reach this step it is
+      # either absent or holds content the freshness check has rejected.
+      - name: Build and push release candidate (PR image missing or stale)
         id: build-push
         if: steps.pr-image.outputs.exists != 'true' || steps.freshness.outputs.stale == 'true'
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
@@ -446,8 +534,13 @@ jobs:
           file: ${{ inputs.dockerfile }}
           platforms: ${{ inputs.platforms }}
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          # Candidate only. Release tags are applied by the publish step, after
+          # the scan. Pushing meta.outputs.tags here is what made the scan
+          # unable to gate anything.
+          tags: ${{ steps.version.outputs.next_image }}
+          labels: |
+            ${{ steps.meta.outputs.labels }}
+            io.github.laurigates.build.context-tree=${{ steps.release-tree.outputs.hash }}
           build-args: |
             COMMIT_SHA=${{ github.sha }}
             GIT_BRANCH=${{ github.ref_name }}
@@ -458,76 +551,174 @@ jobs:
           provenance: mode=max
           sbom: true
 
+      # No `if:`, on purpose. Every step below keys off this output; if neither
+      # path produced a candidate the job dies here rather than letting the scan
+      # run against an empty reference and report a pass it never earned.
+      #
+      # The rebuild digest comes from the action's own output, never from
+      # re-reading :next-{version} — a concurrent PR-phase build can overwrite
+      # that tag between the push and the read.
+      - name: Resolve release candidate
+        id: candidate
+        env:
+          REBUILD_DIGEST: ${{ steps.build-push.outputs.digest }}
+          PROMOTE_DIGEST: ${{ steps.pr-image.outputs.digest }}
+          IMAGE_NAME: ${{ inputs.image-name }}
+        run: |
+          set -euo pipefail
+          DIGEST="${REBUILD_DIGEST:-$PROMOTE_DIGEST}"
+          if [ -z "${DIGEST}" ]; then
+            echo "::error::Neither the promote nor the rebuild path produced a candidate digest. Refusing to publish an unscanned release."
+            exit 1
+          fi
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "ref=ghcr.io/${IMAGE_NAME}@${DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "Release candidate: ghcr.io/${IMAGE_NAME}@${DIGEST}"
+
+      # ---- The gate ----------------------------------------------------------
+      # No `if:`. Runs on BOTH paths, against the candidate digest, before any
+      # release tag exists. Multi-platform callers work unchanged: Trivy reads
+      # the reference from the registry, so the multi-arch `load:` constraint
+      # that applies to docker/build-push-action does not apply here — and the
+      # action enumerates platform manifests from the index rather than trusting
+      # inputs.platforms, so coverage is a property of the artifact.
+      #
+      # continue-on-error is computed fail-closed: anything that is not exactly
+      # 'warn' blocks. The validation step above has already rejected
+      # unrecognised values loudly.
+      - name: Scan release candidate (gate)
+        id: scan
+        continue-on-error: ${{ inputs.scan-enforcement == 'warn' }}
+        uses: laurigates/.github/.github/actions/scan-image@main
+        with:
+          image: ${{ steps.candidate.outputs.ref }}
+          severity: ${{ inputs.scan-severity }}
+          ignore-unfixed: ${{ inputs.scan-ignore-unfixed }}
+          trivy-version: ${{ inputs.scan-trivy-version }}
+          registry-username: ${{ github.actor }}
+          registry-password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ---- Publication -------------------------------------------------------
+      # The ONLY step that creates a release tag, and it has no `if:`. Manifest-
+      # only retag from the scanned digest — not from the mutable :next tag,
+      # which could have moved. Identical for both paths.
+      - name: Publish release tags
+        env:
+          SOURCE: ${{ steps.candidate.outputs.ref }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+          MODE: ${{ inputs.scan-enforcement }}
+          PLATFORMS_SCANNED: ${{ steps.scan.outputs.platforms-scanned }}
+        run: |
+          set -euo pipefail
+          # A gate whose coverage count is missing has not demonstrably run.
+          # In warn mode the gate is deliberately off, so the assert is skipped.
+          if [ "$MODE" = "block" ] && [ "${PLATFORMS_SCANNED:-0}" -lt 1 ]; then
+            echo "::error::The scan reported no platforms-scanned. Refusing to publish."
+            exit 1
+          fi
+          TAG_ARGS=()
+          while IFS= read -r tag; do
+            [ -n "$tag" ] && TAG_ARGS+=(--tag "$tag")
+          done <<< "$TAGS"
+          if [ "${#TAG_ARGS[@]}" -eq 0 ]; then
+            echo "::error::metadata-action produced no tags for ref '${GITHUB_REF}' — nothing to publish."
+            exit 1
+          fi
+          echo "Publishing ${SOURCE} to ${#TAG_ARGS[@]} tag(s)..."
+          docker buildx imagetools create "${TAG_ARGS[@]}" "$SOURCE"
+
+      # buildx re-assembles the index on `imagetools create`. If it did not
+      # reproduce the source content, the published tags would resolve to a
+      # different digest and the gate would have been about a different image.
+      # Assert it rather than assume it — this doubles as proof that the
+      # provenance/SBOM attestations attached on the rebuild path survived the
+      # retag. Every tag, not just the first: metadata-action's flavor.latest
+      # default emits `:latest` on a non-prerelease semver ref, and that tag
+      # appears nowhere in the `tags:` input list above.
+      - name: Verify every published tag resolves to the scanned digest
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          EXPECTED: ${{ steps.candidate.outputs.digest }}
+        run: |
+          set -euo pipefail
+          CHECKED=0
+          while IFS= read -r tag; do
+            [ -n "$tag" ] || continue
+            GOT=$(docker buildx imagetools inspect "$tag" | grep -m1 '^Digest:' | awk '{print $2}')
+            if [ "$GOT" != "$EXPECTED" ]; then
+              echo "::error::${tag} resolves to ${GOT:-<nothing>}, not the scanned digest ${EXPECTED} — the gate did not cover what shipped"
+              exit 1
+            fi
+            CHECKED=$((CHECKED + 1))
+            echo "ok: ${tag} -> ${EXPECTED}"
+          done <<< "$TAGS"
+          [ "$CHECKED" -gt 0 ] || { echo "::error::Verified 0 tags"; exit 1; }
+
       # ---- Container signing (keyless / Sigstore) -----------------------------
+      # After the gate, not before it. The previous ordering signed and
+      # published an image the very next step could condemn.
       - name: Install cosign
         if: inputs.enable-signing
         uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad # v4.0.0
-
-      - name: Capture release image digest
-        if: inputs.enable-signing
-        id: release-digest
-        run: |
-          FIRST_TAG=$(echo '${{ steps.meta.outputs.tags }}' | head -n1)
-          # Extract the top-level digest from imagetools inspect text output.
-          # --format '{{.Manifest.Digest}}' fails for OCI index/manifest list
-          # types (no .Digest field), producing multi-line output that breaks
-          # $GITHUB_OUTPUT parsing. The text output has a top-level
-          # "Digest: sha256:..." line (unindented, unlike sub-manifest lines).
-          DIGEST=$(docker buildx imagetools inspect "${FIRST_TAG}" | grep -m1 '^Digest:' | awk '{print $2}')
-          if [ -z "${DIGEST}" ]; then
-            echo "::error::Failed to extract digest from imagetools inspect output"
-            exit 1
-          fi
-          echo "digest=${DIGEST}" >> $GITHUB_OUTPUT
-          echo "image=ghcr.io/${{ inputs.image-name }}@${DIGEST}" >> $GITHUB_OUTPUT
 
       - name: Sign release image with cosign (keyless)
         if: inputs.enable-signing
         id: cosign-sign
         env:
           COSIGN_YES: "true"
+          TARGET: ${{ steps.candidate.outputs.ref }}
         run: |
-          cosign sign "${{ steps.release-digest.outputs.image }}"
-          echo "signed=true" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          cosign sign "$TARGET"
+          echo "signed=true" >> "$GITHUB_OUTPUT"
 
-      # `version` is pinned explicitly rather than left to the action's default.
-      # trivy-action 0.34.0 defaulted to Trivy v0.69.1, which exists as a git
-      # tag but has no GitHub release and therefore no downloadable asset — so
-      # setup-trivy's install script resolved the tag, failed to fetch the
-      # binary, and exited 1 before any scan ran. Every release job using this
-      # workflow went red on a scan that never executed. An upstream default is
-      # a value someone else can withdraw; state the version here so a repeat
-      # is a bump we make, not a break we inherit.
-      - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          image-ref: ghcr.io/${{ inputs.image-name }}:${{ steps.meta.outputs.version }}
-          version: 'v0.70.0'
-          format: 'table'
-          severity: ${{ inputs.scan-severity }}
-          # Report only what someone can act on. The Debian base carries
-          # CRITICALs with no fix available (perl-base, among others); failing
-          # the release on those makes the gate unsatisfiable, and an
-          # unsatisfiable gate is one nobody reads.
-          ignore-unfixed: true
-          # Without this the action leaves TRIVY_EXIT_CODE unset and Trivy exits
-          # 0, so findings are printed and nothing acts on them. This step runs
-          # after the image is pushed, so a failure here marks the release
-          # rather than preventing publication — the blocking gate belongs in
-          # the PR-phase build, before a vulnerable image is ever tagged.
-          exit-code: '1'
+      # Opting out of the gate must not also drop the signal. In warn mode the
+      # scan is soft-failed above so publication proceeds; this reproduces the
+      # pre-gate outcome exactly — release tags published, job red — rather than
+      # letting continue-on-error swallow the failure into a green run.
+      #
+      # `outcome == 'failure'` alone does not say WHY the scan step failed: the
+      # composite exits 1 on findings but exits Trivy's own rc when Trivy itself
+      # fails (DB pull, network), and that second case publishes an image no
+      # platform was examined on. Naming CVEs there sends the operator to
+      # `.trivyignore` for a broken DB pull, so discriminate on the composite's
+      # `result` output instead and only claim findings when it says findings.
+      - name: Fail the release on scan findings (warn mode)
+        if: ${{ inputs.scan-enforcement == 'warn' && steps.scan.outcome == 'failure' }}
+        env:
+          SEVERITY: ${{ inputs.scan-severity }}
+          TARGET: ${{ steps.candidate.outputs.ref }}
+          RESULT: ${{ steps.scan.outputs.result }}
+          PLATFORMS: ${{ steps.scan.outputs.platforms-scanned }}
+        run: |
+          if [ "${RESULT:-}" = "findings" ]; then
+            echo "::error::Trivy reported ${SEVERITY} findings in ${TARGET}. Release tags were published because scan-enforcement is 'warn'."
+          else
+            echo "::error::The scan did not report a completed result (result='${RESULT:-none}', platforms scanned=${PLATFORMS:-0}) — read the scan step's log before treating this as a vulnerability report. Release tags for ${TARGET} were published unscanned because scan-enforcement is 'warn'."
+          fi
+          exit 1
 
       - name: Job summary
         if: always()
+        env:
+          SCAN_RESULT: ${{ steps.scan.outputs.result }}
+          SCAN_PLATFORMS: ${{ steps.scan.outputs.platforms-scanned }}
+          SCAN_SEVERITY: ${{ inputs.scan-severity }}
+          SCAN_IGNORE_UNFIXED: ${{ inputs.scan-ignore-unfixed }}
+          SCAN_ENFORCEMENT: ${{ inputs.scan-enforcement }}
         run: |
           PR_IMAGE_EXISTS="${{ steps.pr-image.outputs.exists }}"
           STALE="${{ steps.freshness.outputs.stale }}"
           SIGNED="${{ steps.cosign-sign.outputs.signed }}"
-          DIGEST="${{ steps.release-digest.outputs.digest }}"
+          DIGEST="${{ steps.candidate.outputs.digest }}"
           WAITED="${{ steps.pr-image.outputs.waited }}"
           GATE="${{ steps.pr-image.outputs.wait_gate }}"
           echo "## Container Release: \`${{ inputs.image-name }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Version**: \`${{ steps.meta.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Scan**: \`${SCAN_RESULT:-did-not-complete}\` — ${SCAN_PLATFORMS:-0} platform manifest(s), severity \`${SCAN_SEVERITY}\`, ignore-unfixed=${SCAN_IGNORE_UNFIXED}, enforcement=\`${SCAN_ENFORCEMENT}\`" >> $GITHUB_STEP_SUMMARY
+          if [ "${SCAN_RESULT:-}" = "findings" ] && [ "$SCAN_ENFORCEMENT" = "block" ]; then
+            echo "- **Publication**: BLOCKED — no release tag was created. The git tag and GitHub Release still exist; \`${{ steps.version.outputs.next_image }}\` remains as the only image reference. Fix the finding or add a reviewed \`.trivyignore\`, then re-run this job." >> $GITHUB_STEP_SUMMARY
+          fi
           if [ "$PR_IMAGE_EXISTS" = "true" ] && [ "$STALE" != "true" ]; then
             echo "- **Method**: Promoted from pre-built PR image (fast path)" >> $GITHUB_STEP_SUMMARY
             echo "- **Source**: \`${{ steps.version.outputs.next_image }}\`" >> $GITHUB_STEP_SUMMARY
