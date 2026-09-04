@@ -10,13 +10,21 @@ name: Container Release (Reusable)
 # the version resolved is '1.2.3' and the looked-up pre-release image is
 # ghcr.io/.../my-app:next-1.2.3.
 #
-# Permissions a caller must forward: a reusable workflow's permissions are
-# capped by the calling job's, so the promote wait needs the caller to grant
-# `actions: read` (to see whether the PR-phase build is still running) and, on
-# a PRIVATE repository, `pull-requests: read` (to bridge the release commit to
-# its release PR). Both are already granted implicitly on a public repository.
-# Without them the wait degrades loudly to an immediate rebuild — the
+# Permissions: the promote wait needs `actions: read` (to see whether the
+# PR-phase build is still running). Every current caller already grants it;
+# without it the wait degrades loudly to an immediate rebuild — the
 # pre-issue-#51 behaviour — and says which grant is missing.
+#
+# This workflow deliberately does NOT declare `pull-requests: read`, even
+# though the release-commit → release-PR bridge (`/commits/{sha}/pulls`) would
+# use it. A called workflow requesting a scope the calling job has not granted
+# is REJECTED before execution — a validation failure, not a silent downgrade —
+# and a caller that declares a `permissions:` block sets every scope it omits
+# to `none`, whatever the repository's visibility. Consumers pin `@main`, so
+# declaring the scope here would break every existing caller on merge. The
+# bridge is therefore best-effort: where it is unreadable the wait falls back
+# to a per-workflow in-flight count needing only `actions: read`, warns, and
+# never goes silently inert.
 
 on:
   workflow_call:
@@ -70,7 +78,8 @@ on:
           appear in GHCR before giving up and rebuilding. The wait is entered only
           while the Actions API reports a PR-phase build for this release still
           running, so a release with nothing in flight never spends any of it.
-          0 disables the wait (the behaviour before issue #51). Clamped to 1800.
+          0 disables the wait entirely — one GHCR probe, then rebuild, which is
+          the behaviour before issue #51. Clamped to 1800.
         required: false
         type: number
         default: 600
@@ -111,7 +120,6 @@ permissions:
   packages: write
   id-token: write
   actions: read
-  pull-requests: read
 
 jobs:
   release:
@@ -220,10 +228,12 @@ jobs:
             return 0
           }
 
-          # Fallback when the PR lookup is unreadable (private repo whose caller does not
-          # grant pull-requests: read). Needs only actions: read. Less precise — it counts
-          # any in-flight PR-event run of the build workflow, including another PR's — but
-          # bounded, and it keeps the fix from going inert.
+          # Fallback when the PR lookup is unreadable. This workflow requests no
+          # `pull-requests` scope (see the permissions note at the top), so the bridge
+          # succeeds only where GitHub serves that endpoint without one. Needs only
+          # actions: read. Less precise — it counts any in-flight PR-event run of the
+          # build workflow, including another PR's — but bounded, and it keeps the fix
+          # from going inert.
           count_inflight_by_workflow() {
             local payload
             total=0; matched=0
@@ -245,9 +255,15 @@ jobs:
             gate="not-needed"; emit true; exit 0
           fi
 
+          # A true bypass, not `give_up disabled`: give_up re-probes three times over
+          # ~6s, so routing 0 through it would leave the documented escape hatch
+          # behaving differently from the pre-#51 step it claims to restore — which is
+          # exactly what someone reaches for to rule this change out during an incident.
+          # The fast-path probe above has already run and failed, so this is one probe
+          # then rebuild.
           if [ "${WAIT_CEILING}" -le 0 ]; then
             echo "promote-wait-seconds is 0 — not waiting for a PR-phase build"
-            give_up disabled
+            gate="disabled"; emit false; exit 0
           fi
 
           # ---- Evidence: is a PR-phase build for this release still running?
@@ -267,7 +283,7 @@ jobs:
 
           COUNTER=count_inflight
           if [ "$PR_HEADS" = "__ERR__" ]; then
-            echo "::warning::Could not read the release commit's pull requests — falling back to a less precise per-workflow check. On a private repo, add 'pull-requests: read' to the calling job's permissions."
+            echo "::warning::Could not read the release commit's pull requests — this workflow's GITHUB_TOKEN carries no 'pull-requests' scope, and it cannot request one without failing validation for every caller that omits it. Falling back to a per-workflow in-flight check, which needs only 'actions: read' and may also count another PR's build."
             COUNTER=count_inflight_by_workflow
           elif [ -z "$PR_HEADS" ]; then
             echo "::notice::No pull request is associated with ${RELEASE_SHA}, so no PR-phase build is expected — rebuilding now rather than waiting."
@@ -516,7 +532,7 @@ jobs:
           else
             echo "- **Method**: Full rebuild (no pre-built PR image; wait gate: ${GATE:-n/a}, waited ${WAITED:-0}s)" >> $GITHUB_STEP_SUMMARY
             if [ "$GATE" = "unavailable" ]; then
-              echo "- **Note**: the promote wait could not run — grant \`actions: read\` (and \`pull-requests: read\` on a private repo) to the calling job." >> $GITHUB_STEP_SUMMARY
+              echo "- **Note**: the promote wait could not run — grant \`actions: read\` to the calling job. A job that declares a \`permissions:\` block sets every scope it omits to \`none\`, whatever the repository's visibility." >> $GITHUB_STEP_SUMMARY
             fi
           fi
           if [ "$SIGNED" = "true" ]; then
