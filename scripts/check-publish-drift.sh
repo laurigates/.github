@@ -34,7 +34,7 @@ for f in .github/workflows/reusable-*.yml; do
   fi
   found=$((found + 1))
   sed -n "/^${BEGIN}/,/^${END}\$/p" "$f" \
-    | sed -E "s/^( +)(TITLE|BLOCKING_SEVERITIES|COUNT_KEYS): .*\$/\1\2: <masked>/" \
+    | sed -E "s/^( +)(TITLE|BLOCKING_SEVERITIES|COUNT_KEYS|NOTHING_SCANNED_REASON): .*\$/\1\2: <masked>/" \
     | sed 's/[[:space:]]*$//' > "$work/$(basename "$f").block"
 done
 

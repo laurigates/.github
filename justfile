@@ -105,8 +105,10 @@ lint:
     #!/usr/bin/env bash
     set -euo pipefail
     errors=0
+    # yq, not `python3 -c "import yaml"`: the CI job runs on ubuntu-slim, which
+    # ships yq but no PyYAML, so the Python form passes here and fails there.
     for f in .github/workflows/*.yml; do
-        if ! python3 -c "import yaml; yaml.safe_load(open('$f'))" 2>/dev/null; then
+        if ! yq -e 'tag == "!!map"' "$f" >/dev/null; then
             echo "INVALID: $f"
             errors=$((errors + 1))
         fi

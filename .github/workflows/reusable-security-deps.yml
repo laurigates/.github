@@ -338,7 +338,10 @@ jobs:
           # File annotations render on the PR's Files tab with no comment
           # permission. Payloads MUST be escaped: an unescaped newline splits
           # the annotation, an unescaped % corrupts it, and an unescaped comma
-          # in the path breaks property parsing.
+          # in the path breaks property parsing. `line` is type-checked rather
+          # than escaped: a string there injects further annotation properties
+          # (`line=1,col=9,endLine=99`), and jq truthiness admits `line=0`,
+          # which GitHub does not accept as an anchor.
           printf '%s' "$STRUCTURED_OUTPUT" | jq -r --arg blocking "${BLOCKING_SEVERITIES:-}" --argjson limit "$ANNOTATION_LIMIT" '
             def esc: tostring | gsub("%"; "%25") | gsub("\r"; "%0D") | gsub("\n"; "%0A");
             def sev: .severity // "Unrated";
@@ -347,7 +350,7 @@ jobs:
               ((.findings // []) | map(select(type == "object")) | sort_by(rank)) as $f
             | ($f[:$limit][]
                | (sev as $s | if ($b | index($s)) then "error" else "warning" end) as $lvl
-               | (if (.file // "") != "" then " file=\(.file | ltrimstr("./") | esc | gsub(","; "%2C"))\(if .line then ",line=\(.line)" else "" end)" else "" end) as $loc
+               | (if (.file // "") != "" then " file=\(.file | ltrimstr("./") | esc | gsub(","; "%2C"))\(if ((.line | type) == "number" and .line > 0) then ",line=\(.line)" else "" end)" else "" end) as $loc
                | "::\($lvl)\($loc)::[\(sev)] [\(.category // "Uncategorised" | esc)] \(.description // "no description" | esc)"),
               (if ($f | length) > $limit then "::notice::\(($f | length) - $limit) further finding(s) appear in the job summary only." else empty end)
           '
@@ -364,17 +367,24 @@ jobs:
 
       # A check that never ran reports 'pass'. Without this the green tick on
       # a PR that matched no files is indistinguishable from a clean scan.
+      #
+      # `!failure()` as well as `!cancelled()`: a failed checkout or file-list
+      # step also leaves `analyze` skipped, and on that red job the message
+      # below would assert nothing matched, which is not what happened. The
+      # reason is passed in rather than inferred, because the gate that skips
+      # the analysis is not the same one in every workflow.
       - name: Report that nothing was scanned
-        if: ${{ !cancelled() && steps.analyze.outcome == 'skipped' }}
+        if: ${{ !cancelled() && !failure() && steps.analyze.outcome == 'skipped' }}
         env:
           TITLE: 'Dependency Security Audit'
           SKIPPED_FOR_SIZE: ${{ steps.changed.outputs.skip }}
+          NOTHING_SCANNED_REASON: 'no lockfile changed, or the audit command produced no output'
         run: |
           set -euo pipefail
           if [ "${SKIPPED_FOR_SIZE:-false}" = "true" ]; then
             REASON="the PR diff exceeded max-diff-lines, so the diff-size gate skipped the analysis"
           else
-            REASON="no changed file matched the configured patterns"
+            REASON="${NOTHING_SCANNED_REASON:-the analysis step did not run}"
           fi
           MSG="$TITLE: no analysis ran — $REASON. This check is green because nothing was scanned, not because nothing was found."
           echo "::notice::$MSG"

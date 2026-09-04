@@ -165,6 +165,24 @@ assert_in "$ANNOTATIONS" '%0D'
 assert_in "$ANNOTATIONS" '50%25 x'
 assert_in "$ANNOTATIONS" '[100%25 cat]'
 
+# ------------------------------------------------------- unusable line
+# `line` lands in the annotation's property list, where a string injects
+# further properties and `0` is not a valid anchor. Both must degrade to an
+# annotation with a file and no line, never to a corrupted one.
+run_case line-not-integer \
+  '{"total_issues":1,"findings":[{"file":"a.ts","line":"1,col=9,endLine=99","severity":"Low","category":"C","description":"d"}]}' \
+  success '' 'total_issues'
+assert_rc 0
+assert_in "$ANNOTATIONS" '::warning file=a.ts::[Low] [C] d'
+assert_not_in "$ANNOTATIONS" 'col=9'
+
+run_case line-zero \
+  '{"total_issues":1,"findings":[{"file":"a.ts","line":0,"severity":"Low","category":"C","description":"d"}]}' \
+  success '' 'total_issues'
+assert_rc 0
+assert_in "$ANNOTATIONS" '::warning file=a.ts::[Low] [C] d'
+assert_not_in "$ANNOTATIONS" 'line='
+
 # ------------------------------------------------------ missing file/line
 run_case null-file '{"total_issues":1,"findings":[{"severity":"Low","category":"C","description":"d"}]}' success '' 'total_issues'
 assert_rc 0

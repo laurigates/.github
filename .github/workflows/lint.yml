@@ -14,9 +14,16 @@ permissions:
 
 jobs:
   lint:
-    # ubuntu-slim: bash, python3, jq, curl only. No Docker daemon, so the
-    # actionlint Docker action cannot be used here — download the pinned
-    # release binary instead, the same tool `just lint` runs via aqua.
+    # ubuntu-slim carries bash, Node, python3, gcc, git, gh, jq, yq, curl and
+    # the cloud CLIs — and nothing else. No Docker daemon, so the actionlint
+    # Docker action cannot be used here; download the pinned release binary
+    # instead, the same tool `just lint` runs via aqua.
+    #
+    # The YAML check runs on `yq`, which slim ships, NOT on
+    # `python3 -c "import yaml"`: PyYAML is not stdlib and slim does not carry
+    # it, so the Python form would abort this job on its first step and take
+    # every PR to this repo red. `just lint` runs the same yq command, so a
+    # local pass and a CI pass mean the same thing.
     runs-on: ubuntu-slim
     steps:
       - uses: actions/checkout@v4
@@ -25,7 +32,7 @@ jobs:
         run: |
           set -euo pipefail
           for f in .github/workflows/*.yml; do
-            python3 -c "import yaml,sys; yaml.safe_load(open(sys.argv[1]))" "$f"
+            yq -e 'tag == "!!map"' "$f" >/dev/null
           done
           echo "All workflow files are valid YAML."
 
