@@ -53,9 +53,22 @@ step), put only the gate on slim — see `reusable-changelog-review.yml` and
 The container workflows implement a two-phase pattern:
 
 1. **`reusable-container-build.yml`** (PR phase) — builds and pushes a `:next-{version}` pre-release image to GHCR during the release-please PR
-2. **`reusable-container-release.yml`** (tag phase) — promotes the pre-built image via manifest retag (fast path) or falls back to full rebuild. Includes Trivy scanning and optional cosign keyless signing via Sigstore
+2. **`reusable-container-release.yml`** (tag phase) — resolves a single release *candidate* (promoted `:next-{version}` digest, or a rebuild), scans it, and only then creates the release tags. Optional cosign keyless signing via Sigstore
 
 The version is extracted from the version file (default: `package.json`) during build, and from the git tag (stripping `tag-prefix`) during release.
+
+#### The vulnerability scan is a publication gate, not a report
+
+The release job's invariant: **exactly one step creates a release tag, it has no `if:`, and the step immediately before it is the scan.** The scan's subject is a digest resolved by a step that also has no `if:` and hard-fails when it cannot resolve one, so both the promote and the rebuild path are covered by construction rather than by a condition someone can get wrong.
+
+Four things not to re-derive:
+
+- **The rebuild path pushes to `:next-{version}`, never to `meta.outputs.tags`.** Pushing the release tags from `docker/build-push-action` is what made the old scan unable to gate anything — the artifact was already published by the time it ran. Release tags are applied by `docker buildx imagetools create` from the scanned digest
+- **The scan lives in `.github/actions/scan-image` and must be referenced fully-qualified** (`laurigates/.github/.github/actions/scan-image@main`). A `./`-relative `uses:` inside a reusable workflow resolves against the *caller's* checkout and fails in every consumer. It enumerates platform manifests from the image's own index, so a multi-arch caller's arm64 layers are scanned without anyone passing `platforms` twice
+- **`--exit-code 13`, not `1`.** Trivy exits with the requested code for findings (`types.ExitError`) and `1` for everything else (`log.Fatal`), so `1` makes a DB-pull failure indistinguishable from a real CVE — and the natural response to the former is to switch the gate off. Confirmed on the pinned `v0.70.0` binary
+- **`scan-enforcement` is a validated string (`block`|`warn`), not a boolean.** An unrecognised value is a hard error at the top of the job; `continue-on-error: ${{ inputs.scan-enforcement == 'warn' }}` then means anything that is not exactly `warn` blocks. `warn` publishes *and* fails the job, reproducing the pre-gate outcome rather than swallowing the failure into a green run
+
+The PR-phase build's scan is **advisory by default** (`scan-mode: advisory|block|off`) and is not the gate: a CVE published against an unchanged base would otherwise block every unrelated release, and the rebuild path exists precisely when the PR image is not what ships.
 
 ### Release Automation
 

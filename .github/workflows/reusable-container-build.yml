@@ -49,6 +49,34 @@ on:
         required: false
         type: string
         default: "jq -r '.version' package.json"
+      scan-mode:
+        description: |
+          'advisory' (default): scan the pushed :next-{version} image and
+          annotate the release PR, never failing it. 'block': fail the PR check
+          on findings. 'off': skip the scan. Default is advisory on purpose — a
+          CVE published against an unchanged base image would otherwise block
+          every unrelated release with no code fix available. The authoritative
+          gate lives in reusable-container-release.yml, which re-scans the same
+          bytes immediately before creating any release tag and also covers the
+          rebuild path this workflow cannot see.
+        required: false
+        type: string
+        default: 'advisory'
+      scan-severity:
+        description: 'Trivy severity levels that constitute a finding'
+        required: false
+        type: string
+        default: 'CRITICAL,HIGH'
+      scan-ignore-unfixed:
+        description: 'Ignore findings with no fix available'
+        required: false
+        type: boolean
+        default: true
+      scan-trivy-version:
+        description: 'Trivy binary version used by the advisory scan'
+        required: false
+        type: string
+        default: 'v0.70.0'
     secrets:
       secret-build-args:
         description: |
@@ -147,6 +175,23 @@ jobs:
           provenance: false
           sbom: false
 
+      # Scanned by digest, not by tag: two runs can race on :next-{version}
+      # (release-please's push and a relock run, which is why the caller carries
+      # a concurrency group), so scanning the tag could report on the other
+      # run's image.
+      - name: Scan pre-release image (advisory)
+        id: scan
+        if: inputs.scan-mode != 'off'
+        continue-on-error: ${{ inputs.scan-mode != 'block' }}
+        uses: laurigates/.github/.github/actions/scan-image@main
+        with:
+          image: ghcr.io/${{ inputs.image-name }}@${{ steps.build-push.outputs.digest }}
+          severity: ${{ inputs.scan-severity }}
+          ignore-unfixed: ${{ inputs.scan-ignore-unfixed }}
+          trivy-version: ${{ inputs.scan-trivy-version }}
+          registry-username: ${{ github.actor }}
+          registry-password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Job summary
         if: always()
         run: |
@@ -154,3 +199,9 @@ jobs:
           echo "- **Image**: \`${{ steps.tag.outputs.pre-release-tag }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Digest**: \`${{ steps.build-push.outputs.digest }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Purpose**: Pre-built for promotion on merge — no rebuild needed after tag push" >> $GITHUB_STEP_SUMMARY
+          # The mode is printed unconditionally so a skipped scan is visible
+          # rather than looking like a pass.
+          echo "- **Scan**: mode \`${{ inputs.scan-mode }}\`, result \`${{ steps.scan.outputs.result || 'not-run' }}\` (${{ steps.scan.outputs.platforms-scanned || 0 }} platform manifest(s))" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.scan.outcome }}" = "failure" ]; then
+            echo "  - Findings present. The release job will refuse to publish this image unless they are fixed, \`.trivyignore\`d, or \`scan-enforcement: warn\` is set there." >> $GITHUB_STEP_SUMMARY
+          fi

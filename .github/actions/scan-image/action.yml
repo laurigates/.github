@@ -1,0 +1,187 @@
+name: 'Scan container image'
+description: >
+  Scan every platform manifest of a container image with Trivy. Requires a
+  digest reference: scanning a tag is a time-of-check/time-of-use bug, because
+  the tag can be rewritten between the scan and publication.
+
+inputs:
+  image:
+    description: 'Image to scan. MUST be a digest reference (ghcr.io/owner/name@sha256:...).'
+    required: true
+  severity:
+    description: 'Comma-separated Trivy severities that constitute a finding'
+    required: false
+    default: 'CRITICAL,HIGH'
+  ignore-unfixed:
+    description: 'Ignore findings with no fix available'
+    required: false
+    default: 'true'
+  scanners:
+    description: >
+      Trivy scanners. Narrowed to `vuln` on purpose: Trivy's own default for
+      `image` is vuln+secret, and making a check blocking while also widening
+      what it catches is two changes. Re-enabling `secret` is a follow-up.
+    required: false
+    default: 'vuln'
+  trivy-version:
+    description: 'Trivy binary version'
+    required: false
+    default: 'v0.70.0'
+  timeout:
+    description: 'Per-platform Trivy timeout'
+    required: false
+    default: '15m'
+  registry-username:
+    description: 'Registry username used for the image pull and for the Trivy DB pull'
+    required: false
+    default: ''
+  registry-password:
+    description: 'Registry password/token used for the image pull and for the Trivy DB pull'
+    required: false
+    default: ''
+
+outputs:
+  platforms-scanned:
+    description: 'Number of platform manifests actually scanned. Never 0 — the action fails instead.'
+    value: ${{ steps.scan.outputs.platforms-scanned }}
+  result:
+    description: 'clean | findings'
+    value: ${{ steps.scan.outputs.result }}
+
+runs:
+  using: composite
+  steps:
+    # Pinned rather than left to an upstream default. trivy-action 0.34.0
+    # defaulted to Trivy v0.69.1, which exists as a git tag but has no GitHub
+    # release and therefore no downloadable asset, so the install exited 1
+    # before any scan ran and every release went red on a scan that never
+    # executed. State the version here so a repeat is a bump we make.
+    - name: Install Trivy
+      uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
+      with:
+        version: ${{ inputs.trivy-version }}
+        cache: 'true'
+
+    - name: Enumerate platform manifests
+      id: targets
+      shell: bash
+      env:
+        IMAGE: ${{ inputs.image }}
+      run: |
+        set -euo pipefail
+
+        case "$IMAGE" in
+          *@sha256:*) ;;
+          *) echo "::error::scan-image requires a digest reference; got '${IMAGE}'. A tag can be rewritten between the scan and publication."; exit 1 ;;
+        esac
+
+        RAW="${RUNNER_TEMP}/scan-raw.json"
+        docker buildx imagetools inspect "$IMAGE" --raw > "$RAW"
+        [ -s "$RAW" ] || { echo "::error::Empty manifest for ${IMAGE}"; exit 1; }
+
+        # Two shapes, and telling them apart with `if jq -e ...` is the bug this
+        # block exists to avoid: jq -e returns 0 for an index, 1 for a plain
+        # image manifest, and 5 for a PARSE ERROR. An `if` swallows 1 and 5
+        # identically, so an unparseable index degrades to "scan the reference
+        # once" — one platform of a two-arch image, reported clean. Capture the
+        # code and discriminate.
+        set +e
+        jq -e 'has("manifests")' "$RAW" > /dev/null 2>&1
+        RC=$?
+        set -e
+        case "$RC" in
+          0) IS_INDEX=yes ;;
+          1) IS_INDEX=no ;;
+          *) echo "::error::Could not parse the manifest of ${IMAGE} (jq exit ${RC}). Refusing to guess its shape."; exit 1 ;;
+        esac
+
+        REPO="${IMAGE%@*}"
+        OUT="${RUNNER_TEMP}/scan-targets.txt"
+
+        if [ "$IS_INDEX" = "yes" ]; then
+          # Attestation manifests (provenance/SBOM from `provenance: mode=max` /
+          # `sbom: true`) carry platform unknown/unknown and are skipped. They
+          # ARE present in `--raw`, unlike the `{{json .Image}}` view the release
+          # workflow's freshness check reads — do not carry that comment over.
+          jq -r --arg repo "$REPO" '
+            .manifests[]
+            | select((.platform.os // "unknown") != "unknown")
+            | select((.platform.architecture // "unknown") != "unknown")
+            | "\($repo)@\(.digest)\t\(.platform.os)/\(.platform.architecture)"
+          ' "$RAW" > "$OUT"
+          if [ ! -s "$OUT" ]; then
+            echo "::error::${IMAGE} is an index with no scannable platform manifests. Refusing to report a pass on an image nothing examined."
+            exit 1
+          fi
+        else
+          printf '%s\tsingle-platform\n' "$IMAGE" > "$OUT"
+        fi
+
+        echo "file=${OUT}" >> "$GITHUB_OUTPUT"
+        echo "Platform manifests to scan:"
+        cat "$OUT"
+
+    - name: Scan every platform manifest
+      id: scan
+      shell: bash
+      env:
+        TARGETS_FILE: ${{ steps.targets.outputs.file }}
+        SEVERITY: ${{ inputs.severity }}
+        SCANNERS: ${{ inputs.scanners }}
+        IGNORE_UNFIXED: ${{ inputs.ignore-unfixed }}
+        TIMEOUT: ${{ inputs.timeout }}
+        # Authenticates the image pull AND Trivy's own DB pull from
+        # ghcr.io/aquasecurity/trivy-db, which is rate-limited anonymously.
+        TRIVY_USERNAME: ${{ inputs.registry-username }}
+        TRIVY_PASSWORD: ${{ inputs.registry-password }}
+      run: |
+        set -euo pipefail
+        [ -n "$SEVERITY" ] || { echo "::error::severity must not be empty"; exit 1; }
+
+        IGNORE_FLAG=()
+        if [ "$IGNORE_UNFIXED" = "true" ]; then IGNORE_FLAG=(--ignore-unfixed); fi
+
+        SCANNED=0
+        FOUND=0
+        # Scan every platform before failing, so one arch's findings do not hide
+        # another's. A fail-fast loop reports amd64 and leaves arm64 unknown.
+        while IFS=$'\t' read -r ref plat; do
+          [ -n "$ref" ] || continue
+          echo "::group::trivy ${plat} — ${ref}"
+          rc=0
+          trivy image \
+            --severity "$SEVERITY" \
+            --scanners "$SCANNERS" \
+            "${IGNORE_FLAG[@]}" \
+            --format table \
+            --timeout "$TIMEOUT" \
+            --exit-code 13 \
+            "$ref" || rc=$?
+          echo "::endgroup::"
+          SCANNED=$((SCANNED + 1))
+          # 13 rather than 1. Verified at aquasecurity/trivy cmd/trivy/main.go:
+          # a types.ExitError (findings) exits with exitError.Code, everything
+          # else goes to log.Fatal (exit 1). With --exit-code 1 a Trivy DB pull
+          # failure and a real CVE are indistinguishable, and the natural
+          # response to the former is to switch the gate off.
+          case "$rc" in
+            0)  echo "clean: ${plat}" ;;
+            13) FOUND=1; echo "::error::${SEVERITY} findings with fixes available on ${plat}" ;;
+            *)  echo "::error::Trivy itself failed on ${plat} (exit ${rc}). That is not a clean scan."; exit "$rc" ;;
+          esac
+        done < "$TARGETS_FILE"
+
+        if [ "$SCANNED" -eq 0 ]; then
+          echo "::error::Scanned 0 platform manifests. A gate that examined nothing is not a pass."
+          exit 1
+        fi
+        # Written before any findings exit, so the value survives into a
+        # continue-on-error (warn-mode) run.
+        echo "platforms-scanned=${SCANNED}" >> "$GITHUB_OUTPUT"
+        echo "Scanned ${SCANNED} platform manifest(s)."
+
+        if [ "$FOUND" -eq 1 ]; then
+          echo "result=findings" >> "$GITHUB_OUTPUT"
+          exit 1
+        fi
+        echo "result=clean" >> "$GITHUB_OUTPUT"
