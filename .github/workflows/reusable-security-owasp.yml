@@ -77,8 +77,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.timeout-minutes }}
     outputs:
-      issue-count: ${{ fromJSON(steps.analyze.outputs.structured_output || '{}').total_issues }}
-      critical-count: ${{ fromJSON(steps.analyze.outputs.structured_output || '{}').critical_issues }}
+      issue-count: ${{ steps.publish.outputs.count_total_issues }}
+      critical-count: ${{ steps.publish.outputs.count_critical_issues }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -140,13 +140,13 @@ jobs:
             --model ${{ inputs.model }}
             --max-turns ${{ inputs.max-turns }}
             ${{ inputs.max-budget-usd > 0 && format('--max-budget-usd {0}', inputs.max-budget-usd) || '' }}
-            --json-schema '{"type":"object","properties":{"total_issues":{"type":"integer","description":"Total security issues found"},"critical_issues":{"type":"integer","description":"Critical severity issues found"},"findings":{"type":"array","description":"Every issue found, most severe first","items":{"type":"object","properties":{"file":{"type":"string"},"line":{"type":"integer"},"severity":{"type":"string","enum":["Critical","High","Medium","Low"]},"category":{"type":"string","description":"OWASP category, e.g. A01:2021 - Broken Access Control"},"description":{"type":"string"},"remediation":{"type":"string"}},"required":["file","severity","category","description"]}}},"required":["total_issues","critical_issues","findings"]}'
+            --json-schema '{"type":"object","properties":{"total_issues":{"type":"integer","description":"Total security issues found"},"critical_issues":{"type":"integer","description":"Critical severity issues found"},"findings":{"type":"array","description":"Every issue found, most severe first","items":{"type":"object","properties":{"file":{"type":"string","description":"Repository-relative path, exactly as it appears in the file list"},"line":{"type":"integer"},"severity":{"type":"string","enum":["Critical","High","Medium","Low"]},"category":{"type":"string","description":"OWASP category, e.g. A01:2021 - Broken Access Control"},"description":{"type":"string"},"remediation":{"type":"string"}},"required":["file","severity","category","description"]}}},"required":["total_issues","critical_issues","findings"]}'
           prompt: |
             Analyze these files for OWASP Top 10 2021 security vulnerabilities.
 
             ## Files to analyze
             ${{ steps.changed.outputs.files }}
-            ${{ steps.changed.outputs.truncated == 'true' && 'NOTE: the analyzed file list was truncated — say so in your comment.' || '' }}
+            ${{ steps.changed.outputs.truncated == 'true' && 'NOTE: the analyzed file list was truncated — say so in the description of your first finding.' || '' }}
 
             ## OWASP Top 10 2021 Categories
 
@@ -220,62 +220,197 @@ jobs:
             - total_issues: all issues found
             - critical_issues: critical severity only
             - findings: one entry per issue, most severe first, each with
-              file, line, severity, category, description and remediation
+              file, line, severity, category, description and remediation.
+              category is the OWASP category; severity is Critical,
+              High, Medium or Low.
 
-            The workflow renders `findings` into the job summary. Do NOT try to
-            post a PR comment or use any GitHub write tool -- you have no
-            permission to do so, the attempt will be denied, and the finding
-            will be lost. An issue you report only in prose is an issue nobody
-            will ever read.
+            Every issue you count must also appear in findings. A count with
+            no matching entry is reported as an unreliable scan.
 
+            The workflow renders `findings` into the job summary and into file
+            annotations on the PR's Files tab. Do NOT try to post a PR comment
+            or use any GitHub write tool -- you have no permission to do so,
+            the attempt will be denied, and the finding will be lost. An issue
+            you report only in prose is an issue nobody will ever read.
+
+      # ---- BEGIN shared publish block (checked by scripts/check-publish-drift.sh) ----
       # Findings reach humans through the job summary and file annotations,
       # never a PR comment: the action is granted no comment tool, so asking
-      # Claude to post one only produced denials and discarded the findings.
-      # Both channels here work with the permissions the job already holds.
+      # Claude to post one only produced denials and discarded the findings
+      # (issue #47). Both channels work with the permissions the job holds.
+      #
+      # Guard is `outcome != 'skipped'`, not `== 'success'`: when the wrapper
+      # fails the run for overrunning --max-turns or --max-budget-usd, the
+      # model has normally already emitted its structured output. Gating on
+      # success discards exactly the findings that cost the most to produce.
+      #
+      # `steps.analyze` is the analysis STEP. Several of these workflows also
+      # name their JOB `analyze`; jobs and steps are separate namespaces, so
+      # this resolves to the step.
       - name: Publish findings
-        if: always() && steps.analyze.outcome == 'success'
+        id: publish
+        if: ${{ !cancelled() && steps.analyze.outcome != 'skipped' }}
         env:
           # Read via env, never interpolated into the script body: this is
           # model-generated text crossing into a shell.
           STRUCTURED_OUTPUT: ${{ steps.analyze.outputs.structured_output }}
+          ANALYZE_OUTCOME: ${{ steps.analyze.outcome }}
+          TITLE: 'OWASP Security Scan'
+          BLOCKING_SEVERITIES: 'Critical'
+          COUNT_KEYS: 'total_issues,critical_issues'
         run: |
-          if [ -z "${STRUCTURED_OUTPUT:-}" ]; then
-            echo "OWASP scan produced no structured output." >> "$GITHUB_STEP_SUMMARY"
+          set -euo pipefail
+          # GitHub discards a step summary over 1 MiB, silently. Cap below it.
+          # This is not the payload ceiling: STRUCTURED_OUTPUT arrives as an
+          # environment string, and Linux caps a single env/argv string at
+          # MAX_ARG_STRLEN (32 * 4096 = 131072), failing the execve of this
+          # step's own shell with E2BIG before line 1 runs. Truncation fires
+          # only for input that renders to more than it costs -- 20000
+          # near-empty findings is 60 KB of JSON and 1.1 MB of summary.
+          SUMMARY_MAX_BYTES=900000
+          # GitHub surfaces ~10 annotations per level per step. Unverified
+          # exact figure; the summary always carries the complete list.
+          ANNOTATION_LIMIT=10
+
+          # jq exits 0 on empty input, so an unguarded run would publish
+          # nothing and say nothing -- the exact silence this block ends.
+          #
+          # `findings` is shape-checked here rather than inside each jq
+          # program: a non-array there aborts jq under `set -e` and takes the
+          # summary, the annotations AND the outputs down with it. Degrading
+          # to this branch reports the failure and still emits zeroed counts.
+          if [ -z "${STRUCTURED_OUTPUT:-}" ] || ! printf '%s' "$STRUCTURED_OUTPUT" | jq -e 'type == "object" and ((.findings // []) | type) == "array"' >/dev/null 2>&1; then
+            MSG="$TITLE: the analysis step reported '${ANALYZE_OUTCOME}' and produced no usable structured output (absent, unparseable, or 'findings' not an array), so no findings could be published."
+            echo "::warning::$MSG"
+            printf '## %s\n\n%s\n' "$TITLE" "$MSG" >> "$GITHUB_STEP_SUMMARY"
+            { printf 'blocking=0\nitemised=0\n'
+              printf '%s\n' "${COUNT_KEYS:-}" | tr ',' '\n' | sed '/^$/d;s/^/count_/;s/$/=0/'
+            } >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          printf '%s' "$STRUCTURED_OUTPUT" | jq -r '
-            "## OWASP Security Scan",
-            "",
-            "**\(.total_issues // 0) issue(s) — \(.critical_issues // 0) critical**",
-            "",
-            ((.findings // [])
-              | if length == 0 then ["No findings reported."]
-                else map(
-                  "### \(.severity) — \(.category)",
-                  "",
-                  "`\(.file)\(if .line then ":\(.line)" else "" end)`",
-                  "",
-                  .description,
-                  "",
-                  (if .remediation then "**Remediation:** \(.remediation)" else empty end),
-                  ""
-                )
-                end
-              | .[])
-          ' >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Check for critical issues
-        if: inputs.fail-on-critical && fromJSON(steps.analyze.outputs.structured_output || '{}').critical_issues > 0
-        env:
-          STRUCTURED_OUTPUT: ${{ steps.analyze.outputs.structured_output }}
-        run: |
-          # File-anchored annotations render on the PR's Files tab, so a
-          # blocking finding is visible where the code is.
-          printf '%s' "$STRUCTURED_OUTPUT" | jq -r '
-            (.findings // [])
-            | map(select(.severity == "Critical"))
-            | .[]
-            | "::error file=\(.file)\(if .line then ",line=\(.line)" else "" end)::[\(.category)] \(.description)"
+          if [ "$ANALYZE_OUTCOME" != "success" ]; then
+            MSG="$TITLE: the analysis step reported '${ANALYZE_OUTCOME}'; the findings below may be incomplete."
+            echo "::warning::$MSG"
+            printf '%s\n\n' "$MSG" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          # Counts render from whatever top-level numbers this workflow's
+          # schema declares, so this block stays byte-identical across every
+          # analysis workflow and the drift check can compare it.
+          # `sev as $s | $b | index($s)`: inside index(), the input is $b, so
+          # a bare `$b | index(sev)` silently reads $b.severity. Verified.
+          printf '%s' "$STRUCTURED_OUTPUT" | jq -r --arg title "$TITLE" --arg blocking "${BLOCKING_SEVERITIES:-}" '
+            def sev: .severity // "Unrated";
+            ($blocking | split(",") | map(select(length > 0))) as $b
+            | def rank: sev as $s | if ($b | index($s)) then 0 else 1 end;
+              ((.findings // []) | map(select(type == "object")) | sort_by(rank)) as $f
+            | "## \($title)", "",
+              (to_entries | map(select(.value | type == "number"))
+                | map("**\(.key | gsub("_"; " ")):** \(.value)")
+                | if length == 0 then "_No counts reported._" else join(" · ") end),
+              "",
+              (if ($f | length) == 0 then "No findings reported.", ""
+               else ($f | map(
+                 "### \(sev) — \(.category // "Uncategorised")", "",
+                 (if (.file // "") != "" then "`\(.file | ltrimstr("./"))\(if .line then ":\(.line)" else "" end)`", "" else empty end),
+                 (.description // "_no description supplied_"), "",
+                 (if (.remediation // "") != "" then "**Remediation:** \(.remediation)", "" else empty end)
+               ) | .[])
+               end)
+          ' > "$RUNNER_TEMP/publish-findings-summary.md"
+
+          if [ "$(wc -c < "$RUNNER_TEMP/publish-findings-summary.md")" -gt "$SUMMARY_MAX_BYTES" ]; then
+            head -c "$SUMMARY_MAX_BYTES" "$RUNNER_TEMP/publish-findings-summary.md" >> "$GITHUB_STEP_SUMMARY"
+            printf '\n\n_Summary truncated at %s bytes; remaining findings omitted._\n' "$SUMMARY_MAX_BYTES" >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning::$TITLE: job summary truncated at $SUMMARY_MAX_BYTES bytes."
+          else
+            cat "$RUNNER_TEMP/publish-findings-summary.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          # File annotations render on the PR's Files tab with no comment
+          # permission. Payloads MUST be escaped: an unescaped newline splits
+          # the annotation, an unescaped % corrupts it, and an unescaped comma
+          # in the path breaks property parsing. `severity` is escaped along
+          # with the rest -- the schema's enum is a request to the model, not
+          # a constraint the runner applies, so a newline in it would emit a
+          # second line that GitHub parses as its own workflow command.
+          # `line` is type-checked rather than escaped: a string there injects
+          # further annotation properties (`line=1,col=9,endLine=99`), and jq
+          # truthiness admits `line=0`, which GitHub does not accept as an
+          # anchor.
+          printf '%s' "$STRUCTURED_OUTPUT" | jq -r --arg blocking "${BLOCKING_SEVERITIES:-}" --argjson limit "$ANNOTATION_LIMIT" '
+            def esc: tostring | gsub("%"; "%25") | gsub("\r"; "%0D") | gsub("\n"; "%0A");
+            def sev: .severity // "Unrated";
+            ($blocking | split(",") | map(select(length > 0))) as $b
+            | def rank: sev as $s | if ($b | index($s)) then 0 else 1 end;
+              ((.findings // []) | map(select(type == "object")) | sort_by(rank)) as $f
+            | ($f[:$limit][]
+               | (sev as $s | if ($b | index($s)) then "error" else "warning" end) as $lvl
+               | (if (.file // "") != "" then " file=\(.file | ltrimstr("./") | esc | gsub(","; "%2C"))\(if ((.line | type) == "number" and .line > 0) then ",line=\(.line)" else "" end)" else "" end) as $loc
+               | "::\($lvl)\($loc)::[\(sev | esc)] [\(.category // "Uncategorised" | esc)] \(.description // "no description" | esc)"),
+              (if ($f | length) > $limit then "::notice::\(($f | length) - $limit) further finding(s) appear in the job summary only." else empty end)
           '
-          echo "::error::Found ${{ fromJSON(steps.analyze.outputs.structured_output || '{}').critical_issues }} critical security issues - see the job summary for details"
+
+          # $GITHUB_OUTPUT is a `key=value` file, so a newline inside a count
+          # opens a second line: `total_issues` of "0\nblocking=0" would
+          # overwrite the blocking count a caller gates on. Counts are
+          # type-checked rather than escaped, because a count that is not a
+          # number is not a count.
+          printf '%s' "$STRUCTURED_OUTPUT" | jq -r --arg blocking "${BLOCKING_SEVERITIES:-}" --arg keys "${COUNT_KEYS:-}" '
+            . as $root
+            | def sev: .severity // "Unrated";
+              ($blocking | split(",") | map(select(length > 0))) as $b
+            | ((.findings // []) | map(select(type == "object"))) as $f
+            | "blocking=\($f | map(select(sev as $s | $b | index($s))) | length)",
+              "itemised=\($f | length)",
+              (($keys | split(",") | map(select(length > 0)) | .[]) | "count_\(.)=\(if ($root[.] | type) == "number" then $root[.] else 0 end)")
+          ' >> "$GITHUB_OUTPUT"
+
+      # A check that never ran reports 'pass'. Without this the green tick on
+      # a PR that matched no files is indistinguishable from a clean scan.
+      #
+      # `!failure()` as well as `!cancelled()`: a failed checkout or file-list
+      # step also leaves `analyze` skipped, and on that red job the message
+      # below would assert nothing matched, which is not what happened. The
+      # reason is passed in rather than inferred, because the gate that skips
+      # the analysis is not the same one in every workflow.
+      - name: Report that nothing was scanned
+        if: ${{ !cancelled() && !failure() && steps.analyze.outcome == 'skipped' }}
+        env:
+          TITLE: 'OWASP Security Scan'
+          SKIPPED_FOR_SIZE: ${{ steps.changed.outputs.skip }}
+          NOTHING_SCANNED_REASON: 'no changed file matched the configured patterns'
+        run: |
+          set -euo pipefail
+          if [ "${SKIPPED_FOR_SIZE:-false}" = "true" ]; then
+            REASON="the PR diff exceeded max-diff-lines, so the diff-size gate skipped the analysis"
+          else
+            REASON="${NOTHING_SCANNED_REASON:-the analysis step did not run}"
+          fi
+          MSG="$TITLE: no analysis ran — $REASON. This check is green because nothing was scanned, not because nothing was found."
+          echo "::notice::$MSG"
+          printf '## %s\n\n%s\n' "$TITLE" "$MSG" >> "$GITHUB_STEP_SUMMARY"
+      # ---- END shared publish block ----
+
+      # Numeric comparison, never `!= '0'`: GitHub coerces the empty string a
+      # skipped publish step leaves behind to 0 for `>`, so this cannot fire on
+      # a PR that scanned nothing. It also carries no `always()`, so a failure
+      # upstream skips it rather than masking the real error.
+      #
+      # The union fires in every case the old predicate did, plus one: the
+      # model itemising a Critical finding while reporting critical_issues 0.
+      # That disagreement used to exit 1 with no annotation anyone could read.
+      - name: Check for critical issues
+        if: inputs.fail-on-critical && (steps.publish.outputs.blocking > 0 || steps.publish.outputs.count_critical_issues > 0)
+        env:
+          BLOCKING: ${{ steps.publish.outputs.blocking }}
+          REPORTED: ${{ steps.publish.outputs.count_critical_issues }}
+        run: |
+          set -euo pipefail
+          if [ "${BLOCKING:-0}" -gt 0 ]; then
+            echo "::error::OWASP scan: ${BLOCKING} critical finding(s) — annotated on the Files tab, full detail in the job summary."
+          else
+            echo "::error::OWASP scan reported ${REPORTED} critical issues but itemised none of them. The scan did not establish anything; re-run it."
+          fi
           exit 1

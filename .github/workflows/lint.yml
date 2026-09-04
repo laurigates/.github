@@ -1,0 +1,56 @@
+name: Lint workflows
+
+# This repo ships eight reusable workflows that every consuming repo calls at
+# `@main` with no pinning, and until now nothing verified they even parse.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    # ubuntu-slim carries bash, Node, python3, gcc, git, gh, jq, yq, curl and
+    # the cloud CLIs — and nothing else. No Docker daemon, so the actionlint
+    # Docker action cannot be used here; download the pinned release binary
+    # instead, the same tool `just lint` runs via aqua.
+    #
+    # The YAML check runs on `yq`, which slim ships, NOT on
+    # `python3 -c "import yaml"`: PyYAML is not stdlib and slim does not carry
+    # it, so the Python form would abort this job on its first step and take
+    # every PR to this repo red. `just lint` runs the same yq command, so a
+    # local pass and a CI pass mean the same thing.
+    runs-on: ubuntu-slim
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate workflow YAML
+        run: |
+          set -euo pipefail
+          for f in .github/workflows/*.yml; do
+            yq -e 'tag == "!!map"' "$f" >/dev/null
+          done
+          echo "All workflow files are valid YAML."
+
+      - name: actionlint
+        env:
+          ACTIONLINT_VERSION: '1.7.12'
+          ACTIONLINT_SHA256: '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8'
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/al.tgz "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  /tmp/al.tgz" | sha256sum -c -
+          tar -xzf /tmp/al.tgz -C /tmp actionlint
+          # -shellcheck= matches `just lint`: shellcheck's style findings on
+          # run: bodies are accepted pre-existing noise.
+          /tmp/actionlint -shellcheck= -oneline .github/workflows/*.yml
+
+      - name: Publish-block drift check
+        run: bash scripts/check-publish-drift.sh 8
+
+      - name: Renderer fixtures
+        run: bash .github/tests/publish-findings/run.sh

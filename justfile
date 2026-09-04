@@ -105,8 +105,10 @@ lint:
     #!/usr/bin/env bash
     set -euo pipefail
     errors=0
+    # yq, not `python3 -c "import yaml"`: the CI job runs on ubuntu-slim, which
+    # ships yq but no PyYAML, so the Python form passes here and fails there.
     for f in .github/workflows/*.yml; do
-        if ! python3 -c "import yaml; yaml.safe_load(open('$f'))" 2>/dev/null; then
+        if ! yq -e 'tag == "!!map"' "$f" >/dev/null; then
             echo "INVALID: $f"
             errors=$((errors + 1))
         fi
@@ -126,3 +128,13 @@ lint:
     else
         echo "skip: mise not found - actionlint not run"
     fi
+
+# Fail if the shared publish block has drifted between analysis workflows
+[group: "validate"]
+publish-drift count="8":
+    bash scripts/check-publish-drift.sh "{{count}}"
+
+# Run the publish-block renderer against its fixtures
+[group: "validate"]
+publish-fixtures workflow=".github/workflows/reusable-security-owasp.yml":
+    bash .github/tests/publish-findings/run.sh "{{workflow}}"

@@ -96,7 +96,13 @@ Security, quality, and accessibility workflows use `anthropics/claude-code-actio
 - **Quality**: `reusable-quality-{code-smell,typescript}.yml` (sonnet), `reusable-quality-async.yml` (opus)
 - **Accessibility**: `reusable-a11y-aria.yml` (sonnet), `reusable-a11y-wcag.yml` (opus)
 
-All require `CLAUDE_CODE_OAUTH_TOKEN` secret. They analyze changed files in PRs and post findings as PR comments.
+All require `CLAUDE_CODE_OAUTH_TOKEN` secret. They analyze changed files in PRs and publish findings to the **job summary and PR file annotations** — never a PR comment. The action grants no comment tool, so a prompt asking Claude to comment only produced denials and discarded the findings (issue #47); `$GITHUB_STEP_SUMMARY` and `::warning`/`::error` both work under the `contents: read` these jobs already hold, and need nothing in `additional_permissions:`.
+
+Three things not to re-derive:
+- **The publish block is byte-identical across all eight**, bar four env values (`TITLE`, `BLOCKING_SEVERITIES`, `COUNT_KEYS`, `NOTHING_SCANNED_REASON` — masked in the drift check, so a per-workflow message stays possible without forking the block). It is duplicated on purpose: `uses:` takes no expressions, so a shared composite action would execute at floating `@main` even for a consumer who pinned this repo by SHA, and a script under `.github/` is not checked out either (these jobs run `actions/checkout` with no `repository:`, so the workspace is the *caller's*). `scripts/check-publish-drift.sh` (`just publish-drift`) enforces the identity and fails on absence as well as drift.
+- **Every gate predicate compares numerically** (`steps.publish.outputs.blocking > 0`), never as a string (`!= '0'`), and none carries `always()`. GitHub coerces the empty string a skipped publish step leaves behind to 0 for `>`, so a numeric gate cannot fire on a PR that scanned nothing; string comparison does the opposite and would take every consumer red on a README-only PR.
+- **The fixture harness EXTRACTS the shipped block** out of a workflow with `awk`/`sed` rather than holding a retyped copy (`just publish-fixtures`). That is what caught the annotation-escaping, non-object-element and `index()`-scope defects; a retyped copy is not the code under test.
+- **Everything the model emits is untrusted at the shell boundary**, `--json-schema` notwithstanding: the `enum` on `severity` and the `integer` on the counts are requests to the model, not constraints the runner applies. So annotation payloads (`severity` included) are `%`/CR/LF-escaped; `line` and the counts are type-checked, since a count carrying a newline writes a second `key=value` line into `$GITHUB_OUTPUT` and can overwrite `blocking`; and `findings` is shape-checked in the guard, because a non-array aborts jq under `set -e` and discards summary, annotations and outputs together.
 
 ### OpenCode-Powered Workflows
 

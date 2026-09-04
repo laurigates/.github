@@ -1,0 +1,324 @@
+#!/usr/bin/env bash
+# Fixture harness for the shared publish block.
+#
+# It EXTRACTS the shipped step out of a workflow file and runs that. It never
+# holds a retyped copy: a retyped copy is not the code under test, and every
+# defect this harness has caught (annotation escaping, the non-object crash,
+# the index() scope trap) was invisible to reading.
+#
+# Usage: bash .github/tests/publish-findings/run.sh [workflow-file]
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+WORKFLOW="${1:-.github/workflows/reusable-security-owasp.yml}"
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+
+# ---------------------------------------------------------------- extraction
+# The `run:` body of the `Publish findings` step, dedented by its 10-space
+# block-scalar indent. Terminates at the next step or step-level comment.
+awk '
+  /^      - name: Publish findings$/ { inpub = 1 }
+  inpub && /^        run: \|$/       { inrun = 1; next }
+  inrun && /^      [-#]/             { inrun = 0; inpub = 0 }
+  inrun                              { print }
+' "$WORKFLOW" | sed 's/^          //' > "$work/publish.sh"
+
+if [ ! -s "$work/publish.sh" ]; then
+  echo "FATAL: no 'Publish findings' run body extracted from $WORKFLOW" >&2
+  exit 1
+fi
+
+# The guard is part of the contract the fixtures exercise (outcome-failure
+# below only means anything while the guard admits a failed analysis), so it
+# is asserted from the shipped text too.
+GUARD="$(awk '
+  /^      - name: Publish findings$/ { inpub = 1 }
+  inpub && /^        if: /           { sub(/^        if: /, ""); print; exit }
+' "$WORKFLOW")"
+EXPECTED_GUARD="\${{ !cancelled() && steps.analyze.outcome != 'skipped' }}"
+
+failures=0
+checks=0
+
+fail() { printf '  FAIL [%s] %s\n' "$CASE_NAME" "$1"; failures=$((failures + 1)); }
+ok()   { checks=$((checks + 1)); }
+
+assert_rc() {
+  ok
+  [ "$RC" = "$1" ] || fail "expected rc $1, got $RC"
+}
+assert_in() {
+  ok
+  grep -qF -- "$2" "$1" || fail "expected to find '$2' in $(basename "$1")"
+}
+assert_not_in() {
+  ok
+  grep -qF -- "$2" "$1" && fail "did NOT expect '$2' in $(basename "$1")" || true
+}
+assert_lines() {
+  ok
+  actual="$(grep -c -- "$2" "$1" || true)"
+  [ "$actual" = "$3" ] || fail "expected $3 line(s) matching '$2' in $(basename "$1"), got $actual"
+}
+
+# run_case <name> <structured-output> <analyze-outcome> <blocking> <count-keys>
+run_case() {
+  CASE_NAME="$1"
+  rm -rf "$work/run"
+  mkdir -p "$work/run"
+  export RUNNER_TEMP="$work/run"
+  export GITHUB_STEP_SUMMARY="$work/run/summary.md"
+  export GITHUB_OUTPUT="$work/run/output.txt"
+  : > "$GITHUB_STEP_SUMMARY"
+  : > "$GITHUB_OUTPUT"
+  export TITLE='Test Analysis'
+  export STRUCTURED_OUTPUT="$2"
+  export ANALYZE_OUTCOME="$3"
+  export BLOCKING_SEVERITIES="$4"
+  export COUNT_KEYS="$5"
+  set +e
+  bash "$work/publish.sh" > "$work/run/annotations.txt" 2> "$work/run/stderr.txt"
+  RC=$?
+  set -e
+  SUMMARY="$work/run/summary.md"
+  OUTPUT="$work/run/output.txt"
+  ANNOTATIONS="$work/run/annotations.txt"
+}
+
+echo "== publish-findings fixtures against $WORKFLOW"
+
+# ------------------------------------------------------------------- guard
+CASE_NAME="guard"
+ok
+[ "$GUARD" = "$EXPECTED_GUARD" ] || fail "publish guard is '$GUARD', expected '$EXPECTED_GUARD'"
+
+# ------------------------------------------------------------------- happy
+run_case happy \
+  '{"total_issues":2,"critical_issues":1,"findings":[{"file":"src/low.ts","line":4,"severity":"Low","category":"A09","description":"minor"},{"file":"./src/crit.ts","line":10,"severity":"Critical","category":"A03","description":"bad","remediation":"fix it"}]}' \
+  success 'Critical' 'total_issues,critical_issues'
+assert_rc 0
+assert_in "$SUMMARY" '## Test Analysis'
+assert_in "$SUMMARY" '**total issues:** 2'
+assert_in "$SUMMARY" '**critical issues:** 1'
+assert_in "$SUMMARY" '### Critical — A03'
+assert_in "$SUMMARY" '`src/crit.ts:10`'
+assert_in "$SUMMARY" '**Remediation:** fix it'
+# Blocking severities sort first and annotate at error level.
+ok
+head -1 "$ANNOTATIONS" | grep -qF '::error file=src/crit.ts,line=10::[Critical] [A03] bad' \
+  || fail "first annotation is not the blocking one: $(head -1 "$ANNOTATIONS")"
+assert_in "$ANNOTATIONS" '::warning file=src/low.ts,line=4::[Low] [A09] minor'
+assert_in "$OUTPUT" 'blocking=1'
+assert_in "$OUTPUT" 'itemised=2'
+assert_in "$OUTPUT" 'count_total_issues=2'
+assert_in "$OUTPUT" 'count_critical_issues=1'
+
+# --------------------------------------------------------- empty findings
+run_case empty-findings '{"total_issues":0,"critical_issues":0,"findings":[]}' success '' 'total_issues,critical_issues'
+assert_rc 0
+assert_in "$SUMMARY" 'No findings reported.'
+assert_in "$SUMMARY" '**total issues:** 0'
+assert_in "$OUTPUT" 'itemised=0'
+assert_in "$OUTPUT" 'count_total_issues=0'
+
+run_case no-findings-key '{"total_issues":0,"critical_issues":0}' success '' 'total_issues,critical_issues'
+assert_rc 0
+assert_in "$SUMMARY" 'No findings reported.'
+assert_in "$OUTPUT" 'count_critical_issues=0'
+
+# ------------------------------------------------------- unparseable input
+run_case malformed-json 'not json at all' success '' 'total_issues,critical_issues'
+assert_rc 0
+assert_in "$SUMMARY" 'no usable structured output'
+assert_in "$OUTPUT" 'blocking=0'
+assert_in "$OUTPUT" 'count_total_issues=0'
+assert_in "$OUTPUT" 'count_critical_issues=0'
+
+run_case empty-string '' success '' 'secrets_count'
+assert_rc 0
+assert_in "$SUMMARY" 'no usable structured output'
+assert_in "$OUTPUT" 'count_secrets_count=0'
+
+run_case json-array-root '[1,2]' success '' 'total_issues'
+assert_rc 0
+assert_in "$SUMMARY" 'no usable structured output'
+assert_in "$OUTPUT" 'count_total_issues=0'
+
+# ------------------------------------------------- findings not an array
+# A string here used to abort jq under `set -e`, taking the summary, the
+# annotations and the counts with it. It must degrade to the same report as
+# unparseable input.
+run_case findings-not-array '{"total_issues":3,"findings":"none"}' success '' 'total_issues'
+assert_rc 0
+assert_in "$SUMMARY" 'no usable structured output'
+assert_in "$OUTPUT" 'blocking=0'
+assert_in "$OUTPUT" 'count_total_issues=0'
+
+# ------------------------------------------------------ non-object element
+run_case non-object-element \
+  '{"total_issues":2,"findings":[{"file":"a.ts","severity":"Low","category":"C","description":"d"},"bare string",null,7]}' \
+  success '' 'total_issues'
+assert_rc 0
+assert_in "$SUMMARY" '### Low — C'
+assert_in "$OUTPUT" 'itemised=1'
+assert_lines "$ANNOTATIONS" '^::' 1
+
+# -------------------------------------------------------------- escaping
+run_case escaping \
+  '{"total_issues":1,"findings":[{"file":"src/a,b.ts","line":3,"severity":"High","category":"100% cat","description":"one\ntwo 50% x\rthree"}]}' \
+  success '' 'total_issues'
+assert_rc 0
+assert_in "$ANNOTATIONS" 'file=src/a%2Cb.ts,line=3'
+assert_in "$ANNOTATIONS" '%0A'
+assert_in "$ANNOTATIONS" '%0D'
+assert_in "$ANNOTATIONS" '50%25 x'
+assert_in "$ANNOTATIONS" '[100%25 cat]'
+
+# ------------------------------------------------- severity is untrusted
+# The schema constrains severity with an enum, which the model is asked to
+# honour and the runner does not enforce. A newline in it would close the
+# annotation and let the rest be parsed as its own workflow command.
+run_case severity-injection \
+  '{"total_issues":1,"findings":[{"file":"a.ts","severity":"Low\n::error::INJECTED","category":"C","description":"d"}]}' \
+  success '' 'total_issues'
+assert_rc 0
+assert_lines "$ANNOTATIONS" '^::' 1
+assert_lines "$ANNOTATIONS" '^::error::INJECTED' 0
+assert_in "$ANNOTATIONS" '[Low%0A::error::INJECTED]'
+
+# ------------------------------------------------ count values are untrusted
+# $GITHUB_OUTPUT is a key=value file: a newline in a count opens a second
+# line, and `blocking` is exactly what a caller's gate reads.
+run_case count-injection \
+  '{"total_issues":"0\nblocking=99","critical_issues":2,"findings":[{"file":"a.ts","severity":"Critical","category":"C","description":"d"}]}' \
+  success 'Critical' 'total_issues,critical_issues'
+assert_rc 0
+assert_in "$OUTPUT" 'blocking=1'
+assert_not_in "$OUTPUT" 'blocking=99'
+assert_in "$OUTPUT" 'count_total_issues=0'
+assert_in "$OUTPUT" 'count_critical_issues=2'
+assert_lines "$OUTPUT" '^blocking=' 1
+
+# ------------------------------------------------------- unusable line
+# `line` lands in the annotation's property list, where a string injects
+# further properties and `0` is not a valid anchor. Both must degrade to an
+# annotation with a file and no line, never to a corrupted one.
+run_case line-not-integer \
+  '{"total_issues":1,"findings":[{"file":"a.ts","line":"1,col=9,endLine=99","severity":"Low","category":"C","description":"d"}]}' \
+  success '' 'total_issues'
+assert_rc 0
+assert_in "$ANNOTATIONS" '::warning file=a.ts::[Low] [C] d'
+assert_not_in "$ANNOTATIONS" 'col=9'
+
+run_case line-zero \
+  '{"total_issues":1,"findings":[{"file":"a.ts","line":0,"severity":"Low","category":"C","description":"d"}]}' \
+  success '' 'total_issues'
+assert_rc 0
+assert_in "$ANNOTATIONS" '::warning file=a.ts::[Low] [C] d'
+assert_not_in "$ANNOTATIONS" 'line='
+
+# ------------------------------------------------------ missing file/line
+run_case null-file '{"total_issues":1,"findings":[{"severity":"Low","category":"C","description":"d"}]}' success '' 'total_issues'
+assert_rc 0
+assert_in "$ANNOTATIONS" '::warning::[Low] [C] d'
+assert_not_in "$ANNOTATIONS" 'file='
+
+run_case empty-file '{"total_issues":1,"findings":[{"file":"","severity":"Low","category":"C","description":"d"}]}' success '' 'total_issues'
+assert_rc 0
+assert_in "$ANNOTATIONS" '::warning::[Low] [C] d'
+assert_not_in "$ANNOTATIONS" 'file='
+
+# ------------------------------------------------------- missing severity
+run_case missing-severity \
+  '{"total_issues":1,"findings":[{"file":"a.ts","category":"C","description":"d"}]}' \
+  success 'Critical' 'total_issues'
+assert_rc 0
+assert_in "$SUMMARY" '### Unrated — C'
+assert_in "$ANNOTATIONS" '::warning file=a.ts::[Unrated] [C] d'
+assert_in "$OUTPUT" 'blocking=0'
+
+# ---------------------------------------------------- count disagreement
+run_case count-disagreement \
+  '{"total_issues":7,"critical_issues":0,"findings":[{"file":"a.ts","severity":"Critical","category":"C","description":"d"},{"file":"b.ts","severity":"Low","category":"C","description":"d"}]}' \
+  success 'Critical' 'total_issues,critical_issues'
+assert_rc 0
+assert_in "$OUTPUT" 'count_total_issues=7'
+assert_in "$OUTPUT" 'count_critical_issues=0'
+assert_in "$OUTPUT" 'itemised=2'
+assert_in "$OUTPUT" 'blocking=1'
+
+# -------------------------------------------------------- multi blocking
+run_case multi-blocking \
+  '{"total_vulnerabilities":3,"critical_high":2,"findings":[{"file":"p.json","severity":"Medium","category":"m","description":"d"},{"file":"p.json","severity":"High","category":"h","description":"d"},{"file":"p.json","severity":"Critical","category":"c","description":"d"}]}' \
+  success 'Critical,High' 'total_vulnerabilities,critical_high'
+assert_rc 0
+assert_in "$OUTPUT" 'blocking=2'
+assert_lines "$ANNOTATIONS" '^::error' 2
+assert_lines "$ANNOTATIONS" '^::warning' 1
+
+# --------------------------------------------------- alternate count shapes
+run_case wcag-levels \
+  '{"total_issues":2,"level_a_issues":1,"level_aa_issues":1,"findings":[]}' \
+  success '' 'total_issues,level_a_issues,level_aa_issues'
+assert_rc 0
+assert_in "$SUMMARY" '**level a issues:** 1'
+assert_in "$SUMMARY" '**level aa issues:** 1'
+assert_in "$OUTPUT" 'count_level_aa_issues=1'
+
+run_case secrets-single-count '{"secrets_count":0,"findings":[]}' success '' 'secrets_count'
+assert_rc 0
+assert_in "$SUMMARY" '**secrets count:** 0'
+assert_in "$OUTPUT" 'count_secrets_count=0'
+
+# ------------------------------------------------------------- over limit
+OVER="$(jq -cn '{total_issues:14, findings:[range(14) | {file:"f\(.).ts", severity:"Low", category:"C", description:"d\(.)"}]}')"
+run_case over-limit "$OVER" success '' 'total_issues'
+assert_rc 0
+assert_lines "$ANNOTATIONS" '^::warning' 10
+assert_in "$ANNOTATIONS" '::notice::4 further finding(s) appear in the job summary only.'
+assert_in "$OUTPUT" 'itemised=14'
+
+# -------------------------------------------------------- outcome failure
+run_case outcome-failure \
+  '{"total_issues":1,"critical_issues":1,"findings":[{"file":"a.ts","severity":"Critical","category":"C","description":"d"}]}' \
+  failure 'Critical' 'total_issues,critical_issues'
+assert_rc 0
+assert_in "$SUMMARY" "reported 'failure'; the findings below may be incomplete."
+assert_in "$SUMMARY" '### Critical — C'
+assert_in "$ANNOTATIONS" '::error file=a.ts::[Critical] [C] d'
+assert_in "$OUTPUT" 'blocking=1'
+
+# -------------------------------------------------------------- oversize
+# The padding is finding COUNT, not description length, and that is forced.
+# STRUCTURED_OUTPUT reaches the block as an ENVIRONMENT string, and Linux caps
+# a single env/argv string at MAX_ARG_STRLEN (32 * 4096 = 131072 bytes): a
+# 950 KB description fails the execve of the child shell with E2BIG before any
+# of the block runs. That is what took CI red on this branch's first run
+# (33902497222, `/usr/bin/jq: Argument list too long`, exit 126) while macOS,
+# which has no per-string cap, stayed green. Building the string inside jq
+# does not help -- the harness still exports it across an exec.
+#
+# The same ceiling sits in front of production, so 20000 near-empty finding
+# objects is not merely a cheaper fixture, it is the ONLY shape that can reach
+# the truncation branch at all: 60035 bytes of JSON, under the cap, rendering
+# to 1160043 bytes. Anything with populated descriptions long enough to render
+# past 900000 exceeds the cap and never arrives.
+CASE_NAME=oversize
+BIG="$(jq -cn --argjson n 20000 '{total_issues:$n, findings:[range($n) | {}]}')"
+ok
+[ "$(printf '%s' "$BIG" | wc -c)" -lt 131072 ] \
+  || fail "payload is $(printf '%s' "$BIG" | wc -c) bytes; at MAX_ARG_STRLEN or over it cannot exec on Linux"
+run_case oversize "$BIG" success '' 'total_issues'
+assert_rc 0
+assert_in "$SUMMARY" '_Summary truncated at 900000 bytes; remaining findings omitted._'
+ok
+[ "$(wc -c < "$SUMMARY")" -lt 1048576 ] || fail "truncated summary is still over 1 MiB"
+
+# ------------------------------------------------------------------ report
+if [ "$failures" -eq 0 ]; then
+  printf 'publish-findings: %d assertion(s) passed.\n' "$checks"
+else
+  printf 'publish-findings: %d assertion(s) FAILED out of %d.\n' "$failures" "$checks"
+  exit 1
+fi
