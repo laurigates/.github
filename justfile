@@ -132,9 +132,9 @@ lint:
 # Fail if the shared publish block has drifted between analysis workflows
 [group: "validate"]
 publish-drift count="8":
-    bash scripts/check-publish-drift.sh {{count}}
+    bash scripts/check-publish-drift.sh "{{count}}"
 
 # Run the publish-block renderer against its fixtures
 [group: "validate"]
 publish-fixtures workflow=".github/workflows/reusable-security-owasp.yml":
-    bash .github/tests/publish-findings/run.sh {{workflow}}
+    bash .github/tests/publish-findings/run.sh "{{workflow}}"

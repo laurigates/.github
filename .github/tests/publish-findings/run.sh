@@ -130,19 +130,29 @@ assert_in "$OUTPUT" 'count_critical_issues=0'
 # ------------------------------------------------------- unparseable input
 run_case malformed-json 'not json at all' success '' 'total_issues,critical_issues'
 assert_rc 0
-assert_in "$SUMMARY" 'no parseable structured output'
+assert_in "$SUMMARY" 'no usable structured output'
 assert_in "$OUTPUT" 'blocking=0'
 assert_in "$OUTPUT" 'count_total_issues=0'
 assert_in "$OUTPUT" 'count_critical_issues=0'
 
 run_case empty-string '' success '' 'secrets_count'
 assert_rc 0
-assert_in "$SUMMARY" 'no parseable structured output'
+assert_in "$SUMMARY" 'no usable structured output'
 assert_in "$OUTPUT" 'count_secrets_count=0'
 
 run_case json-array-root '[1,2]' success '' 'total_issues'
 assert_rc 0
-assert_in "$SUMMARY" 'no parseable structured output'
+assert_in "$SUMMARY" 'no usable structured output'
+assert_in "$OUTPUT" 'count_total_issues=0'
+
+# ------------------------------------------------- findings not an array
+# A string here used to abort jq under `set -e`, taking the summary, the
+# annotations and the counts with it. It must degrade to the same report as
+# unparseable input.
+run_case findings-not-array '{"total_issues":3,"findings":"none"}' success '' 'total_issues'
+assert_rc 0
+assert_in "$SUMMARY" 'no usable structured output'
+assert_in "$OUTPUT" 'blocking=0'
 assert_in "$OUTPUT" 'count_total_issues=0'
 
 # ------------------------------------------------------ non-object element
@@ -164,6 +174,31 @@ assert_in "$ANNOTATIONS" '%0A'
 assert_in "$ANNOTATIONS" '%0D'
 assert_in "$ANNOTATIONS" '50%25 x'
 assert_in "$ANNOTATIONS" '[100%25 cat]'
+
+# ------------------------------------------------- severity is untrusted
+# The schema constrains severity with an enum, which the model is asked to
+# honour and the runner does not enforce. A newline in it would close the
+# annotation and let the rest be parsed as its own workflow command.
+run_case severity-injection \
+  '{"total_issues":1,"findings":[{"file":"a.ts","severity":"Low\n::error::INJECTED","category":"C","description":"d"}]}' \
+  success '' 'total_issues'
+assert_rc 0
+assert_lines "$ANNOTATIONS" '^::' 1
+assert_lines "$ANNOTATIONS" '^::error::INJECTED' 0
+assert_in "$ANNOTATIONS" '[Low%0A::error::INJECTED]'
+
+# ------------------------------------------------ count values are untrusted
+# $GITHUB_OUTPUT is a key=value file: a newline in a count opens a second
+# line, and `blocking` is exactly what a caller's gate reads.
+run_case count-injection \
+  '{"total_issues":"0\nblocking=99","critical_issues":2,"findings":[{"file":"a.ts","severity":"Critical","category":"C","description":"d"}]}' \
+  success 'Critical' 'total_issues,critical_issues'
+assert_rc 0
+assert_in "$OUTPUT" 'blocking=1'
+assert_not_in "$OUTPUT" 'blocking=99'
+assert_in "$OUTPUT" 'count_total_issues=0'
+assert_in "$OUTPUT" 'count_critical_issues=2'
+assert_lines "$OUTPUT" '^blocking=' 1
 
 # ------------------------------------------------------- unusable line
 # `line` lands in the annotation's property list, where a string injects

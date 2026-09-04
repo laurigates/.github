@@ -20,27 +20,52 @@ cd "$(git rev-parse --show-toplevel)"
 BEGIN='      # ---- BEGIN shared publish block'
 END='      # ---- END shared publish block ----'
 expected="${1:-8}"
+# `[ "$found" -ne "$expected" ]` errors rather than fails on a non-integer,
+# and an errored condition inside `if` does not trip `set -e` -- so a
+# mistyped argument would skip the count assertion and still exit 0.
+case "$expected" in
+  '' | *[!0-9]*) printf 'expected block count must be an integer, got: %s\n' "$expected" >&2; exit 2 ;;
+esac
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 found=0
 missing=()
+unterminated=()
 status=0
 
+# Presence is tested with the SAME anchor the extraction uses. An unanchored
+# `grep -F` matched a re-indented marker that `sed -n /^.../` then refused to
+# extract, so every block came out empty and the diff loop reported eight
+# identical nothings. Verified: two extra spaces on all eight markers passed
+# this gate before the anchor was added.
 for f in .github/workflows/reusable-*.yml; do
   grep -q -- '--json-schema' "$f" || continue
-  if ! grep -qF "$BEGIN" "$f"; then
+  if ! grep -q -- "^${BEGIN}" "$f"; then
     missing+=("$f")
     continue
   fi
-  found=$((found + 1))
+  block="$work/$(basename "$f").block"
   sed -n "/^${BEGIN}/,/^${END}\$/p" "$f" \
     | sed -E "s/^( +)(TITLE|BLOCKING_SEVERITIES|COUNT_KEYS|NOTHING_SCANNED_REASON): .*\$/\1\2: <masked>/" \
-    | sed 's/[[:space:]]*$//' > "$work/$(basename "$f").block"
+    | sed 's/[[:space:]]*$//' > "$block"
+  # A sed range with no closing match runs to EOF, so the extraction has to
+  # prove it stopped where it was told to. An empty file fails this too.
+  if [ "$(tail -n 1 "$block")" != "$END" ]; then
+    unterminated+=("$f")
+    rm -f "$block"
+    continue
+  fi
+  found=$((found + 1))
 done
 
 if [ ${#missing[@]} -gt 0 ]; then
   printf 'MISSING publish block:\n'
   printf '  %s\n' "${missing[@]}"
+  status=1
+fi
+if [ ${#unterminated[@]} -gt 0 ]; then
+  printf 'UNTERMINATED publish block (BEGIN found, END marker not reached):\n'
+  printf '  %s\n' "${unterminated[@]}"
   status=1
 fi
 if [ "$found" -ne "$expected" ]; then

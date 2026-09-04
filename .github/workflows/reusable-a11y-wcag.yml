@@ -271,8 +271,13 @@ jobs:
 
           # jq exits 0 on empty input, so an unguarded run would publish
           # nothing and say nothing -- the exact silence this block ends.
-          if [ -z "${STRUCTURED_OUTPUT:-}" ] || ! printf '%s' "$STRUCTURED_OUTPUT" | jq -e 'type == "object"' >/dev/null 2>&1; then
-            MSG="$TITLE: the analysis step reported '${ANALYZE_OUTCOME}' and produced no parseable structured output, so no findings could be published."
+          #
+          # `findings` is shape-checked here rather than inside each jq
+          # program: a non-array there aborts jq under `set -e` and takes the
+          # summary, the annotations AND the outputs down with it. Degrading
+          # to this branch reports the failure and still emits zeroed counts.
+          if [ -z "${STRUCTURED_OUTPUT:-}" ] || ! printf '%s' "$STRUCTURED_OUTPUT" | jq -e 'type == "object" and ((.findings // []) | type) == "array"' >/dev/null 2>&1; then
+            MSG="$TITLE: the analysis step reported '${ANALYZE_OUTCOME}' and produced no usable structured output (absent, unparseable, or 'findings' not an array), so no findings could be published."
             echo "::warning::$MSG"
             printf '## %s\n\n%s\n' "$TITLE" "$MSG" >> "$GITHUB_STEP_SUMMARY"
             { printf 'blocking=0\nitemised=0\n'
@@ -323,10 +328,14 @@ jobs:
           # File annotations render on the PR's Files tab with no comment
           # permission. Payloads MUST be escaped: an unescaped newline splits
           # the annotation, an unescaped % corrupts it, and an unescaped comma
-          # in the path breaks property parsing. `line` is type-checked rather
-          # than escaped: a string there injects further annotation properties
-          # (`line=1,col=9,endLine=99`), and jq truthiness admits `line=0`,
-          # which GitHub does not accept as an anchor.
+          # in the path breaks property parsing. `severity` is escaped along
+          # with the rest -- the schema's enum is a request to the model, not
+          # a constraint the runner applies, so a newline in it would emit a
+          # second line that GitHub parses as its own workflow command.
+          # `line` is type-checked rather than escaped: a string there injects
+          # further annotation properties (`line=1,col=9,endLine=99`), and jq
+          # truthiness admits `line=0`, which GitHub does not accept as an
+          # anchor.
           printf '%s' "$STRUCTURED_OUTPUT" | jq -r --arg blocking "${BLOCKING_SEVERITIES:-}" --argjson limit "$ANNOTATION_LIMIT" '
             def esc: tostring | gsub("%"; "%25") | gsub("\r"; "%0D") | gsub("\n"; "%0A");
             def sev: .severity // "Unrated";
@@ -336,10 +345,15 @@ jobs:
             | ($f[:$limit][]
                | (sev as $s | if ($b | index($s)) then "error" else "warning" end) as $lvl
                | (if (.file // "") != "" then " file=\(.file | ltrimstr("./") | esc | gsub(","; "%2C"))\(if ((.line | type) == "number" and .line > 0) then ",line=\(.line)" else "" end)" else "" end) as $loc
-               | "::\($lvl)\($loc)::[\(sev)] [\(.category // "Uncategorised" | esc)] \(.description // "no description" | esc)"),
+               | "::\($lvl)\($loc)::[\(sev | esc)] [\(.category // "Uncategorised" | esc)] \(.description // "no description" | esc)"),
               (if ($f | length) > $limit then "::notice::\(($f | length) - $limit) further finding(s) appear in the job summary only." else empty end)
           '
 
+          # $GITHUB_OUTPUT is a `key=value` file, so a newline inside a count
+          # opens a second line: `total_issues` of "0\nblocking=0" would
+          # overwrite the blocking count a caller gates on. Counts are
+          # type-checked rather than escaped, because a count that is not a
+          # number is not a count.
           printf '%s' "$STRUCTURED_OUTPUT" | jq -r --arg blocking "${BLOCKING_SEVERITIES:-}" --arg keys "${COUNT_KEYS:-}" '
             . as $root
             | def sev: .severity // "Unrated";
@@ -347,7 +361,7 @@ jobs:
             | ((.findings // []) | map(select(type == "object"))) as $f
             | "blocking=\($f | map(select(sev as $s | $b | index($s))) | length)",
               "itemised=\($f | length)",
-              (($keys | split(",") | map(select(length > 0)) | .[]) | "count_\(.)=\($root[.] // 0)")
+              (($keys | split(",") | map(select(length > 0)) | .[]) | "count_\(.)=\(if ($root[.] | type) == "number" then $root[.] else 0 end)")
           ' >> "$GITHUB_OUTPUT"
 
       # A check that never ran reports 'pass'. Without this the green tick on
