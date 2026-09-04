@@ -290,7 +290,25 @@ assert_in "$ANNOTATIONS" '::error file=a.ts::[Critical] [C] d'
 assert_in "$OUTPUT" 'blocking=1'
 
 # -------------------------------------------------------------- oversize
-BIG="$(jq -cn --arg d "$(head -c 950000 /dev/zero | tr '\0' 'x')" '{total_issues:1, findings:[{file:"a.ts", severity:"Low", category:"C", description:$d}]}')"
+# The padding is finding COUNT, not description length, and that is forced.
+# STRUCTURED_OUTPUT reaches the block as an ENVIRONMENT string, and Linux caps
+# a single env/argv string at MAX_ARG_STRLEN (32 * 4096 = 131072 bytes): a
+# 950 KB description fails the execve of the child shell with E2BIG before any
+# of the block runs. That is what took CI red on this branch's first run
+# (33902497222, `/usr/bin/jq: Argument list too long`, exit 126) while macOS,
+# which has no per-string cap, stayed green. Building the string inside jq
+# does not help -- the harness still exports it across an exec.
+#
+# The same ceiling sits in front of production, so 20000 near-empty finding
+# objects is not merely a cheaper fixture, it is the ONLY shape that can reach
+# the truncation branch at all: 60035 bytes of JSON, under the cap, rendering
+# to 1160043 bytes. Anything with populated descriptions long enough to render
+# past 900000 exceeds the cap and never arrives.
+CASE_NAME=oversize
+BIG="$(jq -cn --argjson n 20000 '{total_issues:$n, findings:[range($n) | {}]}')"
+ok
+[ "$(printf '%s' "$BIG" | wc -c)" -lt 131072 ] \
+  || fail "payload is $(printf '%s' "$BIG" | wc -c) bytes; at MAX_ARG_STRLEN or over it cannot exec on Linux"
 run_case oversize "$BIG" success '' 'total_issues'
 assert_rc 0
 assert_in "$SUMMARY" '_Summary truncated at 900000 bytes; remaining findings omitted._'

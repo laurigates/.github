@@ -219,6 +219,12 @@ jobs:
         run: |
           set -euo pipefail
           # GitHub discards a step summary over 1 MiB, silently. Cap below it.
+          # This is not the payload ceiling: STRUCTURED_OUTPUT arrives as an
+          # environment string, and Linux caps a single env/argv string at
+          # MAX_ARG_STRLEN (32 * 4096 = 131072), failing the execve of this
+          # step's own shell with E2BIG before line 1 runs. Truncation fires
+          # only for input that renders to more than it costs -- 20000
+          # near-empty findings is 60 KB of JSON and 1.1 MB of summary.
           SUMMARY_MAX_BYTES=900000
           # GitHub surfaces ~10 annotations per level per step. Unverified
           # exact figure; the summary always carries the complete list.
