@@ -349,13 +349,20 @@ jobs:
           # read — nothing published, no rebuild fallback. The promote wait makes
           # that likelier by inspecting an image seconds after it lands, so retry
           # and then degrade to a rebuild rather than aborting.
+          # stderr goes to a file, never into INSPECT: buildx writes warnings
+          # (deprecations, missing provenance) to stderr on otherwise successful
+          # inspects, and folding those into the capture leaves non-JSON that
+          # aborts the jq below under `set -e` — the exact abort this retry
+          # exists to prevent. The file keeps the failure text for the log.
           INSPECT=""
+          inspect_err=$(mktemp)
           for i in 1 2 3; do
-            if INSPECT=$(docker buildx imagetools inspect "$PR_IMAGE" --format '{{json .Image}}' 2>&1); then break; fi
-            echo "  inspect attempt ${i} failed: ${INSPECT}"
+            if INSPECT=$(docker buildx imagetools inspect "$PR_IMAGE" --format '{{json .Image}}' 2>"$inspect_err"); then break; fi
+            echo "  inspect attempt ${i} failed: $(cat "$inspect_err")"
             INSPECT=""
             [ "$i" -lt 3 ] && sleep 5 || true
           done
+          rm -f "$inspect_err"
           if [ -z "$INSPECT" ]; then
             echo "::warning::Could not inspect ${PR_IMAGE} after 3 attempts — falling back to rebuild"
             echo "stale=true" >> "$GITHUB_OUTPUT"
