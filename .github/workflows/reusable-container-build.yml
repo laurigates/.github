@@ -112,6 +112,25 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      # Fails on a bad configuration before a build is paid for. Necessary
+      # because the two expressions that consume scan-mode fail in opposite
+      # directions: `if: inputs.scan-mode != 'off'` still runs the scan for an
+      # unrecognised value, but `continue-on-error: ${{ inputs.scan-mode !=
+      # 'block' }}` soft-fails it — so a caller writing `blocking`, `enforce` or
+      # `true` would get an advisory check with no signal that the enforcement
+      # they asked for was discarded.
+      - name: Validate scan configuration
+        env:
+          MODE: ${{ inputs.scan-mode }}
+          SEVERITY: ${{ inputs.scan-severity }}
+        run: |
+          set -euo pipefail
+          case "$MODE" in
+            advisory|block|off) ;;
+            *) echo "::error::scan-mode must be 'advisory', 'block' or 'off', got '${MODE}'. Refusing to build under a scan mode this workflow does not understand."; exit 1 ;;
+          esac
+          [ -n "$SEVERITY" ] || { echo "::error::scan-severity must not be empty"; exit 1; }
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 

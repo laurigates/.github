@@ -676,13 +676,26 @@ jobs:
       # scan is soft-failed above so publication proceeds; this reproduces the
       # pre-gate outcome exactly — release tags published, job red — rather than
       # letting continue-on-error swallow the failure into a green run.
+      #
+      # `outcome == 'failure'` alone does not say WHY the scan step failed: the
+      # composite exits 1 on findings but exits Trivy's own rc when Trivy itself
+      # fails (DB pull, network), and that second case publishes an image no
+      # platform was examined on. Naming CVEs there sends the operator to
+      # `.trivyignore` for a broken DB pull, so discriminate on the composite's
+      # `result` output instead and only claim findings when it says findings.
       - name: Fail the release on scan findings (warn mode)
         if: ${{ inputs.scan-enforcement == 'warn' && steps.scan.outcome == 'failure' }}
         env:
           SEVERITY: ${{ inputs.scan-severity }}
           TARGET: ${{ steps.candidate.outputs.ref }}
+          RESULT: ${{ steps.scan.outputs.result }}
+          PLATFORMS: ${{ steps.scan.outputs.platforms-scanned }}
         run: |
-          echo "::error::Trivy reported ${SEVERITY} findings in ${TARGET}. Release tags were published because scan-enforcement is 'warn'."
+          if [ "${RESULT:-}" = "findings" ]; then
+            echo "::error::Trivy reported ${SEVERITY} findings in ${TARGET}. Release tags were published because scan-enforcement is 'warn'."
+          else
+            echo "::error::The scan did not report a completed result (result='${RESULT:-none}', platforms scanned=${PLATFORMS:-0}) — read the scan step's log before treating this as a vulnerability report. Release tags for ${TARGET} were published unscanned because scan-enforcement is 'warn'."
+          fi
           exit 1
 
       - name: Job summary

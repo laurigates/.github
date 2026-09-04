@@ -68,7 +68,7 @@ Four things not to re-derive:
 - **`--exit-code 13`, not `1`.** Trivy exits with the requested code for findings (`types.ExitError`) and `1` for everything else (`log.Fatal`), so `1` makes a DB-pull failure indistinguishable from a real CVE — and the natural response to the former is to switch the gate off. Confirmed on the pinned `v0.70.0` binary
 - **`scan-enforcement` is a validated string (`block`|`warn`), not a boolean.** An unrecognised value is a hard error at the top of the job; `continue-on-error: ${{ inputs.scan-enforcement == 'warn' }}` then means anything that is not exactly `warn` blocks. `warn` publishes *and* fails the job, reproducing the pre-gate outcome rather than swallowing the failure into a green run
 
-The PR-phase build's scan is **advisory by default** (`scan-mode: advisory|block|off`) and is not the gate: a CVE published against an unchanged base would otherwise block every unrelated release, and the rebuild path exists precisely when the PR image is not what ships.
+The PR-phase build's scan is **advisory by default** (`scan-mode: advisory|block|off`) and is not the gate: a CVE published against an unchanged base would otherwise block every unrelated release, and the rebuild path exists precisely when the PR image is not what ships. `scan-mode` is validated at the top of the build job for the same reason `scan-enforcement` is — its `continue-on-error: ${{ inputs.scan-mode != 'block' }}` fails *open*, so an unvalidated `blocking`/`enforce`/`true` would silently downgrade a caller's blocking check to advisory.
 
 ### Release Automation
 
