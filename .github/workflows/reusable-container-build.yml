@@ -213,6 +213,11 @@ jobs:
 
       - name: Job summary
         if: always()
+        env:
+          SCAN_MODE: ${{ inputs.scan-mode }}
+          SCAN_RESULT: ${{ steps.scan.outputs.result }}
+          SCAN_PLATFORMS: ${{ steps.scan.outputs.platforms-scanned }}
+          SCAN_OUTCOME: ${{ steps.scan.outcome }}
         run: |
           echo "## Container Build: \`${{ inputs.image-name }}\` (PR pre-release)" >> $GITHUB_STEP_SUMMARY
           echo "- **Image**: \`${{ steps.tag.outputs.pre-release-tag }}\`" >> $GITHUB_STEP_SUMMARY
@@ -220,7 +225,14 @@ jobs:
           echo "- **Purpose**: Pre-built for promotion on merge — no rebuild needed after tag push" >> $GITHUB_STEP_SUMMARY
           # The mode is printed unconditionally so a skipped scan is visible
           # rather than looking like a pass.
-          echo "- **Scan**: mode \`${{ inputs.scan-mode }}\`, result \`${{ steps.scan.outputs.result || 'not-run' }}\` (${{ steps.scan.outputs.platforms-scanned || 0 }} platform manifest(s))" >> $GITHUB_STEP_SUMMARY
-          if [ "${{ steps.scan.outcome }}" = "failure" ]; then
+          echo "- **Scan**: mode \`${SCAN_MODE}\`, result \`${SCAN_RESULT:-not-run}\` (${SCAN_PLATFORMS:-0} platform manifest(s))" >> $GITHUB_STEP_SUMMARY
+          # Discriminated on the composite's `result`, not on the step outcome:
+          # the scan step also fails when Trivy itself fails (DB pull, network),
+          # and calling that "findings" sends the operator to `.trivyignore` for
+          # a broken scanner. Same reasoning as the warn-mode step in
+          # reusable-container-release.yml.
+          if [ "${SCAN_RESULT:-}" = "findings" ]; then
             echo "  - Findings present. The release job will refuse to publish this image unless they are fixed, \`.trivyignore\`d, or \`scan-enforcement: warn\` is set there." >> $GITHUB_STEP_SUMMARY
+          elif [ "${SCAN_OUTCOME:-}" = "failure" ]; then
+            echo "  - The scan did not complete — read the scan step's log. This is a scanner failure, not a vulnerability report." >> $GITHUB_STEP_SUMMARY
           fi

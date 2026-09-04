@@ -700,6 +700,12 @@ jobs:
 
       - name: Job summary
         if: always()
+        env:
+          SCAN_RESULT: ${{ steps.scan.outputs.result }}
+          SCAN_PLATFORMS: ${{ steps.scan.outputs.platforms-scanned }}
+          SCAN_SEVERITY: ${{ inputs.scan-severity }}
+          SCAN_IGNORE_UNFIXED: ${{ inputs.scan-ignore-unfixed }}
+          SCAN_ENFORCEMENT: ${{ inputs.scan-enforcement }}
         run: |
           PR_IMAGE_EXISTS="${{ steps.pr-image.outputs.exists }}"
           STALE="${{ steps.freshness.outputs.stale }}"
@@ -709,10 +715,8 @@ jobs:
           GATE="${{ steps.pr-image.outputs.wait_gate }}"
           echo "## Container Release: \`${{ inputs.image-name }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Version**: \`${{ steps.meta.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
-          SCAN="${{ steps.scan.outputs.result }}"
-          PLAT="${{ steps.scan.outputs.platforms-scanned }}"
-          echo "- **Scan**: \`${SCAN:-did-not-complete}\` — ${PLAT:-0} platform manifest(s), severity \`${{ inputs.scan-severity }}\`, ignore-unfixed=${{ inputs.scan-ignore-unfixed }}, enforcement=\`${{ inputs.scan-enforcement }}\`" >> $GITHUB_STEP_SUMMARY
-          if [ "$SCAN" = "findings" ] && [ "${{ inputs.scan-enforcement }}" = "block" ]; then
+          echo "- **Scan**: \`${SCAN_RESULT:-did-not-complete}\` — ${SCAN_PLATFORMS:-0} platform manifest(s), severity \`${SCAN_SEVERITY}\`, ignore-unfixed=${SCAN_IGNORE_UNFIXED}, enforcement=\`${SCAN_ENFORCEMENT}\`" >> $GITHUB_STEP_SUMMARY
+          if [ "${SCAN_RESULT:-}" = "findings" ] && [ "$SCAN_ENFORCEMENT" = "block" ]; then
             echo "- **Publication**: BLOCKED — no release tag was created. The git tag and GitHub Release still exist; \`${{ steps.version.outputs.next_image }}\` remains as the only image reference. Fix the finding or add a reviewed \`.trivyignore\`, then re-run this job." >> $GITHUB_STEP_SUMMARY
           fi
           if [ "$PR_IMAGE_EXISTS" = "true" ] && [ "$STALE" != "true" ]; then
