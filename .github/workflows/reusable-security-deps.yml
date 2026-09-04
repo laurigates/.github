@@ -32,7 +32,10 @@ on:
         description: 'Maximum spend per run in USD (0 = no budget limit)'
         required: false
         type: number
-        default: 0
+        # Non-zero by default: an unbounded budget lets a retry loop burn
+        # indefinitely. Observed 32 turns / $2.30 on one run, most of it the
+        # model retrying a tool call it was never permitted to make.
+        default: 5
       timeout-minutes:
         description: 'Job timeout in minutes'
         required: false
@@ -69,8 +72,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.timeout-minutes }}
     outputs:
-      count: ${{ fromJSON(steps.analyze.outputs.structured_output || '{}').total_vulnerabilities }}
-      critical: ${{ fromJSON(steps.analyze.outputs.structured_output || '{}').critical_high }}
+      count: ${{ steps.publish.outputs.count_total_vulnerabilities }}
+      critical: ${{ steps.publish.outputs.count_critical_high }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -196,7 +199,7 @@ jobs:
             --model ${{ inputs.model }}
             --max-turns ${{ inputs.max-turns }}
             ${{ inputs.max-budget-usd > 0 && format('--max-budget-usd {0}', inputs.max-budget-usd) || '' }}
-            --json-schema '{"type":"object","properties":{"total_vulnerabilities":{"type":"integer","description":"Total vulnerabilities found"},"critical_high":{"type":"integer","description":"Critical and high severity vulnerabilities"}},"required":["total_vulnerabilities","critical_high"]}'
+            --json-schema '{"type":"object","properties":{"total_vulnerabilities":{"type":"integer","description":"Total vulnerabilities found"},"critical_high":{"type":"integer","description":"Critical and high severity vulnerabilities"},"findings":{"type":"array","description":"Every issue found, most severe first","items":{"type":"object","properties":{"file":{"type":"string","description":"The lockfile or manifest that declares the vulnerable package"},"line":{"type":"integer"},"severity":{"type":"string","enum":["Critical","High","Medium","Low"]},"category":{"type":"string","description":"Package, version and advisory id, e.g. lodash@4.17.20 - GHSA-35jh-r3h4-6jhm"},"description":{"type":"string"},"remediation":{"type":"string"}},"required":["file","severity","category","description"]}}},"required":["total_vulnerabilities","critical_high","findings"]}'
           prompt: |
             Analyze the dependency security audit results for this project.
 
@@ -225,13 +228,173 @@ jobs:
 
             Check transitive dependencies — identify the direct dep that pulls in vulnerable transitive deps.
 
-            Report the final counts in the structured output fields:
-            total_vulnerabilities (all findings) and critical_high (critical + high severity).
+            ## Reporting
 
-            Leave a PR comment with findings and recommended actions.
+            Report everything through the structured output fields -- that is
+            the only channel that reaches a human:
 
-      - name: Check for critical/high issues
-        if: inputs.fail-on-high && fromJSON(steps.analyze.outputs.structured_output || '{}').critical_high > 0
+            - total_vulnerabilities: all findings
+            - critical_high: critical plus high severity only
+            - findings: one entry per issue, most severe first, each with
+              file, line, severity, category, description and remediation.
+              category is the package with its advisory id; severity is Critical,
+              High, Medium or Low.
+
+            Every issue you count must also appear in findings. A count with
+            no matching entry is reported as an unreliable scan.
+
+            The workflow renders `findings` into the job summary and into file
+            annotations on the PR's Files tab. Do NOT try to post a PR comment
+            or use any GitHub write tool -- you have no permission to do so,
+            the attempt will be denied, and the finding will be lost. An issue
+            you report only in prose is an issue nobody will ever read.
+
+            npm's ladder has no Medium: map its `Moderate` to Medium.
+
+      # ---- BEGIN shared publish block (checked by scripts/check-publish-drift.sh) ----
+      # Findings reach humans through the job summary and file annotations,
+      # never a PR comment: the action is granted no comment tool, so asking
+      # Claude to post one only produced denials and discarded the findings
+      # (issue #47). Both channels work with the permissions the job holds.
+      #
+      # Guard is `outcome != 'skipped'`, not `== 'success'`: when the wrapper
+      # fails the run for overrunning --max-turns or --max-budget-usd, the
+      # model has normally already emitted its structured output. Gating on
+      # success discards exactly the findings that cost the most to produce.
+      #
+      # `steps.analyze` is the analysis STEP. Several of these workflows also
+      # name their JOB `analyze`; jobs and steps are separate namespaces, so
+      # this resolves to the step.
+      - name: Publish findings
+        id: publish
+        if: ${{ !cancelled() && steps.analyze.outcome != 'skipped' }}
+        env:
+          # Read via env, never interpolated into the script body: this is
+          # model-generated text crossing into a shell.
+          STRUCTURED_OUTPUT: ${{ steps.analyze.outputs.structured_output }}
+          ANALYZE_OUTCOME: ${{ steps.analyze.outcome }}
+          TITLE: 'Dependency Security Audit'
+          BLOCKING_SEVERITIES: 'Critical,High'
+          COUNT_KEYS: 'total_vulnerabilities,critical_high'
         run: |
-          echo "::error::Found ${{ fromJSON(steps.analyze.outputs.structured_output || '{}').critical_high }} critical/high severity vulnerabilities"
+          set -euo pipefail
+          # GitHub discards a step summary over 1 MiB, silently. Cap below it.
+          SUMMARY_MAX_BYTES=900000
+          # GitHub surfaces ~10 annotations per level per step. Unverified
+          # exact figure; the summary always carries the complete list.
+          ANNOTATION_LIMIT=10
+
+          # jq exits 0 on empty input, so an unguarded run would publish
+          # nothing and say nothing -- the exact silence this block ends.
+          if [ -z "${STRUCTURED_OUTPUT:-}" ] || ! printf '%s' "$STRUCTURED_OUTPUT" | jq -e 'type == "object"' >/dev/null 2>&1; then
+            MSG="$TITLE: the analysis step reported '${ANALYZE_OUTCOME}' and produced no parseable structured output, so no findings could be published."
+            echo "::warning::$MSG"
+            printf '## %s\n\n%s\n' "$TITLE" "$MSG" >> "$GITHUB_STEP_SUMMARY"
+            { printf 'blocking=0\nitemised=0\n'
+              printf '%s\n' "${COUNT_KEYS:-}" | tr ',' '\n' | sed '/^$/d;s/^/count_/;s/$/=0/'
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$ANALYZE_OUTCOME" != "success" ]; then
+            MSG="$TITLE: the analysis step reported '${ANALYZE_OUTCOME}'; the findings below may be incomplete."
+            echo "::warning::$MSG"
+            printf '%s\n\n' "$MSG" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          # Counts render from whatever top-level numbers this workflow's
+          # schema declares, so this block stays byte-identical across every
+          # analysis workflow and the drift check can compare it.
+          # `sev as $s | $b | index($s)`: inside index(), the input is $b, so
+          # a bare `$b | index(sev)` silently reads $b.severity. Verified.
+          printf '%s' "$STRUCTURED_OUTPUT" | jq -r --arg title "$TITLE" --arg blocking "${BLOCKING_SEVERITIES:-}" '
+            def sev: .severity // "Unrated";
+            ($blocking | split(",") | map(select(length > 0))) as $b
+            | def rank: sev as $s | if ($b | index($s)) then 0 else 1 end;
+              ((.findings // []) | map(select(type == "object")) | sort_by(rank)) as $f
+            | "## \($title)", "",
+              (to_entries | map(select(.value | type == "number"))
+                | map("**\(.key | gsub("_"; " ")):** \(.value)")
+                | if length == 0 then "_No counts reported._" else join(" · ") end),
+              "",
+              (if ($f | length) == 0 then "No findings reported.", ""
+               else ($f | map(
+                 "### \(sev) — \(.category // "Uncategorised")", "",
+                 (if (.file // "") != "" then "`\(.file | ltrimstr("./"))\(if .line then ":\(.line)" else "" end)`", "" else empty end),
+                 (.description // "_no description supplied_"), "",
+                 (if (.remediation // "") != "" then "**Remediation:** \(.remediation)", "" else empty end)
+               ) | .[])
+               end)
+          ' > "$RUNNER_TEMP/publish-findings-summary.md"
+
+          if [ "$(wc -c < "$RUNNER_TEMP/publish-findings-summary.md")" -gt "$SUMMARY_MAX_BYTES" ]; then
+            head -c "$SUMMARY_MAX_BYTES" "$RUNNER_TEMP/publish-findings-summary.md" >> "$GITHUB_STEP_SUMMARY"
+            printf '\n\n_Summary truncated at %s bytes; remaining findings omitted._\n' "$SUMMARY_MAX_BYTES" >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning::$TITLE: job summary truncated at $SUMMARY_MAX_BYTES bytes."
+          else
+            cat "$RUNNER_TEMP/publish-findings-summary.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          # File annotations render on the PR's Files tab with no comment
+          # permission. Payloads MUST be escaped: an unescaped newline splits
+          # the annotation, an unescaped % corrupts it, and an unescaped comma
+          # in the path breaks property parsing.
+          printf '%s' "$STRUCTURED_OUTPUT" | jq -r --arg blocking "${BLOCKING_SEVERITIES:-}" --argjson limit "$ANNOTATION_LIMIT" '
+            def esc: tostring | gsub("%"; "%25") | gsub("\r"; "%0D") | gsub("\n"; "%0A");
+            def sev: .severity // "Unrated";
+            ($blocking | split(",") | map(select(length > 0))) as $b
+            | def rank: sev as $s | if ($b | index($s)) then 0 else 1 end;
+              ((.findings // []) | map(select(type == "object")) | sort_by(rank)) as $f
+            | ($f[:$limit][]
+               | (sev as $s | if ($b | index($s)) then "error" else "warning" end) as $lvl
+               | (if (.file // "") != "" then " file=\(.file | ltrimstr("./") | esc | gsub(","; "%2C"))\(if .line then ",line=\(.line)" else "" end)" else "" end) as $loc
+               | "::\($lvl)\($loc)::[\(sev)] [\(.category // "Uncategorised" | esc)] \(.description // "no description" | esc)"),
+              (if ($f | length) > $limit then "::notice::\(($f | length) - $limit) further finding(s) appear in the job summary only." else empty end)
+          '
+
+          printf '%s' "$STRUCTURED_OUTPUT" | jq -r --arg blocking "${BLOCKING_SEVERITIES:-}" --arg keys "${COUNT_KEYS:-}" '
+            . as $root
+            | def sev: .severity // "Unrated";
+              ($blocking | split(",") | map(select(length > 0))) as $b
+            | ((.findings // []) | map(select(type == "object"))) as $f
+            | "blocking=\($f | map(select(sev as $s | $b | index($s))) | length)",
+              "itemised=\($f | length)",
+              (($keys | split(",") | map(select(length > 0)) | .[]) | "count_\(.)=\($root[.] // 0)")
+          ' >> "$GITHUB_OUTPUT"
+
+      # A check that never ran reports 'pass'. Without this the green tick on
+      # a PR that matched no files is indistinguishable from a clean scan.
+      - name: Report that nothing was scanned
+        if: ${{ !cancelled() && steps.analyze.outcome == 'skipped' }}
+        env:
+          TITLE: 'Dependency Security Audit'
+          SKIPPED_FOR_SIZE: ${{ steps.changed.outputs.skip }}
+        run: |
+          set -euo pipefail
+          if [ "${SKIPPED_FOR_SIZE:-false}" = "true" ]; then
+            REASON="the PR diff exceeded max-diff-lines, so the diff-size gate skipped the analysis"
+          else
+            REASON="no changed file matched the configured patterns"
+          fi
+          MSG="$TITLE: no analysis ran — $REASON. This check is green because nothing was scanned, not because nothing was found."
+          echo "::notice::$MSG"
+          printf '## %s\n\n%s\n' "$TITLE" "$MSG" >> "$GITHUB_STEP_SUMMARY"
+      # ---- END shared publish block ----
+
+      # Numeric comparison, never `!= '0'`: GitHub coerces the empty string a
+      # skipped publish step leaves behind to 0 for `>`, so this cannot fire on
+      # a PR that scanned nothing. It also carries no `always()`, so a failure
+      # upstream skips it rather than masking the real error.
+      - name: Check for critical/high issues
+        if: inputs.fail-on-high && (steps.publish.outputs.blocking > 0 || steps.publish.outputs.count_critical_high > 0)
+        env:
+          BLOCKING: ${{ steps.publish.outputs.blocking }}
+          REPORTED: ${{ steps.publish.outputs.count_critical_high }}
+        run: |
+          set -euo pipefail
+          if [ "${BLOCKING:-0}" -gt 0 ]; then
+            echo "::error::Dependency audit: ${BLOCKING} critical/high finding(s) — annotated on the Files tab, full detail in the job summary."
+          else
+            echo "::error::Dependency audit reported ${REPORTED} critical/high vulnerabilities but itemised none of them. The scan did not establish anything; re-run it."
+          fi
           exit 1
