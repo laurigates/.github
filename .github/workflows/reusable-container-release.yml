@@ -9,6 +9,22 @@ name: Container Release (Reusable)
 # Tag stripping: given tag 'my-app-v1.2.3' and tag-prefix 'my-app-v',
 # the version resolved is '1.2.3' and the looked-up pre-release image is
 # ghcr.io/.../my-app:next-1.2.3.
+#
+# Permissions: the promote wait needs `actions: read` (to see whether the
+# PR-phase build is still running). Every current caller already grants it;
+# without it the wait degrades loudly to an immediate rebuild — the
+# pre-issue-#51 behaviour — and says which grant is missing.
+#
+# This workflow deliberately does NOT declare `pull-requests: read`, even
+# though the release-commit → release-PR bridge (`/commits/{sha}/pulls`) would
+# use it. A called workflow requesting a scope the calling job has not granted
+# is REJECTED before execution — a validation failure, not a silent downgrade —
+# and a caller that declares a `permissions:` block sets every scope it omits
+# to `none`, whatever the repository's visibility. Consumers pin `@main`, so
+# declaring the scope here would break every existing caller on merge. The
+# bridge is therefore best-effort: where it is unreadable the wait falls back
+# to a per-workflow in-flight count needing only `actions: read`, warns, and
+# never goes silently inert.
 
 on:
   workflow_call:
@@ -56,6 +72,27 @@ on:
         required: false
         type: boolean
         default: true
+      promote-wait-seconds:
+        description: |
+          Ceiling in seconds on waiting for the PR-phase :next-{version} image to
+          appear in GHCR before giving up and rebuilding. The wait is entered only
+          while the Actions API reports a PR-phase build for this release still
+          running, so a release with nothing in flight never spends any of it.
+          0 disables the wait entirely — one GHCR probe, then rebuild, which is
+          the behaviour before issue #51. Clamped to 1800.
+        required: false
+        type: number
+        default: 600
+      build-workflow:
+        description: |
+          Path of the workflow file that runs the PR-phase build, e.g.
+          '.github/workflows/container.yml'. Defaults to the workflow file that
+          called this one, which is correct whenever the build and release jobs
+          live in the same file (every current caller). Set it only when they are
+          split across two files.
+        required: false
+        type: string
+        default: ''
     secrets:
       secret-build-args:
         description: |
@@ -119,19 +156,181 @@ jobs:
           echo "next_image=ghcr.io/${{ inputs.image-name }}:next-${VERSION}" >> $GITHUB_OUTPUT
           echo "Looking for pre-built PR image: next-${VERSION}"
 
-      - name: Check whether pre-built PR image exists in GHCR
+      # The release job can start while the release PR's own build is still
+      # pushing :next-{version} (issue #51), so a bare existence check reads a
+      # race as absence and rebuilds. Wait — but only while there is evidence
+      # the build is still coming, and never longer than the ceiling.
+      - name: Wait for and check the pre-built PR image in GHCR
         id: pr-image
         env:
           PR_IMAGE: ${{ steps.version.outputs.next_image }}
+          WAIT_CEILING: ${{ inputs.promote-wait-seconds }}
+          BUILD_WORKFLOW: ${{ inputs.build-workflow }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RELEASE_SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if docker manifest inspect "${PR_IMAGE}" > /dev/null 2>&1; then
-            echo "exists=true" >> $GITHUB_OUTPUT
-            echo "image=${PR_IMAGE}" >> $GITHUB_OUTPUT
-            echo "PR image found — will check freshness before promoting"
-          else
-            echo "exists=false" >> $GITHUB_OUTPUT
-            echo "PR image not found in GHCR — will fall back to full rebuild"
+          set -uo pipefail
+
+          POLL_INTERVAL=10
+          MAX_CEILING=1800
+          case "${WAIT_CEILING}" in ""|*[!0-9-]*) WAIT_CEILING=0 ;; esac
+          if [ "${WAIT_CEILING}" -gt "${MAX_CEILING}" ]; then
+            echo "::warning::promote-wait-seconds ${WAIT_CEILING} exceeds the ${MAX_CEILING}s ceiling — clamping"
+            WAIT_CEILING=${MAX_CEILING}
           fi
+          started=$(date +%s)
+          matched=0; total=0; gate="not-evaluated"
+
+          emit() {
+            { echo "exists=$1"
+              echo "image=${PR_IMAGE}"
+              echo "waited=$(( $(date +%s) - started ))"
+              echo "wait_gate=${gate}"
+            } >> "$GITHUB_OUTPUT"
+          }
+
+          # One probe. Any non-zero is treated as "not there yet"; stderr is kept so a
+          # transient registry error is diagnosable rather than silently read as absence.
+          probe() { PROBE_ERR=$(docker manifest inspect "$PR_IMAGE" 2>&1 >/dev/null); }
+
+          # Three probes ~3s apart. A single inspect cannot tell "manifest unknown" from a
+          # GHCR 5xx or an auth blip, and the shape this replaced read both as absence.
+          probe_settled() {
+            local i
+            for i in 1 2 3; do
+              if probe; then return 0; fi
+              [ "$i" -lt 3 ] && sleep 3
+            done
+            echo "  last probe error: ${PROBE_ERR}"
+            return 1
+          }
+
+          # Count runs of the PR-phase build workflow, on the release PR's head commit,
+          # that have not reached a terminal state. Keyed on the PR head and NOT on the
+          # release commit: the build is triggered by pull_request, so its run head_sha is
+          # the PR branch tip, which a squash merge never puts on main. (Keying on the
+          # release commit is worse than useless — main's HEAD sha matches every scheduled
+          # run on main.) The .path filter is what keeps a sibling check — Security, Tests,
+          # Quality, a Claude review — from holding the wait open; those routinely outlast
+          # the container build.
+          count_inflight() {
+            local sha payload t m
+            total=0; matched=0
+            for sha in $PR_HEADS; do
+              payload=$(gh api "repos/${REPO}/actions/runs?head_sha=${sha}&per_page=50" 2>/dev/null) || { gate="unavailable"; return 1; }
+              t=$(printf '%s' "$payload" | jq '.workflow_runs | length') || { gate="unavailable"; return 1; }
+              m=$(printf '%s' "$payload" | jq --arg p "$BUILD_PATH" \
+                  '[.workflow_runs[] | select(.path == $p and .status != "completed")] | length') || { gate="unavailable"; return 1; }
+              total=$(( total + t )); matched=$(( matched + m ))
+            done
+            return 0
+          }
+
+          # Fallback when the PR lookup is unreadable. This workflow requests no
+          # `pull-requests` scope (see the permissions note at the top), so the bridge
+          # succeeds only where GitHub serves that endpoint without one. Needs only
+          # actions: read. Less precise — it counts any in-flight PR-event run of the
+          # build workflow, including another PR's — but bounded, and it keeps the fix
+          # from going inert.
+          count_inflight_by_workflow() {
+            local payload
+            total=0; matched=0
+            payload=$(gh api "repos/${REPO}/actions/workflows/${BUILD_PATH##*/}/runs?event=pull_request&per_page=50" 2>/dev/null) || { gate="unavailable"; return 1; }
+            total=$(printf '%s' "$payload" | jq '.workflow_runs | length') || { gate="unavailable"; return 1; }
+            matched=$(printf '%s' "$payload" | jq '[.workflow_runs[] | select(.status != "completed")] | length') || { gate="unavailable"; return 1; }
+            return 0
+          }
+
+          give_up() {   # $1 = gate value; probe once more before conceding
+            gate="$1"
+            probe_settled && { emit true; exit 0; }
+            emit false; exit 0
+          }
+
+          # ---- Fast path: the image is normally already there, and this costs nothing.
+          if probe; then
+            echo "PR image found — will check freshness before promoting"
+            gate="not-needed"; emit true; exit 0
+          fi
+
+          # A true bypass, not `give_up disabled`: give_up re-probes three times over
+          # ~6s, so routing 0 through it would leave the documented escape hatch
+          # behaving differently from the pre-#51 step it claims to restore — which is
+          # exactly what someone reaches for to rule this change out during an incident.
+          # The fast-path probe above has already run and failed, so this is one probe
+          # then rebuild.
+          if [ "${WAIT_CEILING}" -le 0 ]; then
+            echo "promote-wait-seconds is 0 — not waiting for a PR-phase build"
+            gate="disabled"; emit false; exit 0
+          fi
+
+          # ---- Evidence: is a PR-phase build for this release still running?
+          # A reusable workflow has no run of its own, so this run's `.path` is the
+          # CALLER's workflow file — correct whenever the build and release jobs live in
+          # that same file, which is every current caller.
+          BUILD_PATH="${BUILD_WORKFLOW}"
+          if [ -z "$BUILD_PATH" ]; then
+            BUILD_PATH=$(gh api "repos/${REPO}/actions/runs/${RUN_ID}" --jq '.path' 2>/dev/null) || BUILD_PATH=""
+          fi
+          if [ -z "$BUILD_PATH" ]; then
+            echo "::warning::Could not resolve the PR-phase build workflow path — the promote wait is inactive for this run, so this release will rebuild rather than promote. Grant 'actions: read' to the job that calls this workflow, or set build-workflow explicitly."
+            give_up unavailable
+          fi
+
+          PR_HEADS=$(gh api "repos/${REPO}/commits/${RELEASE_SHA}/pulls" --jq '.[].head.sha' 2>/dev/null) || PR_HEADS="__ERR__"
+
+          COUNTER=count_inflight
+          if [ "$PR_HEADS" = "__ERR__" ]; then
+            echo "::warning::Could not read the release commit's pull requests — this workflow's GITHUB_TOKEN carries no 'pull-requests' scope, and it cannot request one without failing validation for every caller that omits it. Falling back to a per-workflow in-flight check, which needs only 'actions: read' and may also count another PR's build."
+            COUNTER=count_inflight_by_workflow
+          elif [ -z "$PR_HEADS" ]; then
+            echo "::notice::No pull request is associated with ${RELEASE_SHA}, so no PR-phase build is expected — rebuilding now rather than waiting."
+            give_up no-pr
+          fi
+
+          if ! $COUNTER; then
+            echo "::warning::Could not read workflow runs — the promote wait is inactive for this run, so this release will rebuild rather than promote. Grant 'actions: read' to the job that calls this workflow."
+            give_up unavailable
+          fi
+
+          if [ "$matched" -eq 0 ]; then
+            # Reporting `total` alongside `matched` is the control: `total=0` means the
+            # query returned nothing at all (suspect the token or the SHA), while
+            # `total>0, matched=0` means the query worked and no build is running. Without
+            # it a mis-specified filter is indistinguishable from a genuine zero, and the
+            # wait would be silently inert forever behind a green tick.
+            echo "::notice::No in-flight ${BUILD_PATH} run for this release (${total} run(s) inspected) — rebuilding now rather than waiting."
+            give_up nothing-in-flight
+          fi
+
+          # ---- Wait: bounded, early-exit, and re-evaluated every iteration.
+          gate="waited"
+          echo "PR image not in GHCR yet; ${matched} ${BUILD_PATH} run(s) still in flight. Waiting up to ${WAIT_CEILING}s for ${PR_IMAGE}"
+          deadline=$(( started + WAIT_CEILING ))
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            sleep "$POLL_INTERVAL"
+            if probe; then
+              echo "PR image appeared after $(( $(date +%s) - started ))s — will check freshness before promoting"
+              emit true; exit 0
+            fi
+            if ! $COUNTER; then break; fi
+            if [ "$matched" -eq 0 ]; then
+              # The build reached a terminal state (success, failure, cancelled, skipped)
+              # without the image appearing. Re-probe once — a run can finish pushing
+              # between the probe above and this count — then stop rather than burning
+              # the rest of the ceiling.
+              echo "No ${BUILD_PATH} run left in flight after $(( $(date +%s) - started ))s"
+              probe_settled && { emit true; exit 0; }
+              break
+            fi
+            left=$(( deadline - $(date +%s) )); [ "$left" -lt 0 ] && left=0
+            echo "  ... waiting (${matched} in flight, ${left}s left)"
+          done
+
+          echo "::warning::Pre-built PR image ${PR_IMAGE} did not appear after $(( $(date +%s) - started ))s — falling back to full rebuild"
+          emit false
 
       # Guard against the build-once/promote race: if main moved forward between
       # the PR image being built and the release tag being pushed, the cached
@@ -146,7 +345,29 @@ jobs:
           CONTEXT: ${{ inputs.context }}
         run: |
           set -euo pipefail
-          INSPECT=$(docker buildx imagetools inspect "$PR_IMAGE" --format '{{json .Image}}')
+          # A bare assignment here fails the whole release job on a transient GHCR
+          # read — nothing published, no rebuild fallback. The promote wait makes
+          # that likelier by inspecting an image seconds after it lands, so retry
+          # and then degrade to a rebuild rather than aborting.
+          # stderr goes to a file, never into INSPECT: buildx writes warnings
+          # (deprecations, missing provenance) to stderr on otherwise successful
+          # inspects, and folding those into the capture leaves non-JSON that
+          # aborts the jq below under `set -e` — the exact abort this retry
+          # exists to prevent. The file keeps the failure text for the log.
+          INSPECT=""
+          inspect_err=$(mktemp)
+          for i in 1 2 3; do
+            if INSPECT=$(docker buildx imagetools inspect "$PR_IMAGE" --format '{{json .Image}}' 2>"$inspect_err"); then break; fi
+            echo "  inspect attempt ${i} failed: $(cat "$inspect_err")"
+            INSPECT=""
+            [ "$i" -lt 3 ] && sleep 5 || true
+          done
+          rm -f "$inspect_err"
+          if [ -z "$INSPECT" ]; then
+            echo "::warning::Could not inspect ${PR_IMAGE} after 3 attempts — falling back to rebuild"
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           # `.Image` has two shapes, and reading only the first one is why this
           # check reported every multi-platform image as unlabelled:
           #   single-platform tag  -> one image config, labels at .config.Labels
@@ -303,15 +524,23 @@ jobs:
           STALE="${{ steps.freshness.outputs.stale }}"
           SIGNED="${{ steps.cosign-sign.outputs.signed }}"
           DIGEST="${{ steps.release-digest.outputs.digest }}"
+          WAITED="${{ steps.pr-image.outputs.waited }}"
+          GATE="${{ steps.pr-image.outputs.wait_gate }}"
           echo "## Container Release: \`${{ inputs.image-name }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Version**: \`${{ steps.meta.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
           if [ "$PR_IMAGE_EXISTS" = "true" ] && [ "$STALE" != "true" ]; then
             echo "- **Method**: Promoted from pre-built PR image (fast path)" >> $GITHUB_STEP_SUMMARY
             echo "- **Source**: \`${{ steps.version.outputs.next_image }}\`" >> $GITHUB_STEP_SUMMARY
+            if [ "${WAITED:-0}" -gt 20 ]; then
+              echo "- **Waited**: ${WAITED}s for the PR-phase build to finish pushing" >> $GITHUB_STEP_SUMMARY
+            fi
           elif [ "$PR_IMAGE_EXISTS" = "true" ] && [ "$STALE" = "true" ]; then
             echo "- **Method**: Full rebuild (PR image was stale — main moved between PR build and release)" >> $GITHUB_STEP_SUMMARY
           else
-            echo "- **Method**: Full rebuild (no pre-built PR image found)" >> $GITHUB_STEP_SUMMARY
+            echo "- **Method**: Full rebuild (no pre-built PR image; wait gate: ${GATE:-n/a}, waited ${WAITED:-0}s)" >> $GITHUB_STEP_SUMMARY
+            if [ "$GATE" = "unavailable" ]; then
+              echo "- **Note**: the promote wait could not run — grant \`actions: read\` to the calling job. A job that declares a \`permissions:\` block sets every scope it omits to \`none\`, whatever the repository's visibility." >> $GITHUB_STEP_SUMMARY
+            fi
           fi
           if [ "$SIGNED" = "true" ]; then
             echo "- **Signing**: Signed with cosign (keyless/Sigstore)" >> $GITHUB_STEP_SUMMARY
