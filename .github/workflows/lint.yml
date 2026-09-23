@@ -54,3 +54,8 @@ jobs:
 
       - name: Renderer fixtures
         run: bash .github/tests/publish-findings/run.sh
+
+      # Real failure logs through reusable-auto-fix.yml's signature and
+      # issue-lookup steps: one failure must map to one signature.
+      - name: Auto-fix dedup fixtures
+        run: bash .github/tests/auto-fix-dedup/run.sh

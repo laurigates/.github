@@ -1,0 +1,84 @@
+Linters	Run pre-commit	﻿2026-09-21T06:15:37.6107110Z ##[group]Run pre-commit run --all-files
+Linters	Run pre-commit	2026-09-21T06:15:37.6107484Z ^[[36;1mpre-commit run --all-files^[[0m
+Linters	Run pre-commit	2026-09-21T06:15:37.6131917Z shell: /usr/bin/bash -e {0}
+Linters	Run pre-commit	2026-09-21T06:15:37.6132241Z env:
+Linters	Run pre-commit	2026-09-21T06:15:37.6132516Z   pythonLocation: /opt/hostedtoolcache/Python/3.14.7/x64
+Linters	Run pre-commit	2026-09-21T06:15:37.6132932Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.14.7/x64/lib/pkgconfig
+Linters	Run pre-commit	2026-09-21T06:15:37.6133323Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.14.7/x64
+Linters	Run pre-commit	2026-09-21T06:15:37.6133673Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.14.7/x64
+Linters	Run pre-commit	2026-09-21T06:15:37.6134022Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.14.7/x64
+Linters	Run pre-commit	2026-09-21T06:15:37.6134376Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.14.7/x64/lib
+Linters	Run pre-commit	2026-09-21T06:15:37.6134716Z   HOMEBREW_NO_INSTALL_FROM_API: 
+Linters	Run pre-commit	2026-09-21T06:15:37.6137019Z   HOMEBREW_GITHUB_API_TOKEN: ***
+Linters	Run pre-commit	2026-09-21T06:15:37.6137359Z   HOMEBREW_UPDATE_TO_TAG: 1
+Linters	Run pre-commit	2026-09-21T06:15:37.6137611Z ##[endgroup]
+Linters	Run pre-commit	2026-09-21T06:15:37.9756177Z [INFO] Initializing environment for https://github.com/pre-commit/pre-commit-hooks.
+Linters	Run pre-commit	2026-09-21T06:15:38.5420449Z [INFO] Initializing environment for https://github.com/compilerla/conventional-pre-commit.
+Linters	Run pre-commit	2026-09-21T06:15:39.1017889Z [INFO] Initializing environment for https://github.com/JohnnyMorganz/StyLua.
+Linters	Run pre-commit	2026-09-21T06:15:40.2885923Z [INFO] Initializing environment for https://github.com/rhysd/actionlint.
+Linters	Run pre-commit	2026-09-21T06:15:41.7918833Z [INFO] Initializing environment for https://github.com/gitleaks/gitleaks.
+Linters	Run pre-commit	2026-09-21T06:15:42.5293832Z [INFO] Installing environment for https://github.com/pre-commit/pre-commit-hooks.
+Linters	Run pre-commit	2026-09-21T06:15:42.5294508Z [INFO] Once installed this environment will be reused.
+Linters	Run pre-commit	2026-09-21T06:15:42.5294821Z [INFO] This may take a few minutes...
+Linters	Run pre-commit	2026-09-21T06:15:46.9071815Z [INFO] Installing environment for https://github.com/JohnnyMorganz/StyLua.
+Linters	Run pre-commit	2026-09-21T06:15:46.9072365Z [INFO] Once installed this environment will be reused.
+Linters	Run pre-commit	2026-09-21T06:15:46.9072796Z [INFO] This may take a few minutes...
+Linters	Run pre-commit	2026-09-21T06:15:52.2751133Z [INFO] Installing environment for https://github.com/rhysd/actionlint.
+Linters	Run pre-commit	2026-09-21T06:15:52.2751910Z [INFO] Once installed this environment will be reused.
+Linters	Run pre-commit	2026-09-21T06:15:52.2752386Z [INFO] This may take a few minutes...
+Linters	Run pre-commit	2026-09-21T06:16:12.5945471Z [INFO] Installing environment for https://github.com/gitleaks/gitleaks.
+Linters	Run pre-commit	2026-09-21T06:16:12.5946218Z [INFO] Once installed this environment will be reused.
+Linters	Run pre-commit	2026-09-21T06:16:12.5946683Z [INFO] This may take a few minutes...
+Linters	Run pre-commit	2026-09-21T06:16:38.8167817Z trim trailing whitespace.................................................Passed
+Linters	Run pre-commit	2026-09-21T06:16:38.9099782Z fix end of files.........................................................Passed
+Linters	Run pre-commit	2026-09-21T06:16:39.0949409Z check yaml...............................................................Passed
+Linters	Run pre-commit	2026-09-21T06:16:39.1858083Z check json...............................................................Passed
+Linters	Run pre-commit	2026-09-21T06:16:39.2894047Z check for merge conflicts................................................Passed
+Linters	Run pre-commit	2026-09-21T06:16:39.2895997Z check for broken symlinks............................(no files to check)Skipped
+Linters	Run pre-commit	2026-09-21T06:16:39.3834331Z check toml...............................................................Passed
+Linters	Run pre-commit	2026-09-21T06:16:39.4915165Z check for added large files..............................................Passed
+Linters	Run pre-commit	2026-09-21T06:16:39.4915915Z file contents sorter.................................(no files to check)Skipped
+Linters	Run pre-commit	2026-09-21T06:16:39.5354766Z StyLua (Github)..........................................................Passed
+Linters	Run pre-commit	2026-09-21T06:16:39.5532529Z check justfiles parse and evaluate.......................................Passed
+Linters	Run pre-commit	2026-09-21T06:16:40.1600694Z check Claude global context budget.......................................Failed
+Linters	Run pre-commit	2026-09-21T06:16:40.1602618Z - hook id: claude-context-budget
+Linters	Run pre-commit	2026-09-21T06:16:40.1603334Z - exit code: 1
+Linters	Run pre-commit	2026-09-21T06:16:40.1603732Z 
+Linters	Run pre-commit	2026-09-21T06:16:40.1604103Z === Claude global context budget ===
+Linters	Run pre-commit	2026-09-21T06:16:40.1604796Z ^[[0;34mTEST:^[[0m Always-loaded global context stays under 104000 bytes
+Linters	Run pre-commit	2026-09-21T06:16:40.1605634Z   unconditional_rule_bytes+claude_md=105649 path_scoped_bytes=58140 budget=104000
+Linters	Run pre-commit	2026-09-21T06:16:40.1606200Z ^[[0;31m✗ FAIL:^[[0m Always-loaded total 105649 exceeds budget 104000
+Linters	Run pre-commit	2026-09-21T06:16:40.1606624Z     Remedies: migrate repo-specific rules to a project .claude/rules/,
+Linters	Run pre-commit	2026-09-21T06:16:40.1607048Z     add 'paths:' frontmatter to narrow-trigger rules, split content
+Linters	Run pre-commit	2026-09-21T06:16:40.1607418Z     into an on-demand skill, or distill verbose rules.
+Linters	Run pre-commit	2026-09-21T06:16:40.1607722Z     Largest unconditional rules:
+Linters	Run pre-commit	2026-09-21T06:16:40.1608018Z       9447 exact_dot_claude/rules/tool-use-patterns.md
+Linters	Run pre-commit	2026-09-21T06:16:40.1608353Z       7727 exact_dot_claude/rules/git-hazards.md
+Linters	Run pre-commit	2026-09-21T06:16:40.1608732Z       6917 exact_dot_claude/rules/never-fabricate-test-identifiers.md
+Linters	Run pre-commit	2026-09-21T06:16:40.1609112Z       6284 exact_dot_claude/rules/communication.md
+Linters	Run pre-commit	2026-09-21T06:16:40.1609483Z       5378 exact_dot_claude/rules/offload-to-deterministic-substrate.md
+Linters	Run pre-commit	2026-09-21T06:16:40.1609950Z ^[[0;34mTEST:^[[0m No unconditional global rule exceeds 10000 bytes
+Linters	Run pre-commit	2026-09-21T06:16:40.1610476Z ^[[0;32m✓ PASS:^[[0m All unconditional rules under 10000 bytes
+Linters	Run pre-commit	2026-09-21T06:16:40.1611662Z ^[[0;34mTEST:^[[0m Global rules free of dotfiles-repo-specific markers (allowlist excepted)
+Linters	Run pre-commit	2026-09-21T06:16:40.1612219Z ^[[0;32m✓ PASS:^[[0m No unexpected repo-specific markers in global rules
+Linters	Run pre-commit	2026-09-21T06:16:40.1612697Z ^[[0;34mTEST:^[[0m Path-scoped rules have valid, non-empty 'paths:' frontmatter
+Linters	Run pre-commit	2026-09-21T06:16:40.1613182Z ^[[0;32m✓ PASS:^[[0m All path-scoped frontmatter blocks are well-formed
+Linters	Run pre-commit	2026-09-21T06:16:40.1613422Z 
+Linters	Run pre-commit	2026-09-21T06:16:40.1613524Z === Summary ===
+Linters	Run pre-commit	2026-09-21T06:16:40.1613736Z PASS=3 FAIL=1
+Linters	Run pre-commit	2026-09-21T06:16:40.1613946Z STATUS=FAIL
+Linters	Run pre-commit	2026-09-21T06:16:40.1614056Z 
+Linters	Run pre-commit	2026-09-21T06:16:40.2468896Z check docs for dangling references (advisory)............................Passed
+Linters	Run pre-commit	2026-09-21T06:16:40.2470028Z - hook id: check-doc-references
+Linters	Run pre-commit	2026-09-21T06:16:40.2470700Z - duration: 0.07s
+Linters	Run pre-commit	2026-09-21T06:16:40.2471344Z 
+Linters	Run pre-commit	2026-09-21T06:16:40.2471827Z === DOC REFERENCE CHECK ===
+Linters	Run pre-commit	2026-09-21T06:16:40.2472224Z DOCS_CHECKED=46
+Linters	Run pre-commit	2026-09-21T06:16:40.2472514Z ALLOWLISTED_PATTERNS=2
+Linters	Run pre-commit	2026-09-21T06:16:40.2472826Z DANGLING_COUNT=0
+Linters	Run pre-commit	2026-09-21T06:16:40.2473180Z STATUS=OK
+Linters	Run pre-commit	2026-09-21T06:16:40.2473390Z === END DOC REFERENCE CHECK ===
+Linters	Run pre-commit	2026-09-21T06:16:40.2473551Z 
+Linters	Run pre-commit	2026-09-21T06:16:40.7637763Z Lint GitHub Actions workflow files.......................................Passed
+Linters	Run pre-commit	2026-09-21T06:16:40.8130229Z Detect hardcoded secrets.................................................Passed
+Linters	Run pre-commit	2026-09-21T06:16:40.8400016Z ##[error]Process completed with exit code 1.
