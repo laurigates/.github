@@ -7,9 +7,11 @@
 #      the new-versions excerpt, and run the CALLER-SUPPLIED analyzer script
 #      to surface candidate files (the repo-specific keyword→file mapping
 #      lives in the caller's repo, next to its tests).
-#   2. claude-triage — one Claude Code run that opens ONE tracking issue,
-#      ratchets the tracking JSON, and opens ONE tiny JSON-only PR. Rule/code
-#      edits are follow-up work driven by the issue, never done here.
+#   2. claude-triage — one Claude Code run that WRITES the tracking-issue body
+#      and the state-file entry, then one bash step that files the issue
+#      exactly once, applies labels and assignee, ratchets the tracking JSON
+#      from what it verified, and opens ONE tiny JSON-only PR. Rule/code edits
+#      are follow-up work driven by the issue, never done here.
 #
 # Calling workflow should trigger on:
 #   schedule:
@@ -483,15 +485,24 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          # Same token the checkout used, so `gh issue create` and `git push`
-          # inside the run authenticate as the identity that owns the branch.
-          # On the PAT, the pushed branch also triggers downstream workflows.
+          # The agent only reads with it (`gh issue list`); every write happens
+          # in the publish step below.
           github_token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
           # Triage is intentionally small-scope work — no rule edits, no
-          # multi-PR juggling. 25 turns is enough headroom for: read inputs,
-          # categorize changes, open one issue, ratchet the JSON, open one
-          # PR. If it can't finish in 25 turns, the prompt is wrong and we
-          # want to fail fast rather than burn $60 on a misdiagnosis loop.
+          # publishing. 25 turns is enough headroom for: read inputs,
+          # categorize changes, write the issue body and the state entry. If
+          # it can't finish in 25 turns, the prompt is wrong and we want to
+          # fail fast rather than burn $60 on a misdiagnosis loop.
+          #
+          # The agent PRODUCES; the next step PUBLISHES (claude-plugins#2720).
+          # When the agent ran `gh issue create --label … --assignee …` itself,
+          # gh (github.com) filed the issue, then failed the separate
+          # replaceActorsForAssignable call the PAT was not allowed to make,
+          # and exited non-zero without printing the URL. The agent filed it
+          # again: two identical, unlabelled issues per run (#2656/#2657,
+          # #2711/#2712), and a state file claiming the labels were applied.
+          # So the agent can no longer file, commit, push, or open a PR — the
+          # grants below are read-only apart from Write/Edit for its two files.
           #
           # The tool boundary belongs in `--allowedTools`. It used to sit in
           # `additional_permissions:`, but that input takes a GitHub permissions
@@ -510,8 +521,8 @@ jobs:
           #     enforced rather than merely asserted. A blocked WebFetch is
           #     exactly why a HEALTHY run still shows one permission denial —
           #     never gate on `permission_denials_count > 0`.
-          #   - `gh` is narrowed to the verbs the prompt actually runs
-          #     (issue/pr/label create + issue list), not a blanket `gh *`.
+          #   - `gh` is narrowed to `gh issue list` (read-only), not a blanket
+          #     `gh *`; git to status/diff/log.
           #   - TodoWrite is a genuine grant, not decoration: since 2.1.233 the
           #     todo/task tools are off by default on current models and naming
           #     one in --allowedTools is the session-wide opt-in.
@@ -523,11 +534,11 @@ jobs:
             --model ${{ inputs.model }}
             --effort ${{ inputs.effort }}
             --max-turns ${{ inputs.max-turns }}
-            --allowedTools "Read,Edit,Write,Grep,Glob,TodoWrite,Skill,Bash(git status *),Bash(git diff *),Bash(git log *),Bash(git switch *),Bash(git add *),Bash(git commit *),Bash(git push *),Bash(gh issue create *),Bash(gh issue list *),Bash(gh pr create *),Bash(gh label create *),Bash(jq *),Bash(cat *),Bash(date *)"
+            --allowedTools "Read,Edit,Write,Grep,Glob,TodoWrite,Skill,Bash(git status *),Bash(git diff *),Bash(git log *),Bash(gh issue list *),Bash(jq *),Bash(cat *),Bash(date *)"
           prompt: |
             You are TRIAGING upstream changelog changes from ${{ needs.check-changelog.outputs.previous_version }} to ${{ needs.check-changelog.outputs.effective_latest }}.
 
-            **Triage means: open a tracking issue, ratchet the JSON state file, and open one tiny PR for the JSON change. DO NOT edit rule files. DO NOT open multiple PRs. Rule edits happen in follow-up work driven by the tracking issue.**
+            **Triage means: write the tracking-issue body and the state-file entry to two files. The workflow step that runs after you files the issue, applies its labels and assignee, ratchets the JSON state file, and opens the PR. DO NOT edit rule files or `${{ inputs.version-file }}`. Rule edits happen in follow-up work driven by the tracking issue.**
 
             ## Pre-computed inputs (use these — do not re-fetch)
 
@@ -539,7 +550,7 @@ jobs:
               ${{ needs.check-changelog.outputs.candidate_rules }}
               ```
 
-            - **Windowed run?** `${{ needs.check-changelog.outputs.windowed }}` — when `true`, this is a catch-up run: `${{ needs.check-changelog.outputs.total_new_versions }}` versions are outstanding in total, and the excerpt covers only the OLDEST slice of them, up to ${{ needs.check-changelog.outputs.effective_latest }}. Upstream is actually at ${{ needs.check-changelog.outputs.latest_version }}. Ratchet to ${{ needs.check-changelog.outputs.effective_latest }} and **only** to that — the next scheduled run picks up the rest. Say so in the issue body.
+            - **Windowed run?** `${{ needs.check-changelog.outputs.windowed }}` — when `true`, this is a catch-up run: `${{ needs.check-changelog.outputs.total_new_versions }}` versions are outstanding in total, and the excerpt covers only the OLDEST slice of them, up to ${{ needs.check-changelog.outputs.effective_latest }}. Upstream is actually at ${{ needs.check-changelog.outputs.latest_version }}. The workflow ratchets to ${{ needs.check-changelog.outputs.effective_latest }} and **only** to that — the next scheduled run picks up the rest. Say so in the issue body.
             - **Deprecated identifiers referenced in this repo's code**: `${{ needs.check-changelog.outputs.deprecated_tokens }}`
               (empty = none). When non-empty, these are upstream tools/settings that were deprecated/removed/renamed AND are still named in our skills, hooks, or agents — treat each as a **High-impact** item and call out the referencing file(s) from the candidate list. This is the miss class from claude-plugins#1638 (TaskOutput stayed referenced in bash-antipatterns.sh).
 
@@ -548,8 +559,7 @@ jobs:
             - Use `TodoWrite` once at the start to plan, then minimal narration.
             - Read `excerpt.md` once. Read `${{ inputs.version-file }}` once. **Do not read rule files** — that's apply-phase work.
             - Never use `WebFetch` for the changelog or for live docs — the excerpt is the authoritative input. `WebFetch`/`WebSearch` are not in your tool allowlist; a denial there is expected and is not an error to work around.
-            - The labels in `${{ inputs.issue-labels }}` were provisioned by the gate job before you started — pass them to `gh issue create` as-is. If one is somehow still missing, `gh label create` it rather than dropping the flag.
-            - If you misdiagnose your own work (e.g. think a branch is empty), STOP and re-check with `git diff` / `git log` before destructive recovery. A previous run wasted ~75 minutes self-correcting a false alarm.
+            - You cannot file issues, commit, push, or open PRs, and you do not need to: the next workflow step does all of it from your two files. Do not mention labels, assignees, or an issue number anywhere — the step records what it actually applied.
 
             ## Step 1: Read inputs in parallel
 
@@ -567,16 +577,11 @@ jobs:
 
             Focus areas: hook system, skill/command system, agent/subagent system, permission model, MCP, plugin manifest/marketplace, sandbox, **and deprecations/removals** of tools/settings/commands we reference.
 
-            ## Step 3: Open a tracking issue
+            ## Step 3: Write the tracking-issue body
 
-            Open ONE issue summarizing the High and Medium changes. Group them by candidate file so follow-up apply work is clean.
+            Write ONE issue body summarizing the High and Medium changes to `triage-issue-body.md` in the repo root, with the `Write` tool. Group them by candidate file so follow-up apply work is clean. The title is set by the workflow; write only the body, following this template:
 
-            ```bash
-            gh issue create \
-              --title "Review Claude Code changelog: ${{ needs.check-changelog.outputs.previous_version }} → ${{ needs.check-changelog.outputs.effective_latest }}" \
-              --label "${{ inputs.issue-labels }}" \
-              --assignee "${{ inputs.issue-assignee || github.repository_owner }}" \
-              --body "$(cat <<'EOF'
+            ```markdown
             Triage of upstream changelog ${{ needs.check-changelog.outputs.previous_version }} → ${{ needs.check-changelog.outputs.effective_latest }}.
 
             **Keyword counts on excerpt:** ${{ needs.check-changelog.outputs.changes_summary }}
@@ -598,49 +603,190 @@ jobs:
             (Add a `### <file>` section per file with its bullets, citing version numbers. Omit sections with no relevant changes. Drop versions that are pure bug fixes / UI / perf.)
 
             🤖 Triaged with [Claude Code](https://claude.com/claude-code)
-            EOF
-            )"
             ```
 
             Skip file sections that have no relevant changes — empty sections are noise.
 
-            ## Step 4: Ratchet `${{ inputs.version-file }}`
+            ## Step 4: Write the state-file entry
 
-            Edit in place:
-            - `lastCheckedVersion` = `${{ needs.check-changelog.outputs.effective_latest }}`
-            - `lastCheckedDate` = today (YYYY-MM-DD)
-            - Prepend a new entry to `reviewedChanges` with `version`, `date`, `relevantChanges` (array of headline bullets), `actionsRequired` (array referencing the issue number from Step 3 — e.g. `"See issue #N for rule update plan"`)
+            Write `triage-entry.json` in the repo root, with the `Write` tool: one JSON object with exactly two keys, both arrays of strings.
 
-            ## Step 5: Branch, commit, push, JSON-only PR
-
-            ```bash
-            BR="chore/changelog-triage-${{ needs.check-changelog.outputs.effective_latest }}"
-            git switch -c "$BR"
-            git add ${{ inputs.version-file }}
-            git status --short      # confirm only the JSON is staged
-            git commit -m "${{ inputs.commit-type-scope }}: ratchet changelog tracking to ${{ needs.check-changelog.outputs.effective_latest }}"
-            git push -u origin "$BR"
-            gh pr create \
-              --title "${{ inputs.commit-type-scope }}: ratchet changelog tracking to ${{ needs.check-changelog.outputs.effective_latest }}" \
-              --label "${{ inputs.issue-labels }}" \
-              --assignee "${{ inputs.issue-assignee || github.repository_owner }}" \
-              --body "Ratchets \`${{ inputs.version-file }}\` to ${{ needs.check-changelog.outputs.effective_latest }}. Rule edits are tracked in the linked triage issue.
-
-            Refs the triage issue opened in Step 3."
+            ```json
+            {
+              "relevantChanges": ["<headline bullet, citing the version>", "..."],
+              "actionsRequired": ["<follow-up, e.g. which candidate files need edits>", "..."]
+            }
             ```
 
-            ## Step 6: Final sanity check
+            Refer to the tracking issue as "the tracking issue", never by number. The workflow prepends `See issue #N …` to `actionsRequired`, sets `version`, `date`, `lastCheckedVersion` and `lastCheckedDate` itself, and appends a line recording the labels and assignee it verified on the issue.
 
-            Before finishing, run `git log -1 --stat` and confirm:
-            - Exactly one commit on the branch
-            - Exactly one file changed (`${{ inputs.version-file }}`)
-            - No rule-file edits
+            ## Step 5: Final sanity check
 
-            If anything looks wrong, **fix it before finishing the turn**. Do not try to "recover" by closing and re-opening PRs.
+            Run `jq . triage-entry.json` and `git status --short`, and confirm:
+            - `triage-entry.json` parses and both arrays are non-empty
+            - `triage-issue-body.md` exists and is the full issue body
+            - No tracked file is modified — in particular not `${{ inputs.version-file }}` or any rule file
 
-            ## Conventions
-
-            - Follow the repo's conventional-commits rule (if present) only if you need to deviate from the commit format above.
-            - Create new commits — never amend.
+            If anything looks wrong, **fix it before finishing the turn**.
           plugin_marketplaces: ${{ inputs.plugin-marketplaces }}
           plugins: ${{ inputs.plugins }}
+
+      # Publishing is deterministic, and happens exactly once (claude-plugins
+      # #2720). The issue is filed WITHOUT --label/--assignee: on github.com gh
+      # assigns in a second GraphQL call after the issue exists, and a failure
+      # there exits non-zero without printing the URL. A failed create is
+      # never retried; the open-issue listing is re-read instead, because the
+      # issue may exist anyway.
+      #
+      # Labels and assignee then go through the REST API on the workflow's own
+      # token (issues: write), and are READ BACK: the assignees endpoint
+      # answers 201 while silently dropping a login it cannot assign, so the
+      # read-back is the only evidence. The state file records that read-back,
+      # not a claim.
+      #
+      # The listing is `gh issue list` without --search: that reads
+      # repository.issues, which shows an issue as soon as it exists, where
+      # the search index lags. The title match does not depend on labels, so
+      # an issue whose labels never landed is still found.
+      #
+      # Creation and the ratchet PR stay on the PAT, so the pushed branch
+      # triggers the caller's CI.
+      - name: Publish tracking issue and ratchet PR
+        id: publish
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+          META_TOKEN: ${{ github.token }}
+          ISSUE_TITLE: "Review Claude Code changelog: ${{ needs.check-changelog.outputs.previous_version }} → ${{ needs.check-changelog.outputs.effective_latest }}"
+          BODY_FILE: triage-issue-body.md
+          ENTRY_FILE: triage-entry.json
+          ISSUE_LABELS: ${{ inputs.issue-labels }}
+          ASSIGNEE: ${{ inputs.issue-assignee || github.repository_owner }}
+          VERSION_FILE: ${{ inputs.version-file }}
+          EFFECTIVE_LATEST: ${{ needs.check-changelog.outputs.effective_latest }}
+          WINDOWED: ${{ needs.check-changelog.outputs.windowed }}
+          COMMIT_TYPE_SCOPE: ${{ inputs.commit-type-scope }}
+        run: |
+          set -euo pipefail
+          REPO="$GITHUB_REPOSITORY"
+
+          # 1. Validate the agent's two files before any side effect.
+          if [ ! -s "$BODY_FILE" ]; then
+            echo "::error::The triage run did not write $BODY_FILE; nothing was filed"
+            exit 1
+          fi
+          if ! jq -e '(.relevantChanges | type == "array") and (.actionsRequired | type == "array")
+                      and all(.relevantChanges[], .actionsRequired[]; type == "string")' "$ENTRY_FILE" >/dev/null 2>&1; then
+            echo "::error::$ENTRY_FILE is missing or is not {relevantChanges: [strings], actionsRequired: [strings]}; nothing was filed"
+            exit 1
+          fi
+          # The workflow owns the state file; discard any edit the agent made.
+          if ! git diff --quiet -- "$VERSION_FILE"; then
+            echo "::warning::The triage run edited $VERSION_FILE; discarding its edit, the workflow writes the file"
+            git checkout -- "$VERSION_FILE"
+          fi
+
+          # 2. File the tracking issue exactly once.
+          find_open_issue() {
+            gh issue list --repo "$REPO" --state open --limit 1000 --json number,title \
+              | jq -r --arg t "$ISSUE_TITLE" '[.[] | select(.title == $t) | .number] | min // empty'
+          }
+          ISSUE="$(find_open_issue)"
+          if [ -n "$ISSUE" ]; then
+            FILED="Reused open issue #$ISSUE (same title)"
+          elif url="$(gh issue create --repo "$REPO" --title "$ISSUE_TITLE" --body-file "$BODY_FILE")"; then
+            ISSUE="${url##*/}"
+            FILED="Filed issue #$ISSUE"
+          else
+            ISSUE="$(find_open_issue)"
+            if [ -z "$ISSUE" ]; then
+              echo "::error::gh issue create failed and no open issue titled '$ISSUE_TITLE' exists"
+              exit 1
+            fi
+            echo "::warning::gh issue create exited non-zero but issue #$ISSUE exists; not retrying"
+            FILED="Filed issue #$ISSUE (gh exited non-zero after creating it)"
+          fi
+          case "$ISSUE" in ''|*[!0-9]*) echo "::error::could not read an issue number (got '$ISSUE')"; exit 1 ;; esac
+          echo "issue_number=$ISSUE" >> "$GITHUB_OUTPUT"
+
+          # 3. Labels and assignee on the workflow token, then read back.
+          WANT_LABELS="$(printf '%s' "$ISSUE_LABELS" | jq -Rc 'split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))')"
+          apply_metadata() { # <number> -> sets META (one sentence of verified fact)
+            local num="$1" got have_labels missing_labels assignee_state
+            if [ "$(jq 'length' <<<"$WANT_LABELS")" -gt 0 ]; then
+              jq -n --argjson l "$WANT_LABELS" '{labels: $l}' \
+                | GH_TOKEN="$META_TOKEN" gh api -X POST "repos/$REPO/issues/$num/labels" --input - >/dev/null \
+                || echo "::warning::adding labels to #$num failed"
+            fi
+            if [ -n "$ASSIGNEE" ]; then
+              jq -n --arg a "$ASSIGNEE" '{assignees: [$a]}' \
+                | GH_TOKEN="$META_TOKEN" gh api -X POST "repos/$REPO/issues/$num/assignees" --input - >/dev/null \
+                || echo "::warning::assigning #$num failed"
+            fi
+            if ! got="$(GH_TOKEN="$META_TOKEN" gh api "repos/$REPO/issues/$num")"; then
+              META="labels and assignee could not be read back"
+              echo "::warning::could not read #$num back to verify its labels and assignee"
+              return 0
+            fi
+            have_labels="$(jq -r --argjson want "$WANT_LABELS" '[.labels[].name] as $h | $want | map(select(. as $w | $h | index($w))) | join(", ")' <<<"$got")"
+            missing_labels="$(jq -r --argjson want "$WANT_LABELS" '[.labels[].name] as $h | $want | map(select(. as $w | $h | index($w) | not)) | join(", ")' <<<"$got")"
+            META="labels present: ${have_labels:-none}"
+            if [ -n "$missing_labels" ]; then
+              META="$META; labels NOT applied: $missing_labels"
+              echo "::warning::#$num is missing labels: $missing_labels"
+            fi
+            if [ -n "$ASSIGNEE" ]; then
+              if jq -e --arg a "$ASSIGNEE" 'any(.assignees[]; .login == $a)' <<<"$got" >/dev/null; then
+                assignee_state="assignee $ASSIGNEE present"
+              else
+                assignee_state="assignee $ASSIGNEE NOT applied"
+                echo "::warning::#$num is not assigned to $ASSIGNEE"
+              fi
+              META="$META; $assignee_state"
+            fi
+          }
+          apply_metadata "$ISSUE"
+          ISSUE_META="$META"
+
+          # 4. Ratchet the state file from the agent's entry and the verified result.
+          TODAY="$(date -u +%F)"
+          windowed_json=false
+          if [ "$WINDOWED" = "true" ]; then windowed_json=true; fi
+          tmp="$(mktemp)"
+          jq --arg v "$EFFECTIVE_LATEST" --arg d "$TODAY" --argjson w "$windowed_json" \
+             --arg see "See issue #$ISSUE for the rule update plan" \
+             --arg verified "Tracking issue #$ISSUE, as read back by the workflow: $ISSUE_META" \
+             --slurpfile e "$ENTRY_FILE" '
+              .lastCheckedVersion = $v
+              | .lastCheckedDate = $d
+              | .reviewedChanges = ([{
+                  version: $v,
+                  date: $d,
+                  windowed: $w,
+                  relevantChanges: $e[0].relevantChanges,
+                  actionsRequired: ([$see] + $e[0].actionsRequired + [$verified])
+                }] + (.reviewedChanges // []))' "$VERSION_FILE" > "$tmp"
+          mv "$tmp" "$VERSION_FILE"
+
+          # 5. One commit touching only the state file, one PR.
+          BRANCH="chore/changelog-triage-$EFFECTIVE_LATEST"
+          SUBJECT="$COMMIT_TYPE_SCOPE: ratchet changelog tracking to $EFFECTIVE_LATEST"
+          git switch -c "$BRANCH"
+          git add -- "$VERSION_FILE"
+          other="$(git diff --name-only)"
+          if [ -n "$other" ]; then
+            echo "::warning::tracked files modified by the triage run are NOT committed: $(printf '%s' "$other" | tr '\n' ' ')"
+          fi
+          git -c user.name='github-actions[bot]' \
+              -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+              commit -q -m "$SUBJECT"
+          git push -u origin "$BRANCH"
+          pr_url="$(gh pr create --repo "$REPO" --head "$BRANCH" --title "$SUBJECT" \
+            --body "Ratchets \`$VERSION_FILE\` to $EFFECTIVE_LATEST. Rule edits are tracked in #$ISSUE.")"
+          apply_metadata "${pr_url##*/}"
+          PR_META="$META"
+
+          {
+            echo "### Changelog triage published"
+            echo "- $FILED: $ISSUE_META"
+            echo "- Ratchet PR $pr_url: $PR_META"
+          } >> "$GITHUB_STEP_SUMMARY"
