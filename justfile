@@ -143,3 +143,8 @@ publish-drift count="8":
 [group: "validate"]
 publish-fixtures workflow=".github/workflows/reusable-security-owasp.yml":
     bash .github/tests/publish-findings/run.sh "{{workflow}}"
+
+# Run reusable-auto-fix.yml's issue dedup against real failure logs
+[group: "validate"]
+autofix-fixtures workflow=".github/workflows/reusable-auto-fix.yml":
+    bash .github/tests/auto-fix-dedup/run.sh "{{workflow}}"

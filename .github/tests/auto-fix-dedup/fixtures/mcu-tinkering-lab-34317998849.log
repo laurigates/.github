@@ -1,0 +1,126 @@
+Code Quality Checks	UNKNOWN STEP	﻿2026-09-09T06:11:57.3665328Z Current runner version: '2.337.0'
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:11:57.3684326Z ##[group]Runner Image Provisioner
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:09.3904968Z [INFO] Installing environment for https://github.com/pre-commit/mirrors-clang-format.
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:09.3905876Z [INFO] Once installed this environment will be reused.
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:09.3906406Z [INFO] This may take a few minutes...
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:11.5129183Z [INFO] Installing environment for https://github.com/astral-sh/ruff-pre-commit.
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:11.5130006Z [INFO] Once installed this environment will be reused.
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:11.5131260Z [INFO] This may take a few minutes...
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:14.8735224Z [INFO] Installing environment for https://github.com/gitleaks/gitleaks.
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:14.8736079Z [INFO] Once installed this environment will be reused.
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:14.8736716Z [INFO] This may take a few minutes...
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:37.9098119Z trim trailing whitespace...........................................................Passed
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:37.9966681Z fix end of files...................................................................Passed
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:38.1744132Z check yaml.........................................................................Passed
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:38.2699665Z check for added large files........................................................Passed
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:38.3577007Z check for merge conflicts..........................................................Passed
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:38.4575885Z check for case conflicts...........................................................Passed
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:38.5650484Z mixed line ending..................................................................Passed
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:38.6504972Z detect private key.................................................................Passed
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:39.2415788Z clang-format.......................................................................Passed
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:39.3104604Z ruff (legacy alias)................................................................Passed
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:39.3793256Z ruff format........................................................................Passed
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:39.7263863Z ty type check (robocar-simulation).................................................Failed
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:39.7264513Z - hook id: ty
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:39.7264847Z - exit code: 1
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:39.7264966Z 
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:39.7267062Z Installed 1 package in 2ms
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:39.7267485Z warning[redundant-condition]: `None` is always falsy
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:39.7267846Z    --> src/genesis_visualizer.py:246:12
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:39.7268233Z     |
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:39.7268486Z 246 |         if self.scene:
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:39.7268814Z     |            ^^^^^^^^^^
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:39.7268984Z 
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:39.7269084Z Found 1 diagnostic
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:39.7269249Z 
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:39.7822007Z Detect hardcoded secrets...........................................................Passed
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:39.8334800Z Check for credential files.........................................................Passed
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:40.1027802Z Shared flash recipes match their projects..........................................Passed
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:40.1779072Z Typst docs track pin_config.h, and the drift guard sees them.......................Passed
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:40.2276905Z Check for build artifacts..........................................................Passed
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:40.2463232Z ##[error]Process completed with exit code 1.
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:40.2569852Z Post job cleanup.
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:40.3296231Z [command]/usr/bin/git version
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:40.3326527Z git version 2.55.0
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:40.3358436Z Temporarily overriding HOME='/home/runner/work/_temp/2f6cbddf-956a-4791-8ce0-8543105f5f18' before making global git config changes
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:40.3359348Z Adding repository directory to the temporary git global config as a safe directory
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:40.3360668Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/mcu-tinkering-lab/mcu-tinkering-lab
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:40.3384788Z Removing SSH command configuration
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:40.3389696Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:40.3416460Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:40.3593690Z Removing HTTP extra header
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:40.3598310Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:40.3622735Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:40.3803681Z Removing includeIf entries pointing to credentials config files
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:40.3808696Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:40.3827080Z includeif.gitdir:/home/runner/work/mcu-tinkering-lab/mcu-tinkering-lab/.git.path
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:40.3828058Z includeif.gitdir:/home/runner/work/mcu-tinkering-lab/mcu-tinkering-lab/.git/worktrees/*.path
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:40.3828930Z includeif.gitdir:/github/workspace/.git.path
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:40.3829549Z includeif.gitdir:/github/workspace/.git/worktrees/*.path
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:40.3834804Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/home/runner/work/mcu-tinkering-lab/mcu-tinkering-lab/.git.path
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:40.3849932Z /home/runner/work/_temp/git-credentials-83aca6ed-0c2d-4c2d-83a6-acfb52598789.config
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:40.3858513Z [command]/usr/bin/git config --local --unset includeif.gitdir:/home/runner/work/mcu-tinkering-lab/mcu-tinkering-lab/.git.path \/home\/runner\/work\/_temp\/git\-credentials\-83aca6ed\-0c2d\-4c2d\-83a6\-acfb52598789\.config
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:40.3888122Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/home/runner/work/mcu-tinkering-lab/mcu-tinkering-lab/.git/worktrees/*.path
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:40.3906689Z /home/runner/work/_temp/git-credentials-83aca6ed-0c2d-4c2d-83a6-acfb52598789.config
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:40.3916805Z [command]/usr/bin/git config --local --unset includeif.gitdir:/home/runner/work/mcu-tinkering-lab/mcu-tinkering-lab/.git/worktrees/*.path \/home\/runner\/work\/_temp\/git\-credentials\-83aca6ed\-0c2d\-4c2d\-83a6\-acfb52598789\.config
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:40.3942430Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/github/workspace/.git.path
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:40.3960568Z /github/runner_temp/git-credentials-83aca6ed-0c2d-4c2d-83a6-acfb52598789.config
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:40.3966662Z [command]/usr/bin/git config --local --unset includeif.gitdir:/github/workspace/.git.path \/github\/runner_temp\/git\-credentials\-83aca6ed\-0c2d\-4c2d\-83a6\-acfb52598789\.config
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:40.3992483Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/github/workspace/.git/worktrees/*.path
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:40.4010973Z /github/runner_temp/git-credentials-83aca6ed-0c2d-4c2d-83a6-acfb52598789.config
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:40.4017544Z [command]/usr/bin/git config --local --unset includeif.gitdir:/github/workspace/.git/worktrees/*.path \/github\/runner_temp\/git\-credentials\-83aca6ed\-0c2d\-4c2d\-83a6\-acfb52598789\.config
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:40.4050117Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:40.4216606Z Removing credentials config '/home/runner/work/_temp/git-credentials-83aca6ed-0c2d-4c2d-83a6-acfb52598789.config'
+Code Quality Checks	UNKNOWN STEP	2026-09-09T06:13:40.4328064Z Cleaning up orphan processes
+Test Summary	UNKNOWN STEP	﻿2026-09-09T06:13:46.5655154Z Current runner version: '2.337.0'
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.5682729Z ##[group]Runner Image Provisioner
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.5683710Z Hosted Compute Agent
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.5684278Z Version: 20260828.587
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.5684951Z Commit: abac92662cab4cc7352de4f9f9d2e2419aad9c29
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.5685706Z Build Date: 2026-08-28T16:44:25Z
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.5686742Z Worker ID: {12616061-4d55-4c87-9a2e-bd9f6bdb9c72}
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.5687525Z Azure Region: westcentralus
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.5688123Z ##[endgroup]
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.5689950Z ##[group]Operating System
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.5690588Z Ubuntu
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.5691095Z 24.04.4
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.5691657Z LTS
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.5692173Z ##[endgroup]
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.5692712Z ##[group]Runner Image
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.5693345Z Image: ubuntu-24.04
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.5693883Z Version: 20260831.293.1
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.5695265Z Included Software: https://github.com/actions/runner-images/blob/ubuntu24/20260831.293/images/ubuntu/Ubuntu2404-Readme.md
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.5697131Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20260831.293
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.5698188Z ##[endgroup]
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.5699305Z ##[group]GITHUB_TOKEN Permissions
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.5702306Z Contents: read
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.5702879Z Metadata: read
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.5703509Z ##[endgroup]
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.5706027Z Secret source: Actions
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.5707604Z Prepare workflow directory
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.6049862Z Prepare all required actions
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.6162402Z Complete job name: Test Summary
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.6951532Z ##[group]Run echo "## Test Results Summary" >> $GITHUB_STEP_SUMMARY
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.6952723Z ^[[36;1mecho "## Test Results Summary" >> $GITHUB_STEP_SUMMARY^[[0m
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.6953645Z ^[[36;1mecho "" >> $GITHUB_STEP_SUMMARY^[[0m
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.6954421Z ^[[36;1mecho "- Code Quality: failure" >> $GITHUB_STEP_SUMMARY^[[0m
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.6955356Z ^[[36;1mecho "- Python Simulation Tests: skipped" >> $GITHUB_STEP_SUMMARY^[[0m
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.6956778Z ^[[36;1mecho "- C/C++ Linting: success" >> $GITHUB_STEP_SUMMARY^[[0m
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.6957688Z ^[[36;1mecho "- Format Check: success" >> $GITHUB_STEP_SUMMARY^[[0m
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.6958483Z ^[[36;1m^[[0m
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.6959099Z ^[[36;1m# Fail only on actual failures, not skips^[[0m
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.6959856Z ^[[36;1mfor result in \^[[0m
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.6960452Z ^[[36;1m  "failure" \^[[0m
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.6961053Z ^[[36;1m  "success"; do^[[0m
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.6961696Z ^[[36;1m  if [ "$result" = "failure" ]; then^[[0m
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.6962585Z ^[[36;1m    echo "::error::Critical quality checks failed!"^[[0m
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.6963357Z ^[[36;1m    exit 1^[[0m
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.6963885Z ^[[36;1m  fi^[[0m
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.6964403Z ^[[36;1mdone^[[0m
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.6964957Z ^[[36;1m^[[0m
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.6965523Z ^[[36;1mecho "::notice::All test checks completed!"^[[0m
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.7646826Z shell: /usr/bin/bash -e {0}
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.7648367Z ##[endgroup]
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.7991725Z ##[error]Critical quality checks failed!
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.8017383Z ##[error]Process completed with exit code 1.
+Test Summary	UNKNOWN STEP	2026-09-09T06:13:46.8260589Z Cleaning up orphan processes

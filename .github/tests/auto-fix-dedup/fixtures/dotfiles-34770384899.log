@@ -1,0 +1,30 @@
+Linters	UNKNOWN STEP	﻿2026-09-13T17:02:42.1709784Z Current runner version: '2.337.0'
+Linters	UNKNOWN STEP	2026-09-13T17:02:42.1729859Z ##[group]Runner Image Provisioner
+Linters	UNKNOWN STEP	2026-09-13T17:02:42.1730840Z Hosted Compute Agent
+Linters	UNKNOWN STEP	2026-09-13T17:02:42.1731335Z Version: 20260828.587
+Linters	UNKNOWN STEP	2026-09-13T17:02:42.1731869Z Commit: abac92662cab4cc7352de4f9f9d2e2419aad9c29
+Linters	UNKNOWN STEP	2026-09-13T17:02:42.1732522Z Build Date: 2026-08-28T16:44:25Z
+Linters	UNKNOWN STEP	2026-09-13T17:02:42.1733079Z Worker ID: {db712bbb-9d2e-480d-bf77-745e5f6eb74a}
+Linters	UNKNOWN STEP	2026-09-13T17:02:42.1733676Z Azure Region: northcentralus
+Linters	UNKNOWN STEP	2026-09-13T17:02:42.1734198Z ##[endgroup]
+Linters	UNKNOWN STEP	2026-09-13T17:02:42.1735382Z ##[group]Operating System
+Linters	UNKNOWN STEP	2026-09-13T17:02:42.1735959Z Ubuntu
+Linters	UNKNOWN STEP	2026-09-13T17:02:42.1736393Z 24.04.5
+Linters	UNKNOWN STEP	2026-09-13T17:02:42.1736842Z LTS
+Linters	UNKNOWN STEP	2026-09-13T17:02:42.1737286Z ##[endgroup]
+Linters	UNKNOWN STEP	2026-09-13T17:02:42.1737768Z ##[group]Runner Image
+Linters	UNKNOWN STEP	2026-09-13T17:02:42.1738283Z Image: ubuntu-24.04
+Linters	UNKNOWN STEP	2026-09-13T17:02:42.1738752Z Version: 20260907.300.1
+Linters	UNKNOWN STEP	2026-09-13T17:02:42.1739972Z Included Software: https://github.com/actions/runner-images/blob/ubuntu24/20260907.300/images/ubuntu/Ubuntu2404-Readme.md
+Linters	UNKNOWN STEP	2026-09-13T17:02:42.1741218Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20260907.300
+Linters	UNKNOWN STEP	2026-09-13T17:02:42.1742054Z ##[endgroup]
+Linters	UNKNOWN STEP	2026-09-13T17:02:42.1742994Z ##[group]GITHUB_TOKEN Permissions
+Linters	UNKNOWN STEP	2026-09-13T17:02:42.1744537Z Contents: read
+Linters	UNKNOWN STEP	2026-09-13T17:02:42.1745020Z Metadata: read
+Linters	UNKNOWN STEP	2026-09-13T17:02:42.1745594Z ##[endgroup]
+Linters	UNKNOWN STEP	2026-09-13T17:02:42.1747287Z Secret source: Actions
+Linters	UNKNOWN STEP	2026-09-13T17:02:42.1748022Z Cache mode: write
+Linters	UNKNOWN STEP	2026-09-13T17:02:42.1748714Z Prepare workflow directory
+Linters	UNKNOWN STEP	2026-09-13T17:02:42.2017637Z Prepare all required actions
+Linters	UNKNOWN STEP	2026-09-13T17:02:42.2056701Z Getting action download info
+Linters	UNKNOWN STEP	2026-09-13T17:02:42.4252367Z ##[error]Unable to resolve action `homebrew/actions@master`, unable to find version `master`

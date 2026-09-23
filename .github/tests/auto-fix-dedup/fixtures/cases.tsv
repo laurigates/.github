@@ -1,0 +1,13 @@
+group	workflow	branch	fixture
+homebrew	Smoke Test CI	fix/enable-github-actions-migration-plugins	dotfiles-34770384899.log
+homebrew	Smoke Test CI	fix/plugins-prune-shadowing-project-installs	dotfiles-34770707206.log
+homebrew	Smoke Test CI	fix/plugins-prune-shadowing-project-installs	dotfiles-34774989124.log
+homebrew	Smoke Test CI	fix/just-plugin-audit-exit-message	dotfiles-34881594062.log
+homebrew	Smoke Test CI	worktree-docs-drift-421	dotfiles-34953873818.log
+homebrew	Smoke Test CI	docs/zsh-equals-expansion	dotfiles-34968502355.log
+homebrew	Smoke Test CI	rules/workflow-agent-scale	dotfiles-35059659962.log
+homebrew	Smoke Test CI	docs/claude-rules-onboarding-distil	dotfiles-35128693031.log
+stylua	Smoke Test CI	fix/portable-sed-in-place	dotfiles-35728723228.log
+context-budget	Smoke Test CI	main	dotfiles-35567648890.log
+mcu-ty	Test Suite	docs/robocar-unified-motor-wiring-card	mcu-tinkering-lab-34255529383.log
+mcu-ty	Test Suite	fix/positional-channel-coupling	mcu-tinkering-lab-34317998849.log

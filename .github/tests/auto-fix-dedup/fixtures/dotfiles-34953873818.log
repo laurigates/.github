@@ -1,0 +1,30 @@
+Linters	Set up job	﻿2026-09-15T09:41:20.2043108Z Current runner version: '2.337.0'
+Linters	Set up job	2026-09-15T09:41:20.2067966Z ##[group]Runner Image Provisioner
+Linters	Set up job	2026-09-15T09:41:20.2068811Z Hosted Compute Agent
+Linters	Set up job	2026-09-15T09:41:20.2069509Z Version: 20260828.587
+Linters	Set up job	2026-09-15T09:41:20.2070149Z Commit: abac92662cab4cc7352de4f9f9d2e2419aad9c29
+Linters	Set up job	2026-09-15T09:41:20.2071004Z Build Date: 2026-08-28T16:44:25Z
+Linters	Set up job	2026-09-15T09:41:20.2072024Z Worker ID: {48aab5c5-5856-4273-a8f7-8d2ad0d18055}
+Linters	Set up job	2026-09-15T09:41:20.2072777Z Azure Region: eastus
+Linters	Set up job	2026-09-15T09:41:20.2073441Z ##[endgroup]
+Linters	Set up job	2026-09-15T09:41:20.2075612Z ##[group]Operating System
+Linters	Set up job	2026-09-15T09:41:20.2076444Z Ubuntu
+Linters	Set up job	2026-09-15T09:41:20.2077037Z 24.04.5
+Linters	Set up job	2026-09-15T09:41:20.2077552Z LTS
+Linters	Set up job	2026-09-15T09:41:20.2078112Z ##[endgroup]
+Linters	Set up job	2026-09-15T09:41:20.2078668Z ##[group]Runner Image
+Linters	Set up job	2026-09-15T09:41:20.2079402Z Image: ubuntu-24.04
+Linters	Set up job	2026-09-15T09:41:20.2080021Z Version: 20260907.300.1
+Linters	Set up job	2026-09-15T09:41:20.2081153Z Included Software: https://github.com/actions/runner-images/blob/ubuntu24/20260907.300/images/ubuntu/Ubuntu2404-Readme.md
+Linters	Set up job	2026-09-15T09:41:20.2083241Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20260907.300
+Linters	Set up job	2026-09-15T09:41:20.2084309Z ##[endgroup]
+Linters	Set up job	2026-09-15T09:41:20.2085437Z ##[group]GITHUB_TOKEN Permissions
+Linters	Set up job	2026-09-15T09:41:20.2087654Z Contents: read
+Linters	Set up job	2026-09-15T09:41:20.2088297Z Metadata: read
+Linters	Set up job	2026-09-15T09:41:20.2088892Z ##[endgroup]
+Linters	Set up job	2026-09-15T09:41:20.2091023Z Secret source: Actions
+Linters	Set up job	2026-09-15T09:41:20.2092383Z Cache mode: write
+Linters	Set up job	2026-09-15T09:41:20.2093519Z Prepare workflow directory
+Linters	Set up job	2026-09-15T09:41:20.2416618Z Prepare all required actions
+Linters	Set up job	2026-09-15T09:41:20.2463989Z Getting action download info
+Linters	Set up job	2026-09-15T09:41:20.5046936Z ##[error]Unable to resolve action `homebrew/actions@master`, unable to find version `master`

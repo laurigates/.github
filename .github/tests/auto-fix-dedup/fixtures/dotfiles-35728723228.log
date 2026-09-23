@@ -1,0 +1,104 @@
+Linters	UNKNOWN STEP	﻿2026-09-22T12:41:44.8019664Z Current runner version: '2.337.0'
+Linters	UNKNOWN STEP	2026-09-22T12:41:44.8042875Z ##[group]Runner Image Provisioner
+Linters	UNKNOWN STEP	2026-09-22T12:42:08.2020407Z   HOMEBREW_GITHUB_API_TOKEN: ***
+Linters	UNKNOWN STEP	2026-09-22T12:42:08.2020671Z   HOMEBREW_UPDATE_TO_TAG: 1
+Linters	UNKNOWN STEP	2026-09-22T12:42:08.2020897Z ##[endgroup]
+Linters	UNKNOWN STEP	2026-09-22T12:42:08.5018189Z [INFO] Initializing environment for https://github.com/pre-commit/pre-commit-hooks.
+Linters	UNKNOWN STEP	2026-09-22T12:42:09.0307516Z [INFO] Initializing environment for https://github.com/compilerla/conventional-pre-commit.
+Linters	UNKNOWN STEP	2026-09-22T12:42:09.5434411Z [INFO] Initializing environment for https://github.com/JohnnyMorganz/StyLua.
+Linters	UNKNOWN STEP	2026-09-22T12:42:10.4522983Z [INFO] Initializing environment for https://github.com/rhysd/actionlint.
+Linters	UNKNOWN STEP	2026-09-22T12:42:12.0065433Z [INFO] Initializing environment for https://github.com/gitleaks/gitleaks.
+Linters	UNKNOWN STEP	2026-09-22T12:42:12.8052088Z [INFO] Installing environment for https://github.com/pre-commit/pre-commit-hooks.
+Linters	UNKNOWN STEP	2026-09-22T12:42:12.8052684Z [INFO] Once installed this environment will be reused.
+Linters	UNKNOWN STEP	2026-09-22T12:42:12.8053068Z [INFO] This may take a few minutes...
+Linters	UNKNOWN STEP	2026-09-22T12:42:17.7839713Z [INFO] Installing environment for https://github.com/JohnnyMorganz/StyLua.
+Linters	UNKNOWN STEP	2026-09-22T12:42:17.7840499Z [INFO] Once installed this environment will be reused.
+Linters	UNKNOWN STEP	2026-09-22T12:42:17.7840878Z [INFO] This may take a few minutes...
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6272170Z An unexpected error has occurred: CalledProcessError: command: ('/home/runner/.cache/pre-commit/repo9wmtrtly/py_env-python3.14/bin/python', '-mpip', 'install', '.')
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6274023Z return code: 1
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6274427Z stdout:
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6274796Z     Processing ./.
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6275278Z       Installing build dependencies: started
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6276044Z       Installing build dependencies: finished with status 'done'
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6277171Z       Getting requirements to build wheel: started
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6277852Z       Getting requirements to build wheel: finished with status 'done'
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6278542Z       Preparing metadata (pyproject.toml): started
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6279218Z       Preparing metadata (pyproject.toml): finished with status 'done'
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6279886Z     Building wheels for collected packages: StyLua
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6280284Z       Building wheel for StyLua (pyproject.toml): started
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6280780Z       Building wheel for StyLua (pyproject.toml): finished with status 'error'
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6281236Z     Failed to build StyLua
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6281490Z stderr:
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6281721Z       error: subprocess-exited-with-error
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6282016Z       
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6282576Z       × Building wheel for StyLua (pyproject.toml) did not run successfully.
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6283041Z       │ exit code: 1
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6283319Z       ╰─> [39 lines of output]
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6283879Z           Traceback (most recent call last):
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6290851Z             File "/home/runner/.cache/pre-commit/repo9wmtrtly/py_env-python3.14/lib/python3.14/site-packages/pip/_vendor/pyproject_hooks/_in_process/_in_process.py", line 389, in <module>
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6291781Z               main()
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6292036Z               ~~~~^^
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6293058Z             File "/home/runner/.cache/pre-commit/repo9wmtrtly/py_env-python3.14/lib/python3.14/site-packages/pip/_vendor/pyproject_hooks/_in_process/_in_process.py", line 373, in main
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6294208Z               json_out["return_val"] = hook(**hook_input["kwargs"])
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6294563Z                                        ~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6295409Z             File "/home/runner/.cache/pre-commit/repo9wmtrtly/py_env-python3.14/lib/python3.14/site-packages/pip/_vendor/pyproject_hooks/_in_process/_in_process.py", line 280, in build_wheel
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6296209Z               return _build_backend().build_wheel(
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6296506Z                      ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6296841Z                   wheel_directory, config_settings, metadata_directory
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6297198Z                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6297481Z               )
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6297666Z               ^
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6298194Z             File "/tmp/pip-build-env-eqig_9y3/overlay/lib/python3.14/site-packages/pseudo_builder.py", line 162, in build_wheel
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6298770Z               download(metadata, wheel_scripts)
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6299055Z               ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6299609Z             File "/tmp/pip-build-env-eqig_9y3/overlay/lib/python3.14/site-packages/pseudo_builder.py", line 42, in download
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6300155Z               return rg.download_release(
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6300418Z                      ~~~~~~~~~~~~~~~~~~~^
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6300773Z                   rg.GitRemoteInfo(config.hostname, config.owner, config.repo),
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6301174Z                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6301475Z               ...<7 lines>...
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6301714Z                   exec=config.exec,
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6301960Z                   ^^^^^^^^^^^^^^^^^
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6302183Z               )
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6302371Z               ^
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6302884Z             File "/tmp/pip-build-env-eqig_9y3/overlay/lib/python3.14/site-packages/release_gitter.py", line 660, in download_release
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6303449Z               release = fetch_release(
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6303835Z                   remote_info,
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6304069Z                   version=version,
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6304323Z                   pre_release=pre_release,
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6304574Z               )
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6305098Z             File "/tmp/pip-build-env-eqig_9y3/overlay/lib/python3.14/site-packages/release_gitter.py", line 238, in fetch_release
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6305808Z               result.raise_for_status()
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6306065Z               ~~~~~~~~~~~~~~~~~~~~~~~^^
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6306634Z             File "/tmp/pip-build-env-eqig_9y3/overlay/lib/python3.14/site-packages/requests/models.py", line 1167, in raise_for_status
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6307267Z               raise HTTPError(http_error_msg, response=self)
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6307929Z           requests.exceptions.HTTPError: 403 Client Error: rate limit exceeded for url: https://api.github.com/repos/JohnnyMorganz/StyLua/releases
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6308538Z           [end of output]
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6308749Z       
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6309089Z       note: This error originates from a subprocess, and is likely not a problem with pip.
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6309537Z       ERROR: Failed building wheel for StyLua
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6309853Z     error: failed-wheel-build-for-install
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6310120Z     
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6310611Z     × Failed to build installable wheels for some pyproject.toml based projects
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6311066Z     ╰─> StyLua
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6311353Z Check the log at /home/runner/.cache/pre-commit/pre-commit.log
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6507041Z ##[error]Process completed with exit code 3.
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.6614903Z Post job cleanup.
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.8222592Z [command]/bin/bash /home/runner/work/_actions/Homebrew/actions/main/setup-homebrew/post.sh false
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.8468365Z Node 20 is being deprecated. This workflow is running with Node 24 by default. If you need to temporarily use Node 20, you can set the ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION=true environment variable. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.8469659Z Post job cleanup.
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.9324551Z [command]/usr/bin/git version
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.9364465Z git version 2.55.0
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.9400158Z Temporarily overriding HOME='/home/runner/work/_temp/92636665-3d1e-4f9f-b655-bafc18f1b6d9' before making global git config changes
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.9401903Z Adding repository directory to the temporary git global config as a safe directory
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.9406722Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/dotfiles/dotfiles
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.9455943Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.9501072Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.9839072Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.9872610Z http.https://github.com/.extraheader
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.9885912Z [command]/usr/bin/git config --local --unset-all http.https://github.com/.extraheader
+Linters	UNKNOWN STEP	2026-09-22T12:42:21.9930986Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+Linters	UNKNOWN STEP	2026-09-22T12:42:22.0254883Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+Linters	UNKNOWN STEP	2026-09-22T12:42:22.0261396Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+Linters	UNKNOWN STEP	2026-09-22T12:42:22.0713272Z Cleaning up orphan processes
+Linters	UNKNOWN STEP	2026-09-22T12:42:22.0983979Z ##[warning]Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4, actions/setup-python@v5. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
