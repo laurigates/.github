@@ -105,12 +105,63 @@ prompt="$(step_field "$CLAUDE_STEP" .with.prompt)"
 assert_contains "$prompt" '${{ steps.existing.outputs.directive }}' "Claude prompt"
 assert_lacks "$prompt" 'gh issue create' "Claude prompt (issue creation belongs to the directive)"
 
-# The old flood guard counted `head:auto-fix/` PRs, which this workflow never
-# opens; `head:` is also an exact-match qualifier. It could never fire.
+# The old flood guard counted open PRs from `auto-fix/*` branches, which this
+# workflow never opens (it pushes to the failing branch). It could never fire.
 all_runs="$(yq -r '.jobs["auto-fix"].steps[].run // ""' "$WORKFLOW")"
 assert_lacks "$all_runs" 'head:auto-fix/' "workflow run bodies"
 assert_eq "$(step_field "$CLAUDE_STEP" .if)" "steps.context.outputs.recent_fix_count == '0'" "Claude step if:"
 assert_contains "$(step_field "$LABEL_STEP" .if)" "steps.existing.outputs.mode == 'create'" "label step if:"
+
+# Outside `create` mode the agent must not be able to file an issue at all,
+# not only be told not to: a deny rule beats the `Bash(gh issue *)` grant.
+# `gh issue new` is an alias of `gh issue create`.
+assert_contains "$(step_field "$CLAUDE_STEP" .with.claude_args)" \
+  "\${{ steps.existing.outputs.mode != 'create' && '--disallowedTools \"Bash(gh issue create *),Bash(gh issue new *)\"' || '' }}" \
+  "Claude step claude_args"
+
+# Step wiring. A mistyped `steps.<id>.outputs.<key>` is neither a YAML nor an
+# actionlint error; it evaluates to '' at run time. An empty SIGNATURE turns
+# dedup off with every check green, which is the original bug again.
+CASE_NAME=wiring
+assert_eq "$(step_field "$SIG_STEP" .id)" signature "'$SIG_STEP' id"
+assert_eq "$(step_field "$LOOKUP_STEP" .id)" existing "'$LOOKUP_STEP' id"
+while IFS='|' read -r step key want; do
+  assert_eq "$(step_field "$step" ".env.$key")" "$want" "'$step' env $key"
+done <<'WIRING'
+Compute failure signature|CONTEXT_DIR|${{ steps.context.outputs.context_dir }}
+Compute failure signature|WORKFLOW_NAME|${{ inputs.workflow_name }}
+Compute failure signature|BRANCH|${{ inputs.branch }}
+Find existing issue for this failure|SIGNATURE|${{ steps.signature.outputs.signature }}
+Find existing issue for this failure|SIGNATURE_INPUT|${{ steps.signature.outputs.line }}
+Find existing issue for this failure|MAX_OPEN|${{ inputs.max_auto_fix_prs }}
+Find existing issue for this failure|PR_NUMBER|${{ steps.context.outputs.pr_number }}
+Find existing issue for this failure|RUN_ID|${{ inputs.run_id }}
+Find existing issue for this failure|BRANCH|${{ inputs.branch }}
+Find existing issue for this failure|WORKFLOW_NAME|${{ inputs.workflow_name }}
+WIRING
+
+# The same class across the whole job: every `steps.<id>.outputs.<key>`
+# anywhere in a step must name an EARLIER step with that id whose run: body
+# writes <key> to $GITHUB_OUTPUT (`echo "<key>=` or `echo "<key><<`).
+CASE_NAME=output-refs
+refs_report="$(yq -o=json '.jobs["auto-fix"].steps' "$WORKFLOW" | jq -r '
+  . as $s
+  | [ range($s | length) as $i
+      | ($s[$i] | tojson | [scan("steps\\.([A-Za-z0-9_-]+)\\.outputs\\.([A-Za-z0-9_-]+)")] | unique[]) as [$id, $key]
+      | (first(range($i) | select($s[.].id == $id)) // null) as $d
+      | { at: $s[$i].name, ref: "steps.\($id).outputs.\($key)",
+          problem: (if $d == null then "no earlier step has id \($id)"
+                    elif (($s[$d].run // "") | test("echo \"" + $key + "(=|<<)") | not)
+                    then "step \($id) never writes \($key) to GITHUB_OUTPUT"
+                    else null end) } ]
+  | "refs=\(length)", (.[] | select(.problem != null) | "\(.at): \(.ref): \(.problem)")')"
+n_refs="$(printf '%s\n' "$refs_report" | sed -n 's/^refs=//p')"
+ok; [ "${n_refs:-0}" -ge 8 ] || fail "found only ${n_refs:-0} steps.*.outputs.* references; the scan is not reading the steps"
+unresolved_refs="$(printf '%s\n' "$refs_report" | grep -v '^refs=' || true)"
+ok
+if [ -n "$unresolved_refs" ]; then
+  while IFS= read -r problem; do fail "$problem"; done <<<"$unresolved_refs"
+fi
 
 # The new steps read inputs from env:, never from ${{ }} inside the script.
 for f in signature lookup labels; do
@@ -132,6 +183,7 @@ run_sig() { # <log file or ''> <workflow name> <branch>
   SIG="$(sed -n 's/^signature=//p' "$work/run/output")"
   SRC="$(sed -n 's/^source=//p' "$work/run/output")"
   LINE="$(sed -n 's/^Signature input: //p' "$work/run/stdout")"
+  LINE_OUT="$(sed -n 's/^line=//p' "$work/run/output")"
 }
 
 expect_group() {
@@ -167,6 +219,7 @@ if [ "$have_sig" = 1 ]; then
     ok; printf '%s' "$SIG" | grep -qE '^[0-9a-f]{12}$' || fail "signature '$SIG' is not 12 hex chars"
     assert_eq "$SRC" "$EXP_SRC" "source"
     assert_eq "$LINE" "$EXP_LINE" "signature input"
+    assert_eq "$LINE_OUT" "$EXP_LINE" "line output (shown in the issue comment)"
     printf '%s\t%s\n' "$group" "$SIG" >> "$work/sigs.tsv"
   done < "$FIXTURES/cases.tsv"
 
@@ -196,24 +249,26 @@ if [ "$have_sig" = 1 ]; then
   ok; [ -n "$SIG" ] && [ "$SIG" != "$ref" ] || fail "same line in another workflow must not share the signature"
 
   # Synthetic: every volatile token class in one line. Two runs of the same
-  # failure differ in run id, SHA, timestamp, UUID, runner temp path and
-  # branch; a third differs in one meaningful word.
+  # failure differ in run id, SHA, timestamp, UUID, runner temp path, branch
+  # and a Python repr address (`0x...` has no word boundary before its
+  # digits, so the <id> rule alone misses it); a third differs in one
+  # meaningful word.
   CASE_NAME='volatile-tokens'
-  synth() { # <run id> <sha> <timestamp> <uuid> <tmp dir> <branch> <artifact word>
+  synth() { # <run id> <sha> <timestamp> <uuid> <tmp dir> <branch> <artifact word> <address>
     printf 'build\tUNKNOWN STEP\t2026-01-01T00:00:00.0000000Z ##[group]Run fetch\n'
-    printf 'build\tUNKNOWN STEP\t2026-01-01T00:00:01.0000000Z ##[error]Failed to fetch %s for https://github.com/o/r/actions/runs/%s at %s (refs/heads/%s) into /home/runner/work/_temp/%s/out.zip via %s/pip-build-env-x at %s\n' \
-      "$7" "$1" "$2" "$6" "$4" "$5" "$3"
+    printf 'build\tUNKNOWN STEP\t2026-01-01T00:00:01.0000000Z ##[error]Failed to fetch %s for https://github.com/o/r/actions/runs/%s at %s (refs/heads/%s) into /home/runner/work/_temp/%s/out.zip via %s/pip-build-env-x at %s by <Worker object at %s>\n' \
+      "$7" "$1" "$2" "$6" "$4" "$5" "$3" "$8"
     printf 'build\tUNKNOWN STEP\t2026-01-01T00:00:02.0000000Z ##[error]Process completed with exit code 1.\n'
   }
-  synth 35728723228 a95de74c0ffee 2026-09-22T12:42:21.6272170Z 92636665-3d1e-4f9f-b655-bafc18f1b6d9 /tmp/tmp8h2k feat/one artifacts > "$work/s1.log"
-  synth 34770384899 be2fd3b1234567 2026-09-13T17:02:42Z 0f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b /tmp/tmpzz91 fix/two artifacts > "$work/s2.log"
-  synth 34770384899 be2fd3b1234567 2026-09-13T17:02:42Z 0f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b /tmp/tmpzz91 fix/two releases > "$work/s3.log"
+  synth 35728723228 a95de74c0ffee 2026-09-22T12:42:21.6272170Z 92636665-3d1e-4f9f-b655-bafc18f1b6d9 /tmp/tmp8h2k feat/one artifacts 0x7f3a2b1c9d40 > "$work/s1.log"
+  synth 34770384899 be2fd3b1234567 2026-09-13T17:02:42Z 0f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b /tmp/tmpzz91 fix/two artifacts 0x7F99AA01BE70 > "$work/s2.log"
+  synth 34770384899 be2fd3b1234567 2026-09-13T17:02:42Z 0f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b /tmp/tmpzz91 fix/two releases 0x7F99AA01BE70 > "$work/s3.log"
   run_sig "$work/s1.log" 'CI' 'feat/one'; s1="$SIG"; l1="$LINE"
   run_sig "$work/s2.log" 'CI' 'fix/two';  s2="$SIG"
   run_sig "$work/s3.log" 'CI' 'fix/two';  s3="$SIG"
   ok; [ -n "$s1" ] && [ "$s1" = "$s2" ] || fail "volatile tokens leak into the signature ($s1 vs $s2): '$l1'"
   ok; [ -n "$s3" ] && [ "$s3" != "$s2" ] || fail "a meaningful difference must change the signature"
-  assert_eq "$l1" 'Failed to fetch artifacts for https://github.com/o/r/actions/runs/<id> at <id> (refs/heads/<branch>) into <path> via <path> at <ts>' "normalised line"
+  assert_eq "$l1" 'Failed to fetch artifacts for https://github.com/o/r/actions/runs/<id> at <id> (refs/heads/<branch>) into <path> via <path> at <ts> by <Worker object at <addr>>' "normalised line"
 
   # No usable line: dedup is off, not wrong.
   CASE_NAME='no-logs'
@@ -276,6 +331,7 @@ run_lookup() { # <case> <issues json> <signature> <max open> <pr number>
   GH_STUB_CALLS="$work/run/calls" GH_STUB_ISSUES="$work/run/issues.json" \
   GITHUB_OUTPUT="$work/run/output" GITHUB_REPOSITORY="$FAKE_REPO" GITHUB_SERVER_URL=https://github.com \
   SIGNATURE="$3" MAX_OPEN="$4" PR_NUMBER="$5" RUN_ID=123456789 BRANCH=feat/x WORKFLOW_NAME='Smoke Test CI' \
+  SIGNATURE_INPUT="${SIG_INPUT:-pre-commit hook failed: ty @octocat #1}" \
     bash "$work/lookup.sh" > "$work/run/stdout" 2> "$work/run/stderr"
   RC=$?
   set -e
@@ -302,10 +358,19 @@ if [ "$have_lookup" = 1 ]; then
   assert_contains "$COMMENT" "https://github.com/$FAKE_REPO/actions/runs/123456789" "comment body"
   assert_contains "$COMMENT" 'feat/x' "comment body"
   assert_contains "$COMMENT" '#42' "comment body"
+  # The reader must be able to judge the grouping, so the comment names the
+  # line that was hashed, as an indented code block: log text can then never
+  # render as Markdown, @-mention anyone or link an issue.
+  assert_contains "$COMMENT" 'A failure with the same signature' "comment body"
+  assert_contains "$COMMENT" $'\n\n    pre-commit hook failed: ty @octocat #1\n' "comment body"
   assert_contains "$DIRECTIVE" '#7' "directive"
   assert_contains "$DIRECTIVE" 'Do NOT create' "directive"
   assert_contains "$DIRECTIVE" 'gh pr comment 42' "directive"
   assert_lacks "$DIRECTIVE" 'gh issue create' "directive"
+
+  SIG_INPUT="$(printf 'x%.0s' $(seq 1 400))" run_lookup long-input "[{\"number\":7,\"body\":\"$(marker $SIG_A)\"}]" "$SIG_A" 5 42
+  assert_contains "$COMMENT" "    $(printf 'x%.0s' $(seq 1 300))" "comment body"
+  assert_lacks "$COMMENT" "$(printf 'x%.0s' $(seq 1 301))" "comment body (input capped at 300 characters)"
 
   run_lookup oldest-wins "[{\"number\":12,\"body\":\"$(marker $SIG_A)\"},{\"number\":7,\"body\":\"$(marker $SIG_A)\"}]" "$SIG_A" 5 42
   assert_eq "$ISSUE" 7 "issue_number"
@@ -330,6 +395,12 @@ if [ "$have_lookup" = 1 ]; then
   assert_lacks "$DIRECTIVE" 'gh issue create' "directive"
   assert_contains "$STDOUT" '::warning::' "stdout"
   run_lookup below-cap "$two_open" "$SIG_A" 3 42
+  assert_eq "$MODE" create "mode"
+
+  # Only a well-formed marker counts toward the cap, not an issue that quotes
+  # the marker's shape (a design issue about this workflow does).
+  run_lookup quoted-marker "[{\"number\":5,\"body\":\"design: <!-- auto-fix-signature: <sig> -->\"},{\"number\":6,\"body\":\"$(marker ffffffffffff)\"}]" "$SIG_A" 2 42
+  assert_eq "$OPEN" 1 "open_auto_fix_issues"
   assert_eq "$MODE" create "mode"
 
   run_lookup match-beats-cap "[{\"number\":7,\"body\":\"$(marker $SIG_A)\"}]" "$SIG_A" 0 42
