@@ -154,10 +154,13 @@ refs_report="$(yq -o=json '.jobs["auto-fix"].steps' "$WORKFLOW" | jq -r '
                     elif (($s[$d].run // "") | test("echo \"" + $key + "(=|<<)") | not)
                     then "step \($id) never writes \($key) to GITHUB_OUTPUT"
                     else null end) } ]
-  | "refs=\(length)", (.[] | select(.problem != null) | "\(.at): \(.ref): \(.problem)")')"
-n_refs="$(printf '%s\n' "$refs_report" | sed -n 's/^refs=//p')"
-ok; [ "${n_refs:-0}" -ge 8 ] || fail "found only ${n_refs:-0} steps.*.outputs.* references; the scan is not reading the steps"
-unresolved_refs="$(printf '%s\n' "$refs_report" | grep -v '^refs=' || true)"
+  | .[] | if .problem == null then "resolved|\(.at)|\(.ref)" else "unresolved|\(.at): \(.ref): \(.problem)" end')"
+# Control: a reference the job has always had. If the scan misses it, the
+# scan is broken and an empty problem list below would mean nothing.
+ok
+printf '%s\n' "$refs_report" | grep -qxF 'resolved|Skip if already attempted fix|steps.context.outputs.recent_fix_count' \
+  || fail "the scan did not resolve steps.context.outputs.recent_fix_count in 'Skip if already attempted fix'; it is not reading the steps"
+unresolved_refs="$(printf '%s\n' "$refs_report" | sed -n 's/^unresolved|//p')"
 ok
 if [ -n "$unresolved_refs" ]; then
   while IFS= read -r problem; do fail "$problem"; done <<<"$unresolved_refs"
