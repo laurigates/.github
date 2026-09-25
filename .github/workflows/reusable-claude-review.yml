@@ -71,7 +71,7 @@ on:
       additional_permissions:
         description: >-
           GitHub permissions map forwarded to the action, as "key: value" lines
-          (e.g. "actions: read" — note the job grants no actions scope by default).
+          (e.g. "actions: read").
           NOT a Claude tool list — that is allowed_tools / additional_allowed_tools.
         required: false
         type: string
@@ -99,6 +99,12 @@ permissions:
   pull-requests: write
   issues: write
   id-token: write
+  # Required for the action's github_ci MCP server (CI status, run details, job
+  # logs). On a PR in tag mode the action probes this job's GITHUB_TOKEN with
+  # listWorkflowRunsForRepo and skips the server on a 403, logging "The github_ci
+  # MCP server requires 'actions: read' permission". The probe uses github.token,
+  # not the App token, so `additional_permissions` cannot substitute for this.
+  actions: read
 
 jobs:
   review:
@@ -143,9 +149,8 @@ jobs:
           claude_args: >-
             ${{ inputs.claude_args }}
             --allowedTools "${{ inputs.allowed_tools }}${{ inputs.additional_allowed_tools && format(',{0}', inputs.additional_allowed_tools) || '' }}"
-          # A real GitHub permissions map now — pass-through only. This job's
-          # `permissions:` grants no `actions` scope, so a caller wanting Claude
-          # to read CI results must widen both.
+          # A real GitHub permissions map now — pass-through only. The github_ci
+          # server reads the job token, which the `permissions:` block above grants.
           additional_permissions: ${{ inputs.additional_permissions }}
           plugins: ${{ inputs.plugins }}
           plugin_marketplaces: ${{ inputs.plugin_marketplaces }}
