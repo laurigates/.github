@@ -59,3 +59,8 @@ jobs:
       # issue-lookup steps: one failure must map to one signature.
       - name: Auto-fix dedup fixtures
         run: bash .github/tests/auto-fix-dedup/run.sh
+
+      # The merge-retry step of reusable-auto-merge-image-updater.yml, extracted
+      # and run against a stub gh that reproduces the base-moved race.
+      - name: Auto-merge retry
+        run: bash .github/tests/auto-merge-retry/run.sh

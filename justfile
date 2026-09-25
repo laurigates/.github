@@ -148,3 +148,8 @@ publish-fixtures workflow=".github/workflows/reusable-security-owasp.yml":
 [group: "validate"]
 autofix-fixtures workflow=".github/workflows/reusable-auto-fix.yml":
     bash .github/tests/auto-fix-dedup/run.sh "{{workflow}}"
+
+# Run reusable-auto-merge-image-updater.yml's merge-retry step against stub gh
+[group: "validate"]
+automerge-retry:
+    bash .github/tests/auto-merge-retry/run.sh
