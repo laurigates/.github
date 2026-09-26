@@ -76,7 +76,7 @@ jobs:
       critical: ${{ steps.publish.outputs.count_critical_high }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.4.0
         with:
           fetch-depth: 0
 
@@ -130,19 +130,19 @@ jobs:
 
       - name: Setup Node.js
         if: contains(fromJSON('["npm", "bun", "pnpm", "yarn"]'), inputs.package-manager)
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v4.4.0
         with:
-          node-version: '20'
+          node-version: '20.20.2'
 
       - name: Setup Bun
         if: inputs.package-manager == 'bun'
-        uses: oven-sh/setup-bun@v1
+        uses: oven-sh/setup-bun@v1.2.2
 
       - name: Setup Python
         if: inputs.package-manager == 'pip'
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v5.6.0
         with:
-          python-version: '3.x'
+          python-version: '3.14.7'
 
       - name: Setup Rust
         if: inputs.package-manager == 'cargo'
@@ -186,7 +186,7 @@ jobs:
       - name: Claude Dependency Analysis
         id: analyze
         if: steps.audit-cmd.outputs.results != '' && steps.changed.outputs.skip != 'true'
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@v1.0.235
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # Dependency PRs are bot-authored (Renovate, release-please). On a

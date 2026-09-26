@@ -85,7 +85,7 @@ jobs:
       level-aa: ${{ steps.publish.outputs.count_level_aa_issues }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.4.0
         with:
           fetch-depth: 0
 
@@ -135,7 +135,7 @@ jobs:
       - name: Claude WCAG Analysis
         id: analyze
         if: steps.changed.outputs.count != '0' && steps.changed.outputs.skip != 'true'
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@v1.0.235
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           allowed_bots: ${{ inputs.allowed-bots }}
