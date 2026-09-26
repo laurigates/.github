@@ -39,7 +39,7 @@ jobs:
     runs-on: ubuntu-slim
     steps:
       - name: Auto-fix PR title to conventional commits format
-        uses: actions/github-script@v8
+        uses: actions/github-script@v8.0.0
         env:
           EXTRA_ALIASES: ${{ inputs.extra_type_aliases }}
         with:

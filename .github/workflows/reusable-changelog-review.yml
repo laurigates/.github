@@ -150,7 +150,7 @@ jobs:
       existing_issue: ${{ steps.existing.outputs.issue_number }}
       should_skip: ${{ steps.existing.outputs.should_skip }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.1.0
         with:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
 
@@ -447,7 +447,7 @@ jobs:
 
       - name: Upload excerpt for triage job
         if: steps.compare.outputs.has_updates == 'true' && steps.existing.outputs.should_skip != 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4.6.2
         with:
           name: changelog-excerpt
           path: /tmp/excerpt.md
@@ -468,19 +468,19 @@ jobs:
     if: needs.check-changelog.outputs.has_updates == 'true' && needs.check-changelog.outputs.should_skip != 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.1.0
         with:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
       - name: Download pre-sliced changelog excerpt
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v4.3.0
         with:
           name: changelog-excerpt
           path: .
 
       - name: Triage changelog into a tracking issue
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@v1.0.235
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # Same token the checkout used, so `gh issue create` and `git push`
