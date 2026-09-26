@@ -102,7 +102,7 @@ jobs:
             echo "RENOVATE_REPOSITORIES=$DEFAULT_REPOSITORY" >> "$GITHUB_ENV"
           fi
 
-      - uses: renovatebot/github-action@v46.1.16
+      - uses: renovatebot/github-action@v46.3.3
         with:
           token: ${{ inputs.app-id != '' && steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
           configurationFile: ${{ inputs.config-file }}
