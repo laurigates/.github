@@ -100,7 +100,7 @@ jobs:
 
       - name: Checkout repository
         if: steps.guard.outputs.match == 'true'
-        uses: actions/checkout@v6
+        uses: actions/checkout@v6.1.0
         with:
           fetch-depth: 1
           persist-credentials: false

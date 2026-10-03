@@ -46,7 +46,7 @@ jobs:
     # ubuntu-slim: checkout + `gh` PR create/approve/merge, no toolchain.
     runs-on: ubuntu-slim
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.1.0
 
       - name: Generate GitHub App token
         id: app-token
