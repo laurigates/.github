@@ -107,7 +107,7 @@ jobs:
 
       - name: Run opencode
         if: steps.guard.outputs.match == 'true'
-        uses: anomalyco/opencode/github@02981844b88aed33f06f1527da6c58d137975069 # v1.18.7
+        uses: anomalyco/opencode/github@aec0b9a6d8898f68f923aaf08b7306d931fd9d76 # v1.18.34
         env:
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
