@@ -158,7 +158,9 @@ refs_report="$(yq -o=json '.jobs["auto-fix"].steps' "$WORKFLOW" | jq -r '
 # Control: a reference the job has always had. If the scan misses it, the
 # scan is broken and an empty problem list below would mean nothing.
 ok
-printf '%s\n' "$refs_report" | grep -qxF 'resolved|Skip if already attempted fix|steps.context.outputs.recent_fix_count' \
+# A here-string, not a pipe: under pipefail, `grep -q` exiting on the match
+# SIGPIPEs the writer and fails the pipeline precisely when the line is there.
+grep -qxF 'resolved|Skip if already attempted fix|steps.context.outputs.recent_fix_count' <<<"$refs_report" \
   || fail "the scan did not resolve steps.context.outputs.recent_fix_count in 'Skip if already attempted fix'; it is not reading the steps"
 unresolved_refs="$(printf '%s\n' "$refs_report" | sed -n 's/^unresolved|//p')"
 ok

@@ -116,8 +116,63 @@ jobs:
         # Run outside the checkout so gh skips local-clone cleanup. With
         # --delete-branch, gh otherwise tries `git checkout -B main origin/main`,
         # which fails in a fetch-depth=1 checkout that only has the PR branch.
+        #
+        # Retried because `--auto` is not always auto-merge: when the PR already
+        # reads CLEAN, UNSTABLE or HAS_HOOKS, gh sends `mergePullRequest` and
+        # merges immediately (cli/cli pkg/cmd/pr/merge/merge.go,
+        # isImmediatelyMergeable). Image Updater pushes one branch per image, so
+        # sibling runs merge into `main` seconds apart, and a sibling landing
+        # between gh's read and its mutation is rejected with "Base branch was
+        # modified. Review and try the merge again." gh does not retry.
+        #
+        # A merged PR reads `mergeable: UNKNOWN` indefinitely, so the wait
+        # below checks `state` first and exits 0 on MERGED. That ends a retry
+        # after an attempt whose merge landed but whose exit was non-zero (a
+        # failed branch delete); that attempt's ::warning:: keeps the error.
+        #
+        # Inputs arrive through env so the body stays expression-free; the
+        # regression test in .github/tests/auto-merge-retry/ runs it verbatim.
         working-directory: ${{ runner.temp }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
-        run: gh pr merge --auto --delete-branch --${{ inputs.merge-method }} "${{ github.ref_name }}"
+          HEAD_REF: ${{ github.ref_name }}
+          MERGE_METHOD: ${{ inputs.merge-method }}
+          MAX_ATTEMPTS: '6'
+          SLEEP_BASE: '5'
+        run: |
+          attempt=1
+          delay="$SLEEP_BASE"
+          while :; do
+            # After `main` moves, GitHub recomputes mergeability and reports
+            # UNKNOWN meanwhile; wait (bounded) for it to settle so gh reads a
+            # real merge state. A failed read counts as settled.
+            polls=0
+            while [ "$polls" -lt "$MAX_ATTEMPTS" ]; do
+              pr_state=$(gh pr view "$HEAD_REF" --json state,mergeable --jq '.state + " " + .mergeable' 2>/dev/null || true)
+              case "$pr_state" in
+                "MERGED "*) echo "PR for $HEAD_REF is already merged"; exit 0 ;;
+                *" UNKNOWN") ;;
+                *) break ;;
+              esac
+              polls=$((polls + 1))
+              echo "Mergeability UNKNOWN; waiting ${SLEEP_BASE}s ($polls/$MAX_ATTEMPTS)"
+              sleep "$SLEEP_BASE"
+            done
+
+            if out=$(gh pr merge --auto --delete-branch "--${MERGE_METHOD}" "$HEAD_REF" 2>&1); then
+              printf '%s\n' "$out"
+              exit 0
+            fi
+
+            # Keep gh's own message in the log; annotations show one line only.
+            printf '%s\n' "$out" >&2
+            if [ "$attempt" -ge "$MAX_ATTEMPTS" ]; then
+              echo "::error::gh pr merge failed after $attempt attempts: ${out//$'\n'/ }"
+              exit 1
+            fi
+            echo "::warning::gh pr merge attempt $attempt/$MAX_ATTEMPTS failed, retrying in ${delay}s: ${out//$'\n'/ }"
+            sleep "$delay"
+            attempt=$((attempt + 1))
+            delay=$((delay * 2))
+          done
