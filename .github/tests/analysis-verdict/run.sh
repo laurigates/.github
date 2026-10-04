@@ -140,8 +140,11 @@ for WF in "${workflows[@]}"; do
     keys="$(yq '[.jobs.*.steps[] | select(.id == "publish")] | .[0].env.COUNT_KEYS' "$WF")"
     rm -rf "$work/pub" && mkdir -p "$work/pub"
     set +e
+    # Same execution file the verdict step classifies below: both steps
+    # read it, so the caller's view is pinned on one input.
     GITHUB_OUTPUT="$work/pub/output" GITHUB_STEP_SUMMARY="$work/pub/summary.md" \
-      STRUCTURED_OUTPUT='' ANALYZE_OUTCOME=failure TITLE='Test Analysis' \
+      RUNNER_TEMP="$work/pub" EXECUTION_FILE="$work/no-verdict.json" \
+      ANALYZE_OUTCOME=failure TITLE='Test Analysis' \
       BLOCKING_SEVERITIES="$(yq '[.jobs.*.steps[] | select(.id == "publish")] | .[0].env.BLOCKING_SEVERITIES' "$WF")" \
       COUNT_KEYS="$keys" bash "$work/publish.sh" > "$work/pub/out.txt" 2>&1
     RC=$?
@@ -176,6 +179,9 @@ for WF in "${workflows[@]}"; do
   run_case output-present-but-step-failed failure verdict.json
   assert_rc 1
   assert_in "$OUT" 'the action failed the step anyway'
+  # The publish block reads the same file (#61), so these findings WERE
+  # published; the verdict must not claim otherwise.
+  assert_in "$OUT" 'published from its execution file'
 
   run_case is-error failure is-error.json
   assert_rc 1
