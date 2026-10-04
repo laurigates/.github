@@ -38,6 +38,27 @@ GUARD="$(awk '
 ' "$WORKFLOW")"
 EXPECTED_GUARD="\${{ !cancelled() && steps.analyze.outcome != 'skipped' }}"
 
+# The step's `env:` lines, verbatim (comments dropped). How the payload is
+# WIRED is part of the contract: binding the model's output as an env string
+# is the issue-#61 bug (an env string of MAX_ARG_STRLEN or more fails the
+# execve of the step's own shell, so none of the block runs), and
+# interpolating it into `run:` is the #57 injection. awk, not yq, so this
+# harness keeps to awk/sed/jq.
+ENV_LINES="$(awk '
+  /^      - name: Publish findings$/ { inpub = 1 }
+  inpub && /^        env:$/          { inenv = 1; next }
+  inenv && /^        [^ ]/           { exit }
+  inenv && /^          #/            { next }
+  inenv                              { sub(/^          /, ""); print }
+' "$WORKFLOW")"
+EXPECTED_EXECUTION_FILE="EXECUTION_FILE: \${{ steps.analyze.outputs.execution_file }}"
+
+# The bash this harness execs must never carry a string the kernel refuses
+# (copy_strings() rejects any single argv/envp string >= MAX_ARG_STRLEN): a
+# fixture that needed one would only prove the harness can exec, not that
+# the block handles the payload.
+MAX_ARG_STRLEN=131072
+
 failures=0
 checks=0
 
@@ -62,7 +83,36 @@ assert_lines() {
   [ "$actual" = "$3" ] || fail "expected $3 line(s) matching '$2' in $(basename "$1"), got $actual"
 }
 
+# Self-check, builtins only and in a subshell so LC_ALL=C (byte lengths) does
+# not leak: an over-cap export would fail the exec with E2BIG, and the case
+# would pass or fail for the wrong reason.
+env_under_cap() (
+  LC_ALL=C
+  for v in $(compgen -e); do
+    val="${!v}"
+    if [ $(( ${#v} + 1 + ${#val} )) -ge "$MAX_ARG_STRLEN" ]; then
+      echo "FATAL [$CASE_NAME]: the harness would exec with env string $v of ${#val} bytes, at or over MAX_ARG_STRLEN" >&2
+      exit 1
+    fi
+  done
+)
+
 # run_case <name> <structured-output> <analyze-outcome> <blocking> <count-keys>
+#
+# The payload reaches the block the way production delivers it: inside the
+# action's execution file, a JSON array of SDK messages whose last `result`
+# message carries `structured_output`. Shell variables, set for one call and
+# reset after it, shape that file:
+#   EXEC_MODE      ''        wrap $2 as the result's structured_output:
+#                            valid JSON as JSON, anything else as a JSON
+#                            string, '' as a result with no such key
+#                  verbatim  $2 IS the whole execution file
+#                  missing   EXECUTION_FILE names a path that does not exist
+#                  unset     EXECUTION_FILE is not set at all
+#   RESULT_SUBTYPE / RESULT_IS_ERROR  the result message's subtype/is_error
+#
+# The payload goes to jq on stdin, never through --arg/--argjson: those are
+# argv strings and hit the same MAX_ARG_STRLEN this harness exists to clear.
 run_case() {
   CASE_NAME="$1"
   rm -rf "$work/run"
@@ -73,10 +123,35 @@ run_case() {
   : > "$GITHUB_STEP_SUMMARY"
   : > "$GITHUB_OUTPUT"
   export TITLE='Test Analysis'
-  export STRUCTURED_OUTPUT="$2"
   export ANALYZE_OUTCOME="$3"
   export BLOCKING_SEVERITIES="$4"
   export COUNT_KEYS="$5"
+
+  local exec_file="$work/run/exec.json"
+  local sub="${RESULT_SUBTYPE:-success}" err="${RESULT_IS_ERROR:-false}"
+  local wrap='[{type:"system",subtype:"init"},{type:"result",subtype:$sub,is_error:$err,num_turns:7,structured_output:.}]'
+  case "${EXEC_MODE:-}" in
+    verbatim) printf '%s' "$2" > "$exec_file" ;;
+    missing | unset) ;;
+    '')
+      if [ -z "$2" ]; then
+        jq -cn --arg sub "$sub" --argjson err "$err" \
+          '[{type:"system",subtype:"init"},{type:"result",subtype:$sub,is_error:$err,num_turns:7}]' > "$exec_file"
+      elif printf '%s' "$2" | jq empty >/dev/null 2>&1; then
+        printf '%s' "$2" | jq -c --arg sub "$sub" --argjson err "$err" "$wrap" > "$exec_file"
+      else
+        printf '%s' "$2" | jq -Rsc --arg sub "$sub" --argjson err "$err" "$wrap" > "$exec_file"
+      fi ;;
+    *) echo "FATAL: unknown EXEC_MODE '$EXEC_MODE'" >&2; exit 2 ;;
+  esac
+  case "${EXEC_MODE:-}" in
+    unset)   unset EXECUTION_FILE ;;
+    missing) export EXECUTION_FILE="$work/run/no-such-execution-file.json" ;;
+    *)       export EXECUTION_FILE="$exec_file" ;;
+  esac
+  EXEC_MODE='' RESULT_SUBTYPE='' RESULT_IS_ERROR=''
+
+  env_under_cap || exit 2
   set +e
   bash "$work/publish.sh" > "$work/run/annotations.txt" 2> "$work/run/stderr.txt"
   RC=$?
@@ -92,6 +167,22 @@ echo "== publish-findings fixtures against $WORKFLOW"
 CASE_NAME="guard"
 ok
 [ "$GUARD" = "$EXPECTED_GUARD" ] || fail "publish guard is '$GUARD', expected '$EXPECTED_GUARD'"
+
+# ------------------------------------------------------------------ wiring
+# Issue #61: the payload travels as a file the action wrote, never as an env
+# string, and nothing reaches the script body through `${{ }}`.
+CASE_NAME="wiring"
+ok
+grep -qxF -- "$EXPECTED_EXECUTION_FILE" <<<"$ENV_LINES" \
+  || fail "publish env does not bind '$EXPECTED_EXECUTION_FILE'"
+ok
+if grep -q 'STRUCTURED_OUTPUT\|structured_output' <<<"$ENV_LINES"; then
+  fail "publish env still binds the structured output as an env string (issue #61): $(grep 'STRUCTURED_OUTPUT\|structured_output' <<<"$ENV_LINES")"
+fi
+ok
+if grep -qF '${{' "$work/publish.sh"; then
+  fail "publish run body interpolates an expression: $(grep -F '${{' "$work/publish.sh" | head -1)"
+fi
 
 # ------------------------------------------------------------------- happy
 run_case happy \
@@ -289,31 +380,144 @@ assert_in "$SUMMARY" '### Critical — C'
 assert_in "$ANNOTATIONS" '::error file=a.ts::[Critical] [C] d'
 assert_in "$OUTPUT" 'blocking=1'
 
+# ----------------------------------------------- failed-run recovery (#61)
+# The action sets `structured_output` only on a clean success, but its
+# execution file keeps the last `result` message on the failure path too.
+# These are the two upstream failure shapes that still carry the payload: a
+# result flagged is_error, and a success result the action rejects for
+# overrunning --max-turns. Both must publish, flagged as possibly incomplete.
+RECOVER='{"total_issues":2,"critical_issues":1,"findings":[{"file":"a.ts","line":3,"severity":"Critical","category":"C","description":"d"},{"file":"b.ts","severity":"Low","category":"L","description":"e"}]}'
+RESULT_IS_ERROR=true run_case recover-is-error "$RECOVER" failure 'Critical' 'total_issues,critical_issues'
+assert_rc 0
+assert_in "$SUMMARY" "reported 'failure'; the findings below may be incomplete."
+assert_in "$SUMMARY" '### Critical — C'
+assert_in "$ANNOTATIONS" '::error file=a.ts,line=3::[Critical] [C] d'
+assert_in "$OUTPUT" 'blocking=1'
+assert_in "$OUTPUT" 'itemised=2'
+assert_in "$OUTPUT" 'count_critical_issues=1'
+
+run_case recover-over-max-turns "$RECOVER" failure 'Critical' 'total_issues,critical_issues'
+assert_rc 0
+assert_in "$SUMMARY" 'may be incomplete'
+assert_in "$OUTPUT" 'blocking=1'
+assert_in "$OUTPUT" 'count_total_issues=2'
+
+# The LAST result message is the one that counts.
+EXEC_MODE=verbatim run_case last-result-wins \
+  '[{"type":"result","subtype":"success","is_error":false,"structured_output":{"total_issues":9,"findings":[]}},{"type":"assistant"},{"type":"result","subtype":"success","is_error":false,"structured_output":{"total_issues":1,"findings":[]}}]' \
+  success '' 'total_issues'
+assert_rc 0
+assert_in "$OUTPUT" 'count_total_issues=1'
+
+# Non-object elements beside a real result message are skipped, not fatal:
+# without `objects`, `.type` on a string aborts jq, `|| :` empties the
+# payload, and a usable transcript silently degrades.
+EXEC_MODE=verbatim run_case non-object-beside-result \
+  "[\"bare\",null,{\"type\":\"system\",\"subtype\":\"init\"},7,{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"structured_output\":$RECOVER}]" \
+  success 'Critical' 'total_issues,critical_issues'
+assert_rc 0
+assert_not_in "$SUMMARY" 'no usable structured output'
+assert_in "$OUTPUT" 'blocking=1'
+assert_in "$OUTPUT" 'itemised=2'
+
+# ------------------------------------------ unusable execution file (#61)
+# Every shape degrades to the same loud report with zeroed counts, so a
+# caller's numeric gate reads 0 rather than '' -- and the step never aborts.
+assert_degraded() {
+  assert_rc 0
+  assert_in "$SUMMARY" 'no usable structured output'
+  assert_lines "$ANNOTATIONS" '^::warning::' 1
+  assert_in "$OUTPUT" 'blocking=0'
+  assert_in "$OUTPUT" 'itemised=0'
+  assert_in "$OUTPUT" 'count_total_issues=0'
+  assert_in "$OUTPUT" 'count_critical_issues=0'
+}
+DEGRADE_KEYS='total_issues,critical_issues'
+
+EXEC_MODE=unset run_case exec-file-unset "$RECOVER" failure 'Critical' "$DEGRADE_KEYS"
+assert_degraded
+assert_in "$SUMMARY" 'the action exposed no execution file'
+
+EXEC_MODE=missing run_case exec-file-missing "$RECOVER" failure 'Critical' "$DEGRADE_KEYS"
+assert_degraded
+assert_in "$SUMMARY" 'the action exposed no execution file'
+
+EXEC_MODE=verbatim run_case exec-file-not-json 'Error: this is not JSON {' failure 'Critical' "$DEGRADE_KEYS"
+assert_degraded
+assert_not_in "$SUMMARY" 'the action exposed no execution file'
+
+EXEC_MODE=verbatim run_case exec-file-empty '' failure 'Critical' "$DEGRADE_KEYS"
+assert_degraded
+
+# An object whose VALUES are result messages: `.[]?` would iterate them and
+# publish; only an array of messages is a transcript.
+EXEC_MODE=verbatim run_case exec-file-object \
+  "{\"r\":{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"structured_output\":$RECOVER}}" \
+  success 'Critical' "$DEGRADE_KEYS"
+assert_degraded
+
+EXEC_MODE=verbatim run_case exec-file-no-result \
+  "[{\"type\":\"system\",\"subtype\":\"init\"},{\"type\":\"assistant\",\"structured_output\":$RECOVER},\"bare\",null]" \
+  failure 'Critical' "$DEGRADE_KEYS"
+assert_degraded
+
+RESULT_SUBTYPE=error_max_turns RESULT_IS_ERROR=true run_case exec-file-error-max-turns '' failure 'Critical' "$DEGRADE_KEYS"
+assert_degraded
+
 # -------------------------------------------------------------- oversize
-# The padding is finding COUNT, not description length, and that is forced.
-# STRUCTURED_OUTPUT reaches the block as an ENVIRONMENT string, and Linux caps
-# a single env/argv string at MAX_ARG_STRLEN (32 * 4096 = 131072 bytes): a
-# 950 KB description fails the execve of the child shell with E2BIG before any
-# of the block runs. That is what took CI red on this branch's first run
-# (33902497222, `/usr/bin/jq: Argument list too long`, exit 126) while macOS,
-# which has no per-string cap, stayed green. Building the string inside jq
-# does not help -- the harness still exports it across an exec.
+# The payload used to reach the block as an ENVIRONMENT string, and Linux
+# caps a single argv/env string at MAX_ARG_STRLEN (32 * 4096 = 131072
+# bytes), so anything larger failed the execve of the step's own shell with
+# E2BIG before line 1 ran: no summary, no annotations, no `blocking`, only
+# `Argument list too long` (issue #61; the same cap took this harness red on
+# CI run 33902497222 while macOS, which has no per-string cap, stayed green).
+# The payload now travels as a file, so the cap binds only argv/env strings
+# -- which is why these fixtures build payloads inside jq and hand them over
+# on stdin, and why env_under_cap() guards every exec. SUMMARY_MAX_BYTES is
+# now the real ceiling, and populated input reaches it.
 #
-# The same ceiling sits in front of production, so 20000 near-empty finding
-# objects is not merely a cheaper fixture, it is the ONLY shape that can reach
-# the truncation branch at all: 60035 bytes of JSON, under the cap, rendering
-# to 1160043 bytes. Anything with populated descriptions long enough to render
-# past 900000 exceeds the cap and never arrives.
+# 20000 near-empty finding objects: 60 KB of JSON rendering to 1.1 MB.
 CASE_NAME=oversize
 BIG="$(jq -cn --argjson n 20000 '{total_issues:$n, findings:[range($n) | {}]}')"
-ok
-[ "$(printf '%s' "$BIG" | wc -c)" -lt 131072 ] \
-  || fail "payload is $(printf '%s' "$BIG" | wc -c) bytes; at MAX_ARG_STRLEN or over it cannot exec on Linux"
 run_case oversize "$BIG" success '' 'total_issues'
 assert_rc 0
 assert_in "$SUMMARY" '_Summary truncated at 900000 bytes; remaining findings omitted._'
 ok
 [ "$(wc -c < "$SUMMARY")" -lt 1048576 ] || fail "truncated summary is still over 1 MiB"
+
+# Over the env cap and under the summary cap: must publish in full.
+CASE_NAME=oversize-beyond-env-cap
+WIDE="$(jq -cn '{total_issues:400, findings:[range(400) | {file:"src/f\(.).ts", line:(. + 1), severity:"Low", category:"C", description:("d\(.) " + ("x" * 600))}]}')"
+ok
+[ "$(printf '%s' "$WIDE" | wc -c)" -gt "$MAX_ARG_STRLEN" ] \
+  || fail "fixture is only $(printf '%s' "$WIDE" | wc -c) bytes; it must exceed MAX_ARG_STRLEN to test issue #61"
+run_case oversize-beyond-env-cap "$WIDE" success '' 'total_issues'
+assert_rc 0
+assert_in "$SUMMARY" '### Low — C'
+assert_in "$SUMMARY" '`src/f399.ts:400`'
+assert_not_in "$SUMMARY" 'Summary truncated'
+assert_lines "$ANNOTATIONS" '^::warning file=' 10
+assert_in "$ANNOTATIONS" '::notice::390 further finding(s) appear in the job summary only.'
+assert_in "$OUTPUT" 'itemised=400'
+assert_in "$OUTPUT" 'count_total_issues=400'
+assert_lines "$OUTPUT" '^blocking=0$' 1
+
+# Populated findings that render past SUMMARY_MAX_BYTES: the truncation
+# branch reached by realistic input, not only by empty objects.
+CASE_NAME=oversize-populated
+HUGE="$(jq -cn '{total_issues:1500, findings:[range(1500) | {file:"src/f\(.).ts", severity:(if . % 3 == 0 then "High" else "Low" end), category:"C", description:("x" * 700), remediation:"fix"}]}')"
+ok
+[ "$(printf '%s' "$HUGE" | wc -c)" -gt 900000 ] \
+  || fail "fixture is only $(printf '%s' "$HUGE" | wc -c) bytes"
+run_case oversize-populated "$HUGE" success 'High' 'total_issues'
+assert_rc 0
+assert_in "$SUMMARY" '### High — C'
+assert_in "$SUMMARY" '_Summary truncated at 900000 bytes; remaining findings omitted._'
+assert_in "$ANNOTATIONS" '::warning::Test Analysis: job summary truncated at 900000 bytes.'
+ok
+[ "$(wc -c < "$SUMMARY")" -lt 1048576 ] || fail "truncated summary is still over 1 MiB"
+assert_in "$OUTPUT" 'blocking=500'
+assert_in "$OUTPUT" 'itemised=1500'
 
 # ------------------------------------------------------------------ report
 if [ "$failures" -eq 0 ]; then

@@ -209,10 +209,14 @@ jobs:
       # were discarded (laurigates/.github#47). Both channels work with the
       # permissions the job holds.
       #
-      # Guard is `outcome != 'skipped'`, not `== 'success'`: when the wrapper
-      # fails the run for overrunning --max-turns or --max-budget-usd, the
-      # model has normally already emitted its structured output. Gating on
-      # success discards exactly the findings that cost the most to produce.
+      # Guard is `outcome != 'skipped'`, not `== 'success'`: a failed run can
+      # still carry findings. The action sets its `structured_output` output
+      # only on a clean success, so the block reads the last `result` message
+      # in the action's execution file instead, which recovers the payload
+      # from a result flagged is_error and from a success result the action
+      # rejects for overrunning --max-turns. An `error_*` result (max turns,
+      # budget) normally carries none and degrades below. Gating on success
+      # would discard exactly the findings that cost the most to produce.
       #
       # `steps.analyze` is the analysis STEP. Several of these workflows also
       # name their JOB `analyze`; jobs and steps are separate namespaces, so
@@ -221,9 +225,12 @@ jobs:
         id: publish
         if: ${{ !cancelled() && steps.analyze.outcome != 'skipped' }}
         env:
-          # Read via env, never interpolated into the script body: this is
-          # model-generated text crossing into a shell.
-          STRUCTURED_OUTPUT: ${{ steps.analyze.outputs.structured_output }}
+          # A PATH, not the payload (laurigates/.github#61): an env string of
+          # 131072 bytes or more (MAX_ARG_STRLEN) fails the execve of this
+          # step's own shell with E2BIG before line 1 runs, and interpolating
+          # the payload into the script body is a shell injection. The file
+          # is the action's transcript, a JSON array of SDK messages.
+          EXECUTION_FILE: ${{ steps.analyze.outputs.execution_file }}
           ANALYZE_OUTCOME: ${{ steps.analyze.outcome }}
           TITLE: 'TypeScript Strictness'
           BLOCKING_SEVERITIES: ''
@@ -231,17 +238,25 @@ jobs:
         run: |
           set -euo pipefail
           # GitHub discards a step summary over 1 MiB, silently. Cap below it.
-          # This is not the payload ceiling: STRUCTURED_OUTPUT arrives as an
-          # environment string, and Linux caps a single env/argv string at
-          # MAX_ARG_STRLEN (32 * 4096 = 131072), failing the execve of this
-          # step's own shell with E2BIG before line 1 runs. Truncation fires
-          # only for input that renders to more than it costs -- 20000
-          # near-empty findings is 60 KB of JSON and 1.1 MB of summary.
+          # This is the real ceiling on rendered output: the payload travels
+          # as a file, never as an env or argv string, so the kernel's
+          # per-string MAX_ARG_STRLEN no longer bounds it.
           SUMMARY_MAX_BYTES=900000
           # GitHub surfaces at most 10 annotations per level per step and 50
           # per job (actions/toolkit docs/problem-matchers.md); the summary
           # always carries the complete list.
           ANNOTATION_LIMIT=10
+
+          # The payload is the last `result` message's structured_output,
+          # extracted to a file once. The transcript also holds every tool
+          # result, so only that field is selected and nothing else of it is
+          # printed. `|| :` because an unreadable transcript must reach the
+          # degrade branch below, not abort the step under `set -e`.
+          PAYLOAD="$RUNNER_TEMP/publish-findings-input.json"
+          : > "$PAYLOAD"
+          if [ -n "${EXECUTION_FILE:-}" ] && [ -f "$EXECUTION_FILE" ]; then
+            jq -c 'if type == "array" then [.[] | objects | select(.type == "result")] | last | .structured_output // empty else empty end' "$EXECUTION_FILE" > "$PAYLOAD" 2>/dev/null || : > "$PAYLOAD"
+          fi
 
           # jq exits 0 on empty input, so an unguarded run would publish
           # nothing and say nothing -- the exact silence this block ends.
@@ -250,8 +265,13 @@ jobs:
           # program: a non-array there aborts jq under `set -e` and takes the
           # summary, the annotations AND the outputs down with it. Degrading
           # to this branch reports the failure and still emits zeroed counts.
-          if [ -z "${STRUCTURED_OUTPUT:-}" ] || ! printf '%s' "$STRUCTURED_OUTPUT" | jq -e 'type == "object" and ((.findings // []) | type) == "array"' >/dev/null 2>&1; then
-            MSG="$TITLE: the analysis step reported '${ANALYZE_OUTCOME}' and produced no usable structured output (absent, unparseable, or 'findings' not an array), so no findings could be published."
+          if [ ! -s "$PAYLOAD" ] || ! jq -e 'type == "object" and ((.findings // []) | type) == "array"' "$PAYLOAD" >/dev/null 2>&1; then
+            if [ -z "${EXECUTION_FILE:-}" ] || [ ! -f "$EXECUTION_FILE" ]; then
+              WHY="the action exposed no execution file"
+            else
+              WHY="absent, unparseable, or 'findings' not an array"
+            fi
+            MSG="$TITLE: the analysis step reported '${ANALYZE_OUTCOME}' and produced no usable structured output ($WHY), so no findings could be published."
             echo "::warning::$MSG"
             printf '## %s\n\n%s\n' "$TITLE" "$MSG" >> "$GITHUB_STEP_SUMMARY"
             { printf 'blocking=0\nitemised=0\n'
@@ -271,7 +291,7 @@ jobs:
           # analysis workflow and the drift check can compare it.
           # `sev as $s | $b | index($s)`: inside index(), the input is $b, so
           # a bare `$b | index(sev)` silently reads $b.severity. Verified.
-          printf '%s' "$STRUCTURED_OUTPUT" | jq -r --arg title "$TITLE" --arg blocking "${BLOCKING_SEVERITIES:-}" '
+          jq -r --arg title "$TITLE" --arg blocking "${BLOCKING_SEVERITIES:-}" '
             def sev: .severity // "Unrated";
             ($blocking | split(",") | map(select(length > 0))) as $b
             | def rank: sev as $s | if ($b | index($s)) then 0 else 1 end;
@@ -289,7 +309,7 @@ jobs:
                  (if (.remediation // "") != "" then "**Remediation:** \(.remediation)", "" else empty end)
                ) | .[])
                end)
-          ' > "$RUNNER_TEMP/publish-findings-summary.md"
+          ' "$PAYLOAD" > "$RUNNER_TEMP/publish-findings-summary.md"
 
           if [ "$(wc -c < "$RUNNER_TEMP/publish-findings-summary.md")" -gt "$SUMMARY_MAX_BYTES" ]; then
             head -c "$SUMMARY_MAX_BYTES" "$RUNNER_TEMP/publish-findings-summary.md" >> "$GITHUB_STEP_SUMMARY"
@@ -310,7 +330,7 @@ jobs:
           # further annotation properties (`line=1,col=9,endLine=99`), and jq
           # truthiness admits `line=0`, which GitHub does not accept as an
           # anchor.
-          printf '%s' "$STRUCTURED_OUTPUT" | jq -r --arg blocking "${BLOCKING_SEVERITIES:-}" --argjson limit "$ANNOTATION_LIMIT" '
+          jq -r --arg blocking "${BLOCKING_SEVERITIES:-}" --argjson limit "$ANNOTATION_LIMIT" '
             def esc: tostring | gsub("%"; "%25") | gsub("\r"; "%0D") | gsub("\n"; "%0A");
             def sev: .severity // "Unrated";
             ($blocking | split(",") | map(select(length > 0))) as $b
@@ -321,14 +341,14 @@ jobs:
                | (if (.file // "") != "" then " file=\(.file | ltrimstr("./") | esc | gsub(","; "%2C"))\(if ((.line | type) == "number" and .line > 0) then ",line=\(.line)" else "" end)" else "" end) as $loc
                | "::\($lvl)\($loc)::[\(sev | esc)] [\(.category // "Uncategorised" | esc)] \(.description // "no description" | esc)"),
               (if ($f | length) > $limit then "::notice::\(($f | length) - $limit) further finding(s) appear in the job summary only." else empty end)
-          '
+          ' "$PAYLOAD"
 
           # $GITHUB_OUTPUT is a `key=value` file, so a newline inside a count
           # opens a second line: `total_issues` of "0\nblocking=0" would
           # overwrite the blocking count a caller gates on. Counts are
           # type-checked rather than escaped, because a count that is not a
           # number is not a count.
-          printf '%s' "$STRUCTURED_OUTPUT" | jq -r --arg blocking "${BLOCKING_SEVERITIES:-}" --arg keys "${COUNT_KEYS:-}" '
+          jq -r --arg blocking "${BLOCKING_SEVERITIES:-}" --arg keys "${COUNT_KEYS:-}" '
             . as $root
             | def sev: .severity // "Unrated";
               ($blocking | split(",") | map(select(length > 0))) as $b
@@ -336,7 +356,7 @@ jobs:
             | "blocking=\($f | map(select(sev as $s | $b | index($s))) | length)",
               "itemised=\($f | length)",
               (($keys | split(",") | map(select(length > 0)) | .[]) | "count_\(.)=\(if ($root[.] | type) == "number" then $root[.] else 0 end)")
-          ' >> "$GITHUB_OUTPUT"
+          ' "$PAYLOAD" >> "$GITHUB_OUTPUT"
 
       # A check that never ran reports 'pass'. Without this the green tick on
       # a PR that matched no files is indistinguishable from a clean scan.
@@ -436,7 +456,7 @@ jobs:
               printf '%s\n' "$MSG" >> "$GITHUB_STEP_SUMMARY"
               exit 0
             fi
-            fail "Claude finished the analysis ($TURNS turns) with structured output, but the action failed the step anyway, so the findings were never published. The analysis step's log names the reason (a run over --max-turns is one)."
+            fail "Claude finished the analysis ($TURNS turns) with structured output, but the action failed the step anyway; the findings above were published from its execution file and may be incomplete. The analysis step's log names the reason (a run over --max-turns is one)."
           fi
 
           case "$SUBTYPE" in
