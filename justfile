@@ -148,3 +148,8 @@ publish-fixtures workflow=".github/workflows/reusable-security-owasp.yml":
 [group: "validate"]
 autofix-fixtures workflow=".github/workflows/reusable-auto-fix.yml":
     bash .github/tests/auto-fix-dedup/run.sh "{{workflow}}"
+
+# Run reusable-changelog-review.yml's publish step against a stub gh
+[group: "validate"]
+changelog-publish workflow=".github/workflows/reusable-changelog-review.yml":
+    bash .github/tests/changelog-review-publish/run.sh "{{workflow}}"

@@ -59,3 +59,8 @@ jobs:
       # issue-lookup steps: one failure must map to one signature.
       - name: Auto-fix dedup fixtures
         run: bash .github/tests/auto-fix-dedup/run.sh
+
+      # reusable-changelog-review.yml's publish step, extracted and run against
+      # a stub gh: one tracking issue per run, labels read back, never retried.
+      - name: Changelog-review publish harness
+        run: bash .github/tests/changelog-review-publish/run.sh
