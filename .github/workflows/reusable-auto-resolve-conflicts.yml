@@ -4,6 +4,32 @@ name: Auto-resolve PR Conflicts (Reusable)
 # Stale automated PRs (version-tracking, dependabot, renovate) are closed
 # instead of resolved, since their automation will recreate them.
 #
+# A PR whose leading commits are already on the base branch (typically a PR
+# stacked on another PR that was then squash-merged) is NOT resolved: merging
+# the base would put the same change on both sides of the conflict. The PR
+# gets one comment with the `git rebase --onto` command that drops them.
+#
+# Jobs, by what they may touch:
+#   find-conflicts  API only, write-scoped GITHUB_TOKEN, no repository code:
+#                   lists conflicting PRs, leaves out forks and PRs whose head
+#                   is the default or a protected branch, and comments on and
+#                   closes stale automated ones
+#   resolve         read-only token: merges, runs the agent (merge + commit
+#                   only), checks the commit and exports it as a git bundle
+#   build           read-only token, no secrets: runs `build-command` (code
+#                   from the PR) on the exported merge
+#   publish         the only job that holds RELEASE_PLEASE_TOKEN or pushes;
+#                   runs no repository code: re-checks the merge against the
+#                   live branches, pushes it once, and posts every comment
+#                   about a resolution
+#
+# CI on the pushed head: GitHub starts no workflow runs for a push made with
+# GITHUB_TOKEN. Pass RELEASE_PLEASE_TOKEN (a PAT or App token with
+# contents:write) so the resolution is built by the PR's own CI; without it the
+# push is announced on the PR as unbuilt. Setting `build-command` (for example
+# `make -j4` or `npm ci && npm run build`) validates the merge before it is
+# pushed at all, whichever token pushes.
+#
 # Calling workflow should trigger on:
 #   push:
 #     branches: [main]
@@ -22,12 +48,21 @@ on:
         required: false
         type: string
         default: ''
+      build-command:
+        description: >-
+          Shell command run (bash -c) on the merged result before it is pushed,
+          e.g. a compile check. A failure posts one comment and pushes nothing.
+          Runs on ubuntu-latest in a separate job that holds no secrets and a
+          read-only token. Empty = no build.
+        required: false
+        type: string
+        default: ''
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         description: 'OAuth token for Claude Code CLI'
         required: true
       RELEASE_PLEASE_TOKEN:
-        description: 'PAT with contents:write and pull-requests:write scopes (falls back to GITHUB_TOKEN)'
+        description: 'PAT or App token with contents:write; without it the push uses GITHUB_TOKEN and no CI runs on the resolved head'
         required: false
 
 # Only one conflict resolution run at a time per repo
@@ -39,51 +74,108 @@ permissions:
   contents: write
   pull-requests: write
   issues: write
-  id-token: write
 
 jobs:
   find-conflicts:
-    # ubuntu-slim: pure `gh` API calls. The `resolve` job below stays on
-    # ubuntu-latest — it checks out and runs claude-code-action.
+    # ubuntu-slim: pure `gh` API calls. The `resolve` and `build` jobs stay on
+    # ubuntu-latest — they check out and run the agent or the caller's build.
     runs-on: ubuntu-slim
+    # Written out rather than inherited: this job comments on, closes and
+    # deletes the branches of stale automated PRs. It runs no repository code.
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
     outputs:
       matrix: ${{ steps.find.outputs.matrix }}
       has_conflicts: ${{ steps.find.outputs.has_conflicts }}
     steps:
+      # Stale automated PRs are closed here and fork PRs are left out (their
+      # head branch is not in this repository, so there is nothing to push
+      # to): neither reaches the matrix. Nor does a PR whose head is the
+      # default branch or a protected one: the push token may bypass branch
+      # protection, and a merge of the base would land there unreviewed. A
+      # lookup that fails skips the PR; `publish` checks again before pushing.
       - name: Find conflicting PRs
         id: find
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_INPUT: ${{ inputs.pr_number }}
         run: |
-          if [ -n "${{ inputs.pr_number }}" ]; then
-            MATRIX='{"include":[{"pr_number":"${{ inputs.pr_number }}"}]}'
-          else
-            PRS=$(gh pr list --repo "${{ github.repository }}" --state open --json number,mergeable \
-              --jq '[.[] | select(.mergeable == "CONFLICTING") | {"pr_number": (.number | tostring)}]')
-
-            if [ -z "$PRS" ] || [ "$PRS" = "[]" ]; then
-              echo "has_conflicts=false" >> "$GITHUB_OUTPUT"
-              echo "matrix={\"include\":[]}" >> "$GITHUB_OUTPUT"
-              echo "::notice::No PRs with merge conflicts found"
-              exit 0
+          set -euo pipefail
+          if [ -n "$PR_INPUT" ]; then
+            if ! [[ "$PR_INPUT" =~ ^[0-9]+$ ]]; then
+              echo "::error::pr_number must be a PR number (digits only)"
+              exit 1
             fi
-
-            MATRIX="{\"include\":$PRS}"
+            PRS=$(gh pr view "$PR_INPUT" --repo "$REPO" --json number,headRefName,isCrossRepository --jq '[.]')
+          else
+            PRS=$(gh pr list --repo "$REPO" --state open --json number,mergeable,headRefName,isCrossRepository \
+              --jq '[.[] | select(.mergeable == "CONFLICTING")]')
           fi
 
+          if ! DEFAULT_BRANCH=$(gh api "repos/$REPO" --jq '.default_branch') || [ -z "$DEFAULT_BRANCH" ]; then
+            echo "::error::Could not read the default branch of $REPO; resolving nothing"
+            exit 1
+          fi
+
+          INCLUDE='[]'
+          while IFS=$'\t' read -r number head cross; do
+            [ -n "$number" ] || continue
+            if [ "$cross" = "true" ]; then
+              echo "::notice::PR #$number comes from a fork; skipping (nothing here to push to)"
+              continue
+            fi
+            if [ "$head" = "$DEFAULT_BRANCH" ]; then
+              echo "::notice::PR #$number: its head is the default branch ($head); skipping (never pushed to)"
+              continue
+            fi
+            if ! protected=$(gh api "repos/$REPO/branches/$(jq -rn --arg b "$head" '$b | @uri')" --jq '.protected'); then
+              echo "::notice::PR #$number: could not read the protection of $head; skipping"
+              continue
+            fi
+            if [ "$protected" != "false" ]; then
+              echo "::notice::PR #$number: its head $head is a protected branch; skipping (never pushed to)"
+              continue
+            fi
+            case "$head" in
+              chore/update-version-tracking-*|dependabot/*|renovate/*|release-please--branches--*)
+                echo "::notice::PR #$number is a stale automated PR (branch: $head) — closing instead of resolving"
+                if gh pr comment "$number" --repo "$REPO" \
+                     --body "Closing this stale automated PR due to merge conflicts. It will be recreated automatically on the next run." &&
+                   gh pr close "$number" --repo "$REPO" --delete-branch; then
+                  echo "::notice::Closed stale automated PR #$number and deleted branch $head"
+                else
+                  echo "::warning::Could not close stale automated PR #$number"
+                fi
+                continue ;;
+            esac
+            INCLUDE=$(jq -c --arg n "$number" '. + [{pr_number: $n}]' <<<"$INCLUDE")
+          done < <(jq -r '.[] | [(.number | tostring), .headRefName, (.isCrossRepository | tostring)] | @tsv' <<<"${PRS:-[]}")
+
+          MATRIX=$(jq -c '{include: .}' <<<"$INCLUDE")
+          COUNT=$(jq 'length' <<<"$INCLUDE")
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
-          COUNT=$(echo "$MATRIX" | jq '.include | length')
           if [ "$COUNT" -gt 0 ]; then
             echo "has_conflicts=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::Found $COUNT PR(s) with merge conflicts"
+            echo "::notice::Found $COUNT PR(s) to resolve"
           else
             echo "has_conflicts=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No PRs with merge conflicts to resolve"
           fi
 
   resolve:
     needs: find-conflicts
     if: needs.find-conflicts.outputs.has_conflicts == 'true'
     runs-on: ubuntu-latest
+    # Read-only. The agent can write files that git runs (hooks, filters), so
+    # this job must hold nothing that can push, comment or close: `publish`
+    # does all of that from the report this job uploads.
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
     strategy:
       matrix: ${{ fromJson(needs.find-conflicts.outputs.matrix) }}
       max-parallel: 1
@@ -92,98 +184,233 @@ jobs:
       - name: Get PR details
         id: pr
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ matrix.pr_number }}
         run: |
-          PR_JSON=$(gh pr view "${{ matrix.pr_number }}" --repo "${{ github.repository }}" \
-            --json headRefName,baseRefName,title,number,author)
-          echo "head_branch=$(echo "$PR_JSON" | jq -r '.headRefName')" >> "$GITHUB_OUTPUT"
-          echo "base_branch=$(echo "$PR_JSON" | jq -r '.baseRefName')" >> "$GITHUB_OUTPUT"
-          echo "title=$(echo "$PR_JSON" | jq -r '.title')" >> "$GITHUB_OUTPUT"
-          echo "author=$(echo "$PR_JSON" | jq -r '.author.login')" >> "$GITHUB_OUTPUT"
+          PR_JSON=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefName,baseRefName,title)
+          {
+            echo "head_branch=$(jq -r '.headRefName' <<<"$PR_JSON")"
+            echo "base_branch=$(jq -r '.baseRefName' <<<"$PR_JSON")"
+            echo "title=$(jq -r '.title | gsub("[\r\n]"; " ")' <<<"$PR_JSON")"
+          } >> "$GITHUB_OUTPUT"
 
-      - name: Check for stale automated PRs
-        id: stale_check
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          BRANCH="${{ steps.pr.outputs.head_branch }}"
-          IS_STALE="false"
-
-          # Detect automated PR branch patterns
-          case "$BRANCH" in
-            chore/update-version-tracking-*) IS_STALE="true" ;;
-            dependabot/*)                    IS_STALE="true" ;;
-            renovate/*)                      IS_STALE="true" ;;
-            release-please--branches--*)     IS_STALE="true" ;;
-          esac
-
-          echo "is_stale_automated=$IS_STALE" >> "$GITHUB_OUTPUT"
-          if [ "$IS_STALE" = "true" ]; then
-            echo "::notice::PR #${{ matrix.pr_number }} is a stale automated PR (branch: $BRANCH) — will close instead of resolving"
-          fi
-
-      - name: Close stale automated PR
-        if: steps.stale_check.outputs.is_stale_automated == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh pr comment "${{ matrix.pr_number }}" --repo "${{ github.repository }}" \
-            --body "Closing this stale automated PR due to merge conflicts. It will be recreated automatically on the next run."
-          gh pr close "${{ matrix.pr_number }}" --repo "${{ github.repository }}" --delete-branch
-          echo "::notice::Closed stale automated PR #${{ matrix.pr_number }} and deleted branch ${{ steps.pr.outputs.head_branch }}"
-
+      # persist-credentials: false keeps the token out of .git/config, where
+      # the agent could read it. The detection step passes it per command.
       - name: Checkout PR branch
-        if: steps.stale_check.outputs.is_stale_automated != 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           ref: ${{ steps.pr.outputs.head_branch }}
           fetch-depth: 0
-          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+          token: ${{ github.token }}
+          persist-credentials: false
+
+      # A branch stacked on a PR that was later squash-merged still carries the
+      # original commits while the base carries their squash. Merging the base
+      # then conflicts with itself, and a resolution that "keeps both sides"
+      # duplicates the change (issue #76). Detect that before merging.
+      #
+      # Primary signal: GitHub's commit -> PR association (a branch commit that
+      # belongs to another PR merged into the same base). It does not depend on
+      # textual identity, so it survives a squash whose context drifted.
+      # Fallbacks, offline: `git cherry` (per-commit patch-id) and a
+      # cumulative-prefix patch-id match, which catches a multi-commit ancestor
+      # squashed into one commit. Only a leading run of such commits counts:
+      # that is what `rebase --onto` can drop.
+      - name: Detect already-merged commits
+        id: stacked
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GIT_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ matrix.pr_number }}
+          BASE_BRANCH: ${{ steps.pr.outputs.base_branch }}
+        run: |
+          set -euo pipefail
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GIT_TOKEN" | base64 -w0)"
+          git -c "http.https://github.com/.extraheader=$auth" fetch --no-tags --quiet origin \
+            "+refs/heads/$BASE_BRANCH:refs/remotes/origin/$BASE_BRANCH"
+
+          PRE_HEAD=$(git rev-parse HEAD)
+          BASE_SHA=$(git rev-parse "refs/remotes/origin/$BASE_BRANCH")
+          MB=$(git merge-base HEAD "$BASE_SHA")
+          mapfile -t COMMITS < <(git rev-list --reverse --no-merges "$MB..HEAD")
+          declare -A SRC=()
+          ANCESTORS=""
+
+          # 1. GitHub: is the commit part of another PR merged into this base?
+          #    (A PR merged into a release or backport branch does not count.)
+          if [ "${#COMMITS[@]}" -gt 100 ]; then
+            echo "::notice::PR #$PR_NUMBER has ${#COMMITS[@]} commits; skipping the per-commit PR lookup"
+          else
+            for c in "${COMMITS[@]}"; do
+              if ! merged=$(gh api "repos/$REPO/commits/$c/pulls" \
+                   --jq '.[] | select(.merged_at != null and .base.ref == env.BASE_BRANCH) | .number'); then
+                echo "::warning::Could not read the PRs associated with $c; falling back to patch comparison"
+                break
+              fi
+              for n in $merged; do
+                [ "$n" = "$PR_NUMBER" ] && continue
+                SRC[$c]=${SRC[$c]:-api}
+                case " $ANCESTORS " in *" $n "*) ;; *) ANCESTORS="${ANCESTORS:+$ANCESTORS }$n" ;; esac
+              done
+            done
+          fi
+
+          # 2. Per-commit patch equivalence.
+          while read -r mark c; do
+            if [ "$mark" = "-" ]; then SRC[$c]=${SRC[$c]:-cherry}; fi
+          done < <(git cherry "$BASE_SHA" HEAD)
+
+          # 3. Cumulative prefix: diff(merge-base, k-th commit) against every
+          #    base commit since the merge-base, so X1+X2 matches squash(X1,X2).
+          declare -A BASE_IDS=()
+          while read -r id _; do
+            BASE_IDS[$id]=1
+          done < <(git log -p --no-merges --no-color --no-ext-diff "$MB..$BASE_SHA" | git patch-id --stable)
+          last_match=-1
+          for i in "${!COMMITS[@]}"; do
+            id=$(git diff --no-color --no-ext-diff "$MB" "${COMMITS[$i]}" | git patch-id --stable | cut -d' ' -f1)
+            if [ -n "$id" ] && [ -n "${BASE_IDS[$id]:-}" ]; then last_match=$i; fi
+          done
+          for ((i = 0; i <= last_match; i++)); do
+            SRC[${COMMITS[$i]}]=${SRC[${COMMITS[$i]}]:-patch-id}
+          done
+
+          # The leading run of already-merged commits.
+          LAST="" EQUIVALENT="" SIGNAL=""
+          for c in "${COMMITS[@]}"; do
+            [ -n "${SRC[$c]:-}" ] || break
+            LAST=$c
+            EQUIVALENT="${EQUIVALENT:+$EQUIVALENT }$c"
+            SIGNAL=${SRC[$c]}
+          done
+          if [ "${#SRC[@]}" -gt 0 ] && [ -z "$LAST" ]; then
+            echo "::notice::PR #$PR_NUMBER has commits already on $BASE_BRANCH, but not as a leading run; resolving normally"
+          fi
+          STACKED=false
+          if [ -n "$LAST" ]; then
+            STACKED=true
+            echo "::warning::PR #$PR_NUMBER: its first commit(s) up to $LAST are already on $BASE_BRANCH (signal: $SIGNAL)"
+          fi
+
+          {
+            echo "stacked=$STACKED"
+            echo "pre_head=$PRE_HEAD"
+            echo "base_sha=$BASE_SHA"
+            echo "equivalent=$EQUIVALENT"
+            echo "last_equivalent=$LAST"
+            echo "ancestors=$ANCESTORS"
+            echo "signal=$SIGNAL"
+          } >> "$GITHUB_OUTPUT"
+
+      # A (PR head, base) pair `publish` already reported as unresolved (agent
+      # abort, failed build, invalid merge) gets the same result again: skip
+      # the agent until the branch or the base moves. A manual run
+      # (workflow_dispatch) always retries.
+      - name: Skip a merge already reported unresolved
+        id: prior
+        if: steps.stacked.outputs.stacked == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ matrix.pr_number }}
+          PRE_HEAD: ${{ steps.stacked.outputs.pre_head }}
+          BASE_SHA: ${{ steps.stacked.outputs.base_sha }}
+        run: |
+          set -euo pipefail
+          KEY="auto-resolve-conflicts:unresolved head=$PRE_HEAD base=$BASE_SHA"
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "Manual run: not consulting earlier reports"
+            echo "attempted=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! bodies=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate --jq '.[].body'); then
+            echo "::warning::Could not list comments on PR #$PR_NUMBER; attempting the merge"
+            echo "attempted=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if grep -qF "$KEY" <<<"$bodies"; then
+            echo "::notice::PR #$PR_NUMBER was already reported unresolved for this head and base; skipping"
+            echo "attempted=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "attempted=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Attempt merge to surface conflicts
-        if: steps.stale_check.outputs.is_stale_automated != 'true'
+        if: steps.prior.outputs.attempted == 'false'
         id: merge
+        env:
+          PR_NUMBER: ${{ matrix.pr_number }}
+          BASE_BRANCH: ${{ steps.pr.outputs.base_branch }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git fetch origin "${{ steps.pr.outputs.base_branch }}"
+          # Defensive: no credential in the repository config, whatever checkout did.
+          git config --local --unset-all http.https://github.com/.extraheader || true
+          # The check step refuses a config the agent changed.
+          echo "config_sha=$(sha256sum "$(git rev-parse --git-dir)/config" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
-          if git merge "origin/${{ steps.pr.outputs.base_branch }}" --no-commit --no-ff 2>/dev/null; then
+          # origin/<base> is the ref the detection step fetched and resolved to
+          # base_sha; it is not fetched again, so the merge's second parent is it.
+          if git merge "origin/$BASE_BRANCH" --no-commit --no-ff 2>/dev/null; then
             echo "has_conflicts=false" >> "$GITHUB_OUTPUT"
             # No conflicts — abort the merge, nothing to do
             git merge --abort 2>/dev/null || git reset --hard HEAD
-            echo "::notice::PR #${{ matrix.pr_number }} has no actual conflicts"
+            echo "::notice::PR #$PR_NUMBER has no actual conflicts"
           else
             echo "has_conflicts=true" >> "$GITHUB_OUTPUT"
 
             # Capture conflicted files for context
             CONFLICTED=$(git diff --name-only --diff-filter=U)
-            echo "conflicted_files<<EOF" >> "$GITHUB_OUTPUT"
+            delim="EOF_$(od -An -tx1 -N8 /dev/urandom | tr -d ' \n')"
+            echo "conflicted_files<<$delim" >> "$GITHUB_OUTPUT"
             echo "$CONFLICTED" >> "$GITHUB_OUTPUT"
-            echo "EOF" >> "$GITHUB_OUTPUT"
-            echo "::warning::PR #${{ matrix.pr_number }} has conflicts in: $CONFLICTED"
+            echo "$delim" >> "$GITHUB_OUTPUT"
+            echo "::warning::PR #$PR_NUMBER has conflicts in: $(echo "$CONFLICTED" | tr '\n' ' ')"
           fi
 
+      # The agent merges and commits, nothing else: no push, no gh, no token.
+      # The prompt is a quoted heredoc (its backticks must not run) with
+      # @@NAME@@ placeholders that jq substitutes in a single pass, so a PR
+      # title cannot inject a placeholder or a command.
       - name: Resolve conflicts with Claude
-        if: steps.merge.outputs.has_conflicts == 'true' && steps.stale_check.outputs.is_stale_automated != 'true'
+        id: claude
+        if: steps.merge.outputs.has_conflicts == 'true'
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+          PR_NUMBER: ${{ matrix.pr_number }}
+          PR_TITLE: ${{ steps.pr.outputs.title }}
+          HEAD_BRANCH: ${{ steps.pr.outputs.head_branch }}
+          BASE_BRANCH: ${{ steps.pr.outputs.base_branch }}
+          CONFLICTED_FILES: ${{ steps.merge.outputs.conflicted_files }}
+          BUILD_COMMAND: ${{ inputs.build-command }}
         run: |
-          cat <<'PROMPT_EOF' | npx @anthropic-ai/claude-code --print \
-            --model sonnet \
-            --max-turns 50 \
-            --allowedTools "Read,Edit,Grep,Glob,TodoWrite,Bash(git status *),Bash(git diff *),Bash(git log *),Bash(git show *),Bash(git add *),Bash(git commit *),Bash(git push *),Bash(git merge *),Bash(gh pr *),Bash(jq *)" \
-            -
-          You are resolving merge conflicts on PR #${{ matrix.pr_number }}: "${{ steps.pr.outputs.title }}"
+          set -euo pipefail
+          # The agent's only directory outside the checkout. Not RUNNER_TEMP
+          # itself: that holds the runner's file-command files (GITHUB_ENV,
+          # GITHUB_PATH), through which the agent could set BASH_ENV or PATH
+          # for the check step. The prompt and its template stay outside.
+          AGENT_DIR="$RUNNER_TEMP/auto-resolve-agent"
+          ABORT_FILE="$AGENT_DIR/abort.md"
+          rm -rf "$AGENT_DIR"
+          mkdir -m 700 "$AGENT_DIR"
+          BUILD_NOTE="The workflow does not build the result, so read the merged code carefully."
+          if [ -n "$BUILD_COMMAND" ]; then
+            BUILD_NOTE=$(printf 'After you commit, the workflow runs `%s` on the merge and discards it if that fails, so a duplicated definition will not get through.' "$BUILD_COMMAND")
+          fi
 
-          Branch `${{ steps.pr.outputs.head_branch }}` has conflicts when merging `${{ steps.pr.outputs.base_branch }}`.
+          cat > "$RUNNER_TEMP/auto-resolve-prompt.tpl" <<'PROMPT_EOF'
+          You are resolving merge conflicts on PR #@@PR_NUMBER@@: "@@PR_TITLE@@"
 
-          A `git merge origin/${{ steps.pr.outputs.base_branch }}` has already been started and left in a conflicted state.
+          Branch `@@HEAD_BRANCH@@` has conflicts when merging `@@BASE_BRANCH@@`.
+
+          A merge of `origin/@@BASE_BRANCH@@` has already been started and left in a conflicted state.
 
           ## Conflicted Files
 
-          ${{ steps.merge.outputs.conflicted_files }}
+          @@CONFLICTED_FILES@@
 
           ## Instructions
 
@@ -193,27 +420,552 @@ jobs:
           2. Understand what BOTH sides intended:
              - **HEAD (PR branch)**: The feature/fix changes from this PR
              - **base branch**: Changes that landed on the base branch since this PR was created
-          3. Resolve by combining both intents:
-             - Keep ALL functional changes from both sides
-             - For config files (JSON, YAML), merge entries from both sides
-             - For code, integrate both changes preserving logic from each
+          3. Resolve by combining both intents, without duplicating anything:
+             - If both sides contain the same or an equivalent change (the same line, block, definition, import or entry, even formatted differently), keep exactly one copy. This happens when part of this PR already reached the base branch, for example as a squash merge.
+             - Never leave two definitions of the same symbol (variable, function, type, macro or key)
+             - Otherwise keep the functional changes from both sides; for config files (JSON, YAML), merge entries from both sides
              - Remove ALL conflict markers
           4. Stage the resolved file with `git add <file>`
 
           After resolving ALL conflicts:
 
-          1. Verify no conflict markers remain: search all conflicted files for `<<<<<<<`
+          1. Verify no conflict markers remain: search all conflicted files for `<<<<<<<` and `>>>>>>>`
           2. For each JSON file that was conflicted, validate it: `jq empty <file>`. If validation fails, re-read the file and fix the syntax error.
-          3. Commit: `git commit --no-edit` (uses the auto-generated merge commit message)
-          4. Push: `git push origin ${{ steps.pr.outputs.head_branch }}`
-          5. Comment on PR: `gh pr comment ${{ matrix.pr_number }} --body "Merge conflicts with ${{ steps.pr.outputs.base_branch }} have been automatically resolved."`
+          3. Commit: `git commit --no-edit` (uses the auto-generated merge commit message). Make no other commit.
+
+          That is all. You cannot publish anything and must not try: the workflow checks your merge commit, publishes it, and posts every PR comment. @@BUILD_NOTE@@
 
           ## Important Rules
 
-          - Preserve ALL changes from both sides when possible
-          - For JSON/YAML arrays or objects, include entries from both sides
           - For version bumps, take the higher version
-          - For changelog files, include entries from both sides in chronological order
-          - If a conflict cannot be resolved without understanding business logic, abort with `git merge --abort` and comment on the PR explaining which files need manual resolution
+          - For changelog files, include each entry from both sides once, in chronological order
+          - Do not create, delete or leave behind any other file in the repository
+          - If a conflict cannot be resolved without understanding business logic, run `git merge --abort`, then write which files need manual resolution and why to `@@ABORT_FILE@@`. The workflow posts it on the PR.
           - Run each git command as a separate Bash call (no `&&` chaining)
           PROMPT_EOF
+
+          jq -Rrs \
+            --arg PR_NUMBER "$PR_NUMBER" \
+            --arg PR_TITLE "$PR_TITLE" \
+            --arg HEAD_BRANCH "$HEAD_BRANCH" \
+            --arg BASE_BRANCH "$BASE_BRANCH" \
+            --arg CONFLICTED_FILES "$CONFLICTED_FILES" \
+            --arg ABORT_FILE "$ABORT_FILE" \
+            --arg BUILD_NOTE "$BUILD_NOTE" \
+            'gsub("@@(?<k>[A-Z_]+)@@"; $ARGS.named[.k] // "@@\(.k)@@")' \
+            "$RUNNER_TEMP/auto-resolve-prompt.tpl" > "$RUNNER_TEMP/auto-resolve-prompt.md"
+
+          npx @anthropic-ai/claude-code --print \
+            --model sonnet \
+            --max-turns 50 \
+            --add-dir "$AGENT_DIR" \
+            --allowedTools "Read,Write,Edit,Grep,Glob,TodoWrite,Bash(git status *),Bash(git diff *),Bash(git log *),Bash(git show *),Bash(git add *),Bash(git commit *),Bash(git merge *),Bash(jq *)" \
+            - < "$RUNNER_TEMP/auto-resolve-prompt.md"
+
+      # Decides the outcome and writes it, with the merge as a git bundle, to a
+      # report that `build` and `publish` consume. Runs after a failed agent
+      # step too (!cancelled()), so that failure is reported as such.
+      - name: Check resolution
+        id: check
+        if: "!cancelled() && steps.stacked.outcome == 'success'"
+        env:
+          PR_NUMBER: ${{ matrix.pr_number }}
+          STACKED: ${{ steps.stacked.outputs.stacked }}
+          PRE_HEAD: ${{ steps.stacked.outputs.pre_head }}
+          BASE_SHA: ${{ steps.stacked.outputs.base_sha }}
+          EQUIVALENT: ${{ steps.stacked.outputs.equivalent }}
+          LAST_EQUIVALENT: ${{ steps.stacked.outputs.last_equivalent }}
+          ANCESTORS: ${{ steps.stacked.outputs.ancestors }}
+          SIGNAL: ${{ steps.stacked.outputs.signal }}
+          ATTEMPTED: ${{ steps.prior.outputs.attempted }}
+          MERGE_OUTCOME: ${{ steps.merge.outcome }}
+          HAS_CONFLICTS: ${{ steps.merge.outputs.has_conflicts }}
+          AGENT_OUTCOME: ${{ steps.claude.outcome }}
+          CONFLICTED_FILES: ${{ steps.merge.outputs.conflicted_files }}
+          CONFIG_SHA: ${{ steps.merge.outputs.config_sha }}
+        run: |
+          set -euo pipefail
+          # Tools from the system directories only, not from a PATH an earlier
+          # step of this job may have extended.
+          PATH=/usr/bin:/bin
+          OUT="$RUNNER_TEMP/auto-resolve-report"
+          ABORT_FILE="$RUNNER_TEMP/auto-resolve-agent/abort.md"
+          DETAIL="$OUT/detail.txt"
+          rm -rf "$OUT"
+          mkdir -p "$OUT"
+          : > "$DETAIL"
+          MERGE=""
+
+          # report <outcome> [reason]: write the report and stop.
+          report() {
+            jq -n --arg pr "$PR_NUMBER" --arg outcome "$1" --arg reason "${2:-}" \
+              --arg pre_head "$PRE_HEAD" --arg base_sha "$BASE_SHA" --arg merge "$MERGE" \
+              --arg equivalent "$EQUIVALENT" --arg last_equivalent "$LAST_EQUIVALENT" \
+              --arg ancestors "$ANCESTORS" --arg signal "$SIGNAL" \
+              '$ARGS.named' > "$OUT/report.json"
+            echo "outcome=$1" >> "$GITHUB_OUTPUT"
+            echo "PR #$PR_NUMBER: $1${2:+ ($2)}"
+            exit 0
+          }
+
+          if [ "$STACKED" = "true" ]; then
+            for c in $EQUIVALENT; do git log -1 --format='%H %s' "$c"; done > "$OUT/equivalent.txt"
+            report stacked
+          fi
+          if [ "$ATTEMPTED" = "true" ]; then report skipped; fi
+          if [ "$ATTEMPTED" != "false" ] || [ "$MERGE_OUTCOME" != "success" ]; then
+            echo "::error::PR #$PR_NUMBER: the comment lookup or the merge step failed"
+            exit 1
+          fi
+          if [ "$HAS_CONFLICTS" != "true" ]; then report clean; fi
+          # The agent did not finish (API outage, expired token, turn limit):
+          # report nothing on the PR, so the next run tries again.
+          if [ "$AGENT_OUTCOME" != "success" ]; then report agent-error; fi
+
+          if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+            git status --short > "$DETAIL" || true
+            report unresolved unfinished
+          fi
+          if [ "$(git rev-parse HEAD)" = "$PRE_HEAD" ]; then
+            if [ -s "$ABORT_FILE" ]; then cp "$ABORT_FILE" "$DETAIL"; else echo "(the agent gave no reason)" > "$DETAIL"; fi
+            report unresolved aborted
+          fi
+
+          # The commit must be exactly merge(PR head, the fetched base).
+          P1=$(git rev-parse -q --verify 'HEAD^1' || true)
+          P2=$(git rev-parse -q --verify 'HEAD^2' || true)
+          P3=$(git rev-parse -q --verify 'HEAD^3' || true)
+          if [ "$P1" != "$PRE_HEAD" ] || [ "$P2" != "$BASE_SHA" ] || [ -n "$P3" ]; then
+            git log --format='%H parents: %P' -n 3 > "$DETAIL" || true
+            report unresolved parents
+          fi
+
+          if [ "$(sha256sum "$(git rev-parse --git-dir)/config" | cut -d' ' -f1)" != "$CONFIG_SHA" ]; then
+            report unresolved config
+          fi
+
+          if [ -n "$(git status --porcelain --untracked-files=all)" ]; then
+            git status --porcelain --untracked-files=all > "$DETAIL"
+            report unresolved dirty
+          fi
+
+          # Leftover markers, as added lines in the files that conflicted.
+          # `=======` is not matched: setext headings use it legitimately.
+          mapfile -t FILES < <(printf '%s\n' "$CONFLICTED_FILES" | sed '/^$/d')
+          if [ "${#FILES[@]}" -gt 0 ] &&
+             git diff --no-color --no-ext-diff "$PRE_HEAD" HEAD -- "${FILES[@]}" |
+               grep -nE '^\+(<<<<<<<|>>>>>>>)( |$)' > "$DETAIL"; then
+            report unresolved markers
+          fi
+          : > "$DETAIL"
+
+          MERGE=$(git rev-parse HEAD)
+          git update-ref refs/auto-resolve/merge "$MERGE"
+          git bundle create -q "$OUT/resolution.bundle" refs/auto-resolve/merge --not "$PRE_HEAD" "$BASE_SHA"
+          report resolved
+
+      - name: Upload resolution report
+        if: "!cancelled() && steps.check.outcome == 'success'"
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: auto-resolve-conflicts-pr-${{ matrix.pr_number }}
+          path: ${{ runner.temp }}/auto-resolve-report
+          retention-days: 1
+          overwrite: true
+          if-no-files-found: error
+
+  # build-command is code from the PR, and an agent can be steered into
+  # editing it. It runs here, in a job with a read-only token and no secrets,
+  # and never in a job that can push. On ubuntu-latest it also has sudo, so a
+  # build can tamper with the runner: only its result file leaves this job.
+  build:
+    needs: [find-conflicts, resolve]
+    if: ${{ !cancelled() && inputs.build-command != '' && needs.find-conflicts.outputs.has_conflicts == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      matrix: ${{ fromJson(needs.find-conflicts.outputs.matrix) }}
+      max-parallel: 1
+      fail-fast: false
+    steps:
+      - name: Download resolution report
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: auto-resolve-conflicts-pr-${{ matrix.pr_number }}
+          path: ${{ runner.temp }}/auto-resolve-report
+
+      # Byte-identical in `build` and `publish` (the harness checks).
+      - name: Read resolution report
+        id: report
+        env:
+          PR_NUMBER: ${{ matrix.pr_number }}
+        run: |
+          set -euo pipefail
+          R="$RUNNER_TEMP/auto-resolve-report/report.json"
+          # Written by `resolve`, after the agent ran: every field is checked,
+          # and no other key is allowed, before it reaches an output, a ref or
+          # a comment.
+          if ! jq -e --arg pr "$PR_NUMBER" '
+               def sha: type == "string" and test("^[0-9a-f]{40}$");
+               def shas: type == "string" and test("^([0-9a-f]{40}( [0-9a-f]{40})*)?$");
+               .pr == $pr
+               and (.outcome | IN("stacked", "skipped", "clean", "agent-error", "unresolved", "resolved"))
+               and (.reason | IN("", "unfinished", "aborted", "parents", "config", "dirty", "markers"))
+               and ((.outcome == "unresolved") == (.reason != ""))
+               and (.pre_head | sha) and (.base_sha | sha)
+               and (if .outcome == "resolved" then (.merge | sha) else .merge == "" end)
+               and (.equivalent | shas)
+               and (if .outcome == "stacked" then (.last_equivalent | sha) else .last_equivalent == "" end)
+               and (.ancestors | type == "string" and test("^([0-9]+( [0-9]+)*)?$"))
+               and (.signal | IN("", "api", "cherry", "patch-id"))
+               and ((keys - ["pr", "outcome", "reason", "pre_head", "base_sha", "merge",
+                             "equivalent", "last_equivalent", "ancestors", "signal"]) == [])
+             ' "$R" >/dev/null; then
+            echo "::error::PR #$PR_NUMBER: the resolution report is missing or malformed"
+            exit 1
+          fi
+          # A fixed key list, never the report's own keys: an extra key with a
+          # newline would append a later (and winning) line for a checked key.
+          jq -r '. as $r
+            | ["outcome", "reason", "pre_head", "base_sha", "merge",
+               "equivalent", "last_equivalent", "ancestors", "signal"][]
+            | "\(.)=\($r[.])"' "$R" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout PR head
+        if: steps.report.outputs.outcome == 'resolved'
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ steps.report.outputs.pre_head }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      # No token in this step's environment. The result file is trusted only
+      # as far as the PR branch itself is: a build that forges "passed" can
+      # get its own merge pushed to its own branch, nothing else.
+      - name: Build resolution
+        id: build
+        env:
+          OUTCOME: ${{ steps.report.outputs.outcome }}
+          MERGE: ${{ steps.report.outputs.merge }}
+          BUILD_COMMAND: ${{ inputs.build-command }}
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/auto-resolve-build"
+          mkdir -p "$OUT"
+          : > "$OUT/build.log"
+          if [ "$OUTCOME" != "resolved" ]; then
+            jq -n '{merge: "", passed: null}' > "$OUT/build.json"
+            echo "Nothing to build (outcome: $OUTCOME)"
+            exit 0
+          fi
+          git fetch -q --no-tags "$RUNNER_TEMP/auto-resolve-report/resolution.bundle" \
+            "refs/auto-resolve/merge:refs/auto-resolve/merge"
+          if [ "$(git rev-parse refs/auto-resolve/merge)" != "$MERGE" ]; then
+            echo "::error::the bundle does not hold $MERGE"
+            exit 1
+          fi
+          git checkout -q --detach "$MERGE"
+
+          echo "::group::build-command"
+          set +e
+          bash -c "$BUILD_COMMAND" > "$OUT/build.log" 2>&1
+          rc=$?
+          set -e
+          cat "$OUT/build.log"
+          echo "::endgroup::"
+          if [ "$rc" -eq 0 ]; then passed=true; else passed=false; fi
+          jq -n --arg merge "$MERGE" --argjson passed "$passed" '{merge: $merge, passed: $passed}' > "$OUT/build.json"
+          if [ "$passed" != "true" ]; then
+            echo "::error::build-command failed (exit $rc) on $MERGE"
+            exit 1
+          fi
+
+      - name: Upload build result
+        if: "!cancelled() && steps.build.outcome != 'skipped'"
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: auto-resolve-conflicts-build-pr-${{ matrix.pr_number }}
+          path: ${{ runner.temp }}/auto-resolve-build
+          retention-days: 1
+          overwrite: true
+          if-no-files-found: error
+
+  # The only job that holds RELEASE_PLEASE_TOKEN or pushes, and the only one
+  # that comments about a resolution (find-conflicts comments only on the stale
+  # automated PRs it closes). It runs no repository code: it pushes from a
+  # repository it creates, and re-checks the merge against the live branches
+  # instead of trusting the report.
+  publish:
+    needs: [find-conflicts, resolve, build]
+    if: ${{ !cancelled() && needs.find-conflicts.outputs.has_conflicts == 'true' }}
+    # ubuntu-slim: git and gh only.
+    runs-on: ubuntu-slim
+    strategy:
+      matrix: ${{ fromJson(needs.find-conflicts.outputs.matrix) }}
+      max-parallel: 1
+      fail-fast: false
+    steps:
+      - name: Get PR details
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ matrix.pr_number }}
+        run: |
+          PR_JSON=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefName,baseRefName,isCrossRepository)
+          {
+            echo "head_branch=$(jq -r '.headRefName' <<<"$PR_JSON")"
+            echo "base_branch=$(jq -r '.baseRefName' <<<"$PR_JSON")"
+            echo "cross_repo=$(jq -r '.isCrossRepository' <<<"$PR_JSON")"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Download resolution report
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: auto-resolve-conflicts-pr-${{ matrix.pr_number }}
+          path: ${{ runner.temp }}/auto-resolve-report
+
+      # Missing when the build job did not finish; the publish step then
+      # refuses to push a resolved merge.
+      - name: Download build result
+        if: inputs.build-command != ''
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: auto-resolve-conflicts-build-pr-${{ matrix.pr_number }}
+          path: ${{ runner.temp }}/auto-resolve-build
+
+      # Byte-identical in `build` and `publish` (the harness checks).
+      - name: Read resolution report
+        id: report
+        env:
+          PR_NUMBER: ${{ matrix.pr_number }}
+        run: |
+          set -euo pipefail
+          R="$RUNNER_TEMP/auto-resolve-report/report.json"
+          # Written by `resolve`, after the agent ran: every field is checked,
+          # and no other key is allowed, before it reaches an output, a ref or
+          # a comment.
+          if ! jq -e --arg pr "$PR_NUMBER" '
+               def sha: type == "string" and test("^[0-9a-f]{40}$");
+               def shas: type == "string" and test("^([0-9a-f]{40}( [0-9a-f]{40})*)?$");
+               .pr == $pr
+               and (.outcome | IN("stacked", "skipped", "clean", "agent-error", "unresolved", "resolved"))
+               and (.reason | IN("", "unfinished", "aborted", "parents", "config", "dirty", "markers"))
+               and ((.outcome == "unresolved") == (.reason != ""))
+               and (.pre_head | sha) and (.base_sha | sha)
+               and (if .outcome == "resolved" then (.merge | sha) else .merge == "" end)
+               and (.equivalent | shas)
+               and (if .outcome == "stacked" then (.last_equivalent | sha) else .last_equivalent == "" end)
+               and (.ancestors | type == "string" and test("^([0-9]+( [0-9]+)*)?$"))
+               and (.signal | IN("", "api", "cherry", "patch-id"))
+               and ((keys - ["pr", "outcome", "reason", "pre_head", "base_sha", "merge",
+                             "equivalent", "last_equivalent", "ancestors", "signal"]) == [])
+             ' "$R" >/dev/null; then
+            echo "::error::PR #$PR_NUMBER: the resolution report is missing or malformed"
+            exit 1
+          fi
+          # A fixed key list, never the report's own keys: an extra key with a
+          # newline would append a later (and winning) line for a checked key.
+          jq -r '. as $r
+            | ["outcome", "reason", "pre_head", "base_sha", "merge",
+               "equivalent", "last_equivalent", "ancestors", "signal"][]
+            | "\(.)=\($r[.])"' "$R" >> "$GITHUB_OUTPUT"
+
+      - name: Comment on stacked PR
+        if: steps.report.outputs.outcome == 'stacked'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ matrix.pr_number }}
+          BASE_BRANCH: ${{ steps.pr.outputs.base_branch }}
+          PRE_HEAD: ${{ steps.report.outputs.pre_head }}
+          BASE_SHA: ${{ steps.report.outputs.base_sha }}
+          LAST_EQUIVALENT: ${{ steps.report.outputs.last_equivalent }}
+          ANCESTORS: ${{ steps.report.outputs.ancestors }}
+          SIGNAL: ${{ steps.report.outputs.signal }}
+        run: |
+          set -euo pipefail
+          # One notice per PR head: every push to the base re-runs this while
+          # the PR stays conflicting, and the base SHA changes each time.
+          KEY="auto-resolve-conflicts:stacked head=$PRE_HEAD"
+          if ! bodies=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate --jq '.[].body'); then
+            echo "::warning::Could not list comments on PR #$PR_NUMBER; not commenting, to avoid a duplicate"
+            exit 0
+          fi
+          if grep -qF "$KEY" <<<"$bodies"; then
+            echo "PR #$PR_NUMBER already has the stacked-PR notice for head $PRE_HEAD"
+            exit 0
+          fi
+
+          MSG="$RUNNER_TEMP/auto-resolve-stacked.md"
+          {
+            if [ -n "$ANCESTORS" ]; then
+              # shellcheck disable=SC2086 # word-split the PR number list
+              printf 'This branch starts with commits that were already merged into `%s` by %s:\n\n' \
+                "$BASE_BRANCH" "$(printf '#%s, ' $ANCESTORS | sed 's/, $//')"
+            else
+              printf 'This branch starts with commits whose changes are already in `%s`:\n\n' "$BASE_BRANCH"
+            fi
+            while read -r sha subject; do
+              [ -n "$sha" ] && printf -- '- `%.7s` %s\n' "$sha" "$subject"
+            done < "$RUNNER_TEMP/auto-resolve-report/equivalent.txt"
+            printf '\nMerging `%s` into this branch would put the same change on both sides of the conflict, and keeping both sides duplicates it. This workflow therefore did not resolve the conflicts automatically.\n\n' "$BASE_BRANCH"
+            printf 'If those changes are still on `%s` (check that they were not reverted since), rebase the branch onto it, dropping those commits, then force-push it (`--force-with-lease`):\n\n' "$BASE_BRANCH"
+            printf '```sh\ngit fetch origin\ngit rebase --onto origin/%s %s\n```\n\n' "$BASE_BRANCH" "$LAST_EQUIVALENT"
+            printf '<sub>Detected by: %s.</sub>\n\n<!-- %s base=%s -->\n' "$SIGNAL" "$KEY" "$BASE_SHA"
+          } > "$MSG"
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file "$MSG"
+
+      # The only push in this workflow.
+      - name: Validate and push resolution
+        id: publish
+        if: steps.report.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUSH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+          HAS_PAT: ${{ secrets.RELEASE_PLEASE_TOKEN != '' }}
+          BUILD_COMMAND: ${{ inputs.build-command }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ matrix.pr_number }}
+          HEAD_BRANCH: ${{ steps.pr.outputs.head_branch }}
+          BASE_BRANCH: ${{ steps.pr.outputs.base_branch }}
+          CROSS_REPO: ${{ steps.pr.outputs.cross_repo }}
+          OUTCOME: ${{ steps.report.outputs.outcome }}
+          REASON: ${{ steps.report.outputs.reason }}
+          PRE_HEAD: ${{ steps.report.outputs.pre_head }}
+          BASE_SHA: ${{ steps.report.outputs.base_sha }}
+          MERGE: ${{ steps.report.outputs.merge }}
+        run: |
+          set -euo pipefail
+          REPORT="$RUNNER_TEMP/auto-resolve-report"
+          BUILD="$RUNNER_TEMP/auto-resolve-build"
+          DETAIL="$REPORT/detail.txt"
+          MSG="$RUNNER_TEMP/auto-resolve-comment.md"
+          KEY="auto-resolve-conflicts:unresolved head=$PRE_HEAD base=$BASE_SHA"
+
+          # unresolved <reason> <exit code> <summary>: push nothing, comment
+          # once per (PR head, base) pair, exit.
+          unresolved() {
+            local reason=$1 rc=$2 summary=$3 bodies
+            if [ "$rc" -eq 0 ]; then echo "::warning::PR #$PR_NUMBER: $summary"; else echo "::error::PR #$PR_NUMBER: $summary"; fi
+            if ! bodies=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate --jq '.[].body'); then
+              echo "::warning::Could not list comments on PR #$PR_NUMBER; not commenting, to avoid a duplicate"
+            elif grep -qF "$KEY" <<<"$bodies"; then
+              echo "PR #$PR_NUMBER already has this report for head $PRE_HEAD and base $BASE_SHA"
+            else
+              {
+                printf 'Automatic resolution of the conflicts with `%s` did not produce a mergeable result, so nothing was pushed.\n\n' "$BASE_BRANCH"
+                printf '**%s**\n\n' "$summary"
+                if [ -s "$DETAIL" ]; then
+                  printf '<details><summary>Details</summary>\n\n```\n%s\n```\n\n</details>\n\n' "$(tail -c 6000 "$DETAIL" | sed 's/```/` ` `/g')"
+                fi
+                printf 'Please resolve the conflicts by hand. This workflow will not try again until the branch or `%s` moves.\n\n' "$BASE_BRANCH"
+                printf '<!-- %s reason=%s -->\n' "$KEY" "$reason"
+              } > "$MSG"
+              gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file "$MSG" ||
+                echo "::warning::Could not comment on PR #$PR_NUMBER"
+            fi
+            exit "$rc"
+          }
+
+          case "$OUTCOME" in
+            stacked|skipped|clean)
+              echo "PR #$PR_NUMBER: nothing to push ($OUTCOME)"
+              exit 0 ;;
+            agent-error)
+              # Not the agent's verdict but its failure to finish: no comment
+              # and no marker, so the next run tries again.
+              echo "::error::PR #$PR_NUMBER: the agent step failed before finishing; nothing was pushed or reported"
+              exit 1 ;;
+            unresolved)
+              case "$REASON" in
+                unfinished) unresolved unfinished 1 "The agent left the merge unfinished: there is no merge commit." ;;
+                aborted)    unresolved aborted 0 "The agent could not resolve the conflicts and aborted the merge." ;;
+                parents)    unresolved parents 1 "The agent's commit is not a merge of the PR head ($PRE_HEAD) with $BASE_BRANCH ($BASE_SHA)." ;;
+                config)     unresolved config 1 "The repository's git config changed while the agent ran." ;;
+                dirty)      unresolved dirty 1 "The working tree has uncommitted or untracked files after the merge commit." ;;
+                *)          unresolved markers 1 "Conflict markers remain in the merged files." ;;
+              esac ;;
+          esac
+
+          # OUTCOME=resolved from here on.
+          if [ "$CROSS_REPO" != "false" ]; then
+            echo "::error::PR #$PR_NUMBER does not come from this repository; nothing pushed"
+            exit 1
+          fi
+          if [ -n "$BUILD_COMMAND" ]; then
+            if ! jq -e --arg m "$MERGE" '.merge == $m and (.passed | type) == "boolean"' "$BUILD/build.json" >/dev/null 2>&1; then
+              echo "::error::PR #$PR_NUMBER: no build result for $MERGE (the build job did not finish); nothing pushed"
+              exit 1
+            fi
+            if [ "$(jq -r '.passed' "$BUILD/build.json")" != "true" ]; then
+              DETAIL="$BUILD/build.log"
+              unresolved build-failed 1 "build-command failed on the merged result: $BUILD_COMMAND"
+            fi
+            VALIDATED=$(printf '`%s` passed on this merge before it was pushed.' "$BUILD_COMMAND")
+          else
+            VALIDATED="Nothing compiled or tested this merge before it was pushed (no \`build-command\` is configured)."
+          fi
+
+          # A repository of our own: nothing from the PR's checkout (hooks,
+          # config, filters) takes part in the fetch or the push.
+          SERVER="${GITHUB_SERVER_URL:-https://github.com}"
+          URL="$SERVER/$REPO.git"
+          GIT_DIR_PUB=$(mktemp -d)
+          git init -q --bare "$GIT_DIR_PUB"
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$PUSH_TOKEN" | base64 -w0)"
+          pg() { git --git-dir="$GIT_DIR_PUB" -c "http.$SERVER/.extraheader=$auth" "$@"; }
+
+          pg fetch -q --no-tags "$URL" \
+            "+refs/heads/$HEAD_BRANCH:refs/remotes/origin/head" \
+            "+refs/heads/$BASE_BRANCH:refs/remotes/origin/base"
+          if [ "$(pg rev-parse refs/remotes/origin/head)" != "$PRE_HEAD" ]; then
+            echo "::warning::PR #$PR_NUMBER: $HEAD_BRANCH moved since the merge was made; nothing pushed (the next run starts from the new head)"
+            exit 0
+          fi
+          if ! pg merge-base --is-ancestor "$BASE_SHA" refs/remotes/origin/base; then
+            echo "::error::PR #$PR_NUMBER: $BASE_SHA is not on $BASE_BRANCH; nothing pushed"
+            exit 1
+          fi
+          pg fetch -q --no-tags "$REPORT/resolution.bundle" "+refs/auto-resolve/merge:refs/auto-resolve/merge"
+          P1=$(pg rev-parse -q --verify "$MERGE^1" || true)
+          P2=$(pg rev-parse -q --verify "$MERGE^2" || true)
+          P3=$(pg rev-parse -q --verify "$MERGE^3" || true)
+          if [ "$(pg rev-parse refs/auto-resolve/merge)" != "$MERGE" ] ||
+             [ "$P1" != "$PRE_HEAD" ] || [ "$P2" != "$BASE_SHA" ] || [ -n "$P3" ]; then
+            echo "::error::PR #$PR_NUMBER: the exported commit is not merge($PRE_HEAD, $BASE_SHA); nothing pushed"
+            exit 1
+          fi
+
+          # Never the default branch or a protected one (find-conflicts
+          # filters both; the settings may have changed since). A lookup that
+          # fails pushes nothing.
+          if ! DEFAULT_BRANCH=$(gh api "repos/$REPO" --jq '.default_branch') || [ -z "$DEFAULT_BRANCH" ] ||
+             ! PROTECTED=$(gh api "repos/$REPO/branches/$(jq -rn --arg b "$HEAD_BRANCH" '$b | @uri')" --jq '.protected'); then
+            echo "::error::PR #$PR_NUMBER: could not read the default branch or the protection of $HEAD_BRANCH; nothing pushed"
+            exit 1
+          fi
+          if [ "$HEAD_BRANCH" = "$DEFAULT_BRANCH" ] || [ "$PROTECTED" != "false" ]; then
+            echo "::error::PR #$PR_NUMBER: $HEAD_BRANCH is the default or a protected branch; nothing pushed"
+            exit 1
+          fi
+
+          if ! pg push -q "$URL" "$MERGE:refs/heads/$HEAD_BRANCH"; then
+            echo "::error::PR #$PR_NUMBER: push of $MERGE to $HEAD_BRANCH was rejected (did the branch move?)"
+            exit 1
+          fi
+
+          if [ "$HAS_PAT" = "true" ]; then
+            CREDENTIAL="Pushed with \`RELEASE_PLEASE_TOKEN\`, so the PR's CI runs on this head as usual."
+          else
+            CREDENTIAL="Pushed with \`GITHUB_TOKEN\`. GitHub starts no workflow runs for such a push, so **no CI ran on this head**: push a commit or re-run the checks before merging."
+            echo "::warning::PR #$PR_NUMBER: resolution $MERGE was pushed with GITHUB_TOKEN, so no CI runs on it. Pass RELEASE_PLEASE_TOKEN to have pushes trigger CI."
+          fi
+          {
+            printf 'Merge conflicts with `%s` were resolved automatically in %s.\n\n' "$BASE_BRANCH" "$MERGE"
+            printf -- '- %s\n- %s\n' "$VALIDATED" "$CREDENTIAL"
+          } > "$MSG"
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file "$MSG" ||
+            echo "::warning::Could not comment on PR #$PR_NUMBER"

@@ -178,3 +178,8 @@ changelog-publish workflow=".github/workflows/reusable-changelog-review.yml":
 [group: "validate"]
 changelog-usage workflow=".github/workflows/reusable-changelog-review.yml":
     bash .github/tests/changelog-review-usage/run.sh "{{workflow}}"
+
+# Run reusable-auto-resolve-conflicts.yml's resolve/build/publish steps against git fixtures
+[group: "validate"]
+auto-resolve-fixtures workflow=".github/workflows/reusable-auto-resolve-conflicts.yml":
+    bash .github/tests/auto-resolve-stacked/run.sh "{{workflow}}"

@@ -90,3 +90,10 @@ jobs:
       # execution-file fixtures: numbers only, deduplicated by message.id.
       - name: Changelog-review usage harness
         run: bash .github/tests/changelog-review-usage/run.sh
+
+      # reusable-auto-resolve-conflicts.yml's steps from all four jobs,
+      # extracted and run in sequence against real git fixtures and a stub gh:
+      # a stacked PR is commented on, never merged; a merge that fails the
+      # checks or build-command is never pushed; only `publish` can push.
+      - name: Auto-resolve-conflicts fixtures
+        run: bash .github/tests/auto-resolve-stacked/run.sh
