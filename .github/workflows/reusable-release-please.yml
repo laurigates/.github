@@ -103,7 +103,7 @@ jobs:
           client-id: ${{ inputs.app-id }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
 
-      - uses: googleapis/release-please-action@v4.4.0
+      - uses: googleapis/release-please-action@v4.4.1
         id: release
         with:
           token: ${{ inputs.app-id != '' && steps.app-token.outputs.token || secrets.MY_RELEASE_PLEASE_TOKEN }}

@@ -153,3 +153,8 @@ autofix-fixtures workflow=".github/workflows/reusable-auto-fix.yml":
 [group: "validate"]
 automerge-retry:
     bash .github/tests/auto-merge-retry/run.sh
+
+# Run reusable-changelog-review.yml's publish step against a stub gh
+[group: "validate"]
+changelog-publish workflow=".github/workflows/reusable-changelog-review.yml":
+    bash .github/tests/changelog-review-publish/run.sh "{{workflow}}"

@@ -1,10 +1,28 @@
 name: Auto-merge Image Updater PRs (Reusable)
 
 # Called from push-triggered workflows on image-updater/* branches.
-# Creates the PR, approves, and enables auto-merge in a single job to avoid
-# GITHUB_TOKEN anti-recursion: actions using GITHUB_TOKEN don't trigger new
-# workflow runs, so a two-job design (push → create PR → pull_request → merge)
-# never fires the second job.
+# Creates the PR, approves, and enables auto-merge in a single job: a two-job
+# design (push → create PR → pull_request → merge) cannot rely on the second
+# job firing, because a PR opened with GITHUB_TOKEN does not trigger it.
+#
+# ## Pass app-id — GITHUB_TOKEN-authored PRs now stall awaiting approval
+#
+# GitHub changed this on 2026-06-11 ("Bot-created pull requests can run
+# workflows if approved"), rolling out gradually into August. Previously a
+# github-actions[bot] PR could not run CI at all, so these PRs merged with no
+# checks whatsoever. Now the runs are created and held in `action_required`
+# until a user with write access approves them — so an unattended release stops
+# dead, and `gh pr merge --auto` waits on checks that will never start.
+#
+# The documented way out is to create the PR with a GitHub App installation
+# token or a PAT rather than GITHUB_TOKEN, which is why the create step below
+# prefers those. Callers should pass `app-id` + `APP_PRIVATE_KEY`; with neither
+# this falls back to GITHUB_TOKEN and the caller inherits the approval prompt.
+#
+# The two identities must differ — GitHub rejects a self-approval — so whichever
+# token opens the PR, the other one approves it. When the App opens it the
+# approval comes from GITHUB_TOKEN, which needs "Allow GitHub Actions to review
+# pull requests" (`can_approve_pull_request_reviews`) enabled on the repo.
 #
 # Calling workflow should trigger on:
 #   push:
@@ -58,8 +76,11 @@ jobs:
 
       - name: Create Pull Request
         id: create-pr
+        # Authored by the App (or PAT) where available, so the resulting
+        # pull_request runs start on their own. Created with GITHUB_TOKEN they
+        # are held in `action_required` and nothing merges unattended.
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.AUTO_MERGE_PAT || secrets.GITHUB_TOKEN }}
         run: |
           PR_URL=$(gh pr create \
             --base main \
@@ -78,13 +99,17 @@ jobs:
           echo "Created/found PR: $PR_URL"
 
       - name: Approve PR
-        # Approval comes from an identity other than the PR author
-        # (github-actions[bot], which created the PR above): the CI GitHub App
-        # token when app-id is set, otherwise AUTO_MERGE_PAT. Best-effort —
-        # auto-merge proceeds on its own when no approval is required.
+        # Deliberately the opposite token to the create step: GitHub rejects a
+        # self-approval, so whichever identity opened the PR cannot approve it.
+        # With app-id set the App is the author and GITHUB_TOKEN approves (needs
+        # `can_approve_pull_request_reviews` on the repo); without it the author
+        # is github-actions[bot] and AUTO_MERGE_PAT approves.
+        #
+        # Best-effort — auto-merge proceeds on its own where no approval is
+        # required, and a self-approval rejection must not fail the release.
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.AUTO_MERGE_PAT || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token && secrets.GITHUB_TOKEN || secrets.AUTO_MERGE_PAT || secrets.GITHUB_TOKEN }}
         run: gh pr review --approve "${{ github.ref_name }}"
 
       - name: Enable auto-merge
