@@ -519,6 +519,58 @@ ok
 assert_in "$OUTPUT" 'blocking=500'
 assert_in "$OUTPUT" 'itemised=1500'
 
+# --------------------------------------------------- nothing-scanned report
+# The block's last step explains a green check that scanned nothing. Its
+# reason must match the gate that skipped the analysis: a push the action
+# would reject (issue #63) is not "no changed file matched".
+awk '
+  /^      - name: Report that nothing was scanned$/ { inv = 1 }
+  inv && /^        run: \|$/                       { inrun = 1; next }
+  inrun && /^      [-#]/                           { inrun = 0; inv = 0 }
+  inrun                                            { print }
+' "$WORKFLOW" | sed 's/^          //' > "$work/report.sh"
+
+# run_report <name> <unsupported-event> <skipped-for-size>
+run_report() {
+  CASE_NAME="report/$1"
+  rm -rf "$work/run"
+  mkdir -p "$work/run"
+  set +e
+  TITLE='Test Analysis' UNSUPPORTED_EVENT="$2" SKIPPED_FOR_SIZE="$3" \
+    NOTHING_SCANNED_REASON='no changed file matched the configured patterns' \
+    GITHUB_STEP_SUMMARY="$work/run/summary.md" \
+    bash "$work/report.sh" > "$work/run/annotations.txt" 2> "$work/run/stderr.txt"
+  RC=$?
+  set -e
+  SUMMARY="$work/run/summary.md"
+  ANNOTATIONS="$work/run/annotations.txt"
+  touch "$SUMMARY"
+}
+
+CASE_NAME=report/extract
+ok
+[ -s "$work/report.sh" ] || fail "no 'Report that nothing was scanned' run body extracted from $WORKFLOW"
+
+run_report unsupported-event push ''
+assert_rc 0
+assert_lines "$ANNOTATIONS" '^::notice::' 1
+assert_in "$ANNOTATIONS" "does not support the 'push' trigger"
+assert_in "$ANNOTATIONS" 'call it from pull_request'
+assert_in "$SUMMARY" "'push'"
+assert_in "$SUMMARY" 'green because nothing was scanned'
+assert_not_in "$SUMMARY" 'no changed file matched'
+
+run_report diff-size '' true
+assert_rc 0
+assert_in "$SUMMARY" 'the PR diff exceeded max-diff-lines'
+assert_not_in "$SUMMARY" 'trigger'
+
+run_report no-match '' false
+assert_rc 0
+assert_lines "$ANNOTATIONS" '^::notice::' 1
+assert_in "$SUMMARY" 'no changed file matched the configured patterns'
+assert_not_in "$SUMMARY" 'trigger'
+
 # ------------------------------------------------------------------ report
 if [ "$failures" -eq 0 ]; then
   printf 'publish-findings: %d assertion(s) passed.\n' "$checks"

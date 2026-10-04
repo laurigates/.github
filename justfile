@@ -154,6 +154,11 @@ analysis-verdict:
 analysis-contract:
     bash .github/tests/analysis-contract/run.sh
 
+# Check the analysis workflows refuse events claude-code-action rejects (#63)
+[group: "validate"]
+event-guard-fixtures:
+    bash .github/tests/event-guard/run.sh
+
 # Run reusable-auto-fix.yml's issue dedup against real failure logs
 [group: "validate"]
 autofix-fixtures workflow=".github/workflows/reusable-auto-fix.yml":

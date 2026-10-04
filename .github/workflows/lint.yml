@@ -65,6 +65,12 @@ jobs:
       - name: Analysis contract
         run: bash .github/tests/analysis-contract/run.sh
 
+      # The same workflows on a trigger claude-code-action rejects (push):
+      # the extracted 'Check trigger is supported' step must refuse it and
+      # every step up to the analysis must be gated on its output (#63).
+      - name: Event-guard fixtures
+        run: bash .github/tests/event-guard/run.sh
+
       # Real failure logs through reusable-auto-fix.yml's signature and
       # issue-lookup steps: one failure must map to one signature.
       - name: Auto-fix dedup fixtures
