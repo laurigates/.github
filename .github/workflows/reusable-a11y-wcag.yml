@@ -24,7 +24,7 @@ on:
         type: string
         default: ''
       use-sticky-comment:
-        description: 'Maintain a single PR comment instead of posting a new comment per run'
+        description: "Forwarded to claude-code-action's use_sticky_comment. This workflow publishes findings to the job summary and file annotations, never a PR comment"
         required: false
         type: boolean
         default: true
@@ -135,6 +135,9 @@ jobs:
       - name: Claude WCAG Analysis
         id: analyze
         if: steps.changed.outputs.count != '0' && steps.changed.outputs.skip != 'true'
+        # Failure here is classified by the 'Classify analysis outcome' step
+        # below rather than failing the job outright.
+        continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -239,8 +242,9 @@ jobs:
       # ---- BEGIN shared publish block (checked by scripts/check-publish-drift.sh) ----
       # Findings reach humans through the job summary and file annotations,
       # never a PR comment: the action is granted no comment tool, so asking
-      # Claude to post one only produced denials and discarded the findings
-      # (issue #47). Both channels work with the permissions the job holds.
+      # Claude to post one gave it no tool to post with, and the findings
+      # were discarded (laurigates/.github#47). Both channels work with the
+      # permissions the job holds.
       #
       # Guard is `outcome != 'skipped'`, not `== 'success'`: when the wrapper
       # fails the run for overrunning --max-turns or --max-budget-usd, the
@@ -271,8 +275,9 @@ jobs:
           # only for input that renders to more than it costs -- 20000
           # near-empty findings is 60 KB of JSON and 1.1 MB of summary.
           SUMMARY_MAX_BYTES=900000
-          # GitHub surfaces ~10 annotations per level per step. Unverified
-          # exact figure; the summary always carries the complete list.
+          # GitHub surfaces at most 10 annotations per level per step and 50
+          # per job (actions/toolkit docs/problem-matchers.md); the summary
+          # always carries the complete list.
           ANNOTATION_LIMIT=10
 
           # jq exits 0 on empty input, so an unguarded run would publish
@@ -395,3 +400,89 @@ jobs:
           echo "::notice::$MSG"
           printf '## %s\n\n%s\n' "$TITLE" "$MSG" >> "$GITHUB_STEP_SUMMARY"
       # ---- END shared publish block ----
+
+      # The analysis step runs with continue-on-error, because the action
+      # fails it whenever --json-schema is set and a run that otherwise
+      # succeeded returns no structured_output (anthropics/claude-code-action
+      # base-action/src/run-claude-sdk.ts). Emission is not deterministic:
+      # the same SHA has produced it on one attempt and not the next
+      # (laurigates/.github#65).
+      # This step decides from Claude's own final `result` message, which the
+      # action writes to execution_file before that check and exposes on the
+      # failure path too, whether the job should go red:
+      #   success, is_error false, no structured_output -> warning, green
+      #   anything else that failed the analysis step    -> error, red
+      # Two edges, both deliberate:
+      # error_max_structured_output_retries (the model failed to produce
+      # schema-valid output) is red, like every other non-success subtype;
+      # and a success run with no structured_output is green even when it
+      # overran --max-turns (the action's own overrun check), because this
+      # step does not compare num_turns with max-turns.
+      # Outside the shared publish block on purpose, so the block stays
+      # byte-identical to the copies it is drift-checked against.
+      - name: Classify analysis outcome
+        id: verdict
+        if: ${{ !cancelled() && steps.analyze.outcome != 'skipped' }}
+        env:
+          EXECUTION_FILE: ${{ steps.analyze.outputs.execution_file }}
+          ANALYZE_OUTCOME: ${{ steps.analyze.outcome }}
+          TITLE: 'WCAG Compliance'
+        run: |
+          set -euo pipefail
+          # A step that succeeded needs no classifying.
+          if [ "$ANALYZE_OUTCOME" = "success" ]; then
+            exit 0
+          fi
+
+          fail() {
+            echo "::error::$TITLE: $1"
+            printf '%s: %s\n' "$TITLE" "$1" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+
+          if [ -z "${EXECUTION_FILE:-}" ] || [ ! -s "$EXECUTION_FILE" ]; then
+            fail "the analysis step reported '${ANALYZE_OUTCOME}' and left no execution file, so Claude produced no result. The cause is in the analysis step's log."
+          fi
+
+          # The file is a JSON array of SDK messages; the last `result`
+          # message is Claude's own account of how the run ended.
+          if ! RESULT="$(jq -c '[.[]? | objects | select(.type == "result")] | last // empty' "$EXECUTION_FILE" 2>/dev/null)"; then
+            fail "the analysis step reported '${ANALYZE_OUTCOME}' and its execution file is not a JSON array of SDK messages."
+          fi
+          if [ -z "$RESULT" ]; then
+            fail "the analysis step reported '${ANALYZE_OUTCOME}' and Claude never sent a result message (the SDK run was cut short). The cause is in the analysis step's log."
+          fi
+
+          # Every value interpolated into a workflow command is escaped: the
+          # SDK's error strings can carry newlines, and a newline would end
+          # the annotation and start a new command. `word` maps an empty
+          # value to 'unknown': tab is IFS whitespace, so `read` collapses
+          # an empty @tsv field and would shift every later field left.
+          read -r SUBTYPE IS_ERROR TURNS HAS_OUTPUT < <(printf '%s' "$RESULT" | jq -r '
+            def word: tostring | gsub("[^A-Za-z0-9_.-]"; "_") | if . == "" then "unknown" else . end;
+            [(.subtype // "unknown" | word), (.is_error == true), (.num_turns // "unknown" | word),
+             (has("structured_output") and .structured_output != null)] | @tsv')
+          ERRORS="$(printf '%s' "$RESULT" | jq -r '
+            (.errors // []) | map(tostring) | join("; ") | .[:500]
+            | gsub("%"; "%25") | gsub("\r"; "%0D") | gsub("\n"; "%0A")')"
+
+          if [ "$SUBTYPE" = "success" ] && [ "$IS_ERROR" = "false" ]; then
+            if [ "$HAS_OUTPUT" = "false" ]; then
+              MSG="$TITLE: Claude finished the analysis ($TURNS turns) but returned no structured output, so this run has no verdict and nothing was published. The job is not failed for a missing report; re-run it to get one."
+              echo "::warning::$MSG"
+              printf '%s\n' "$MSG" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            fail "Claude finished the analysis ($TURNS turns) with structured output, but the action failed the step anyway, so the findings were never published. The analysis step's log names the reason (a run over --max-turns is one)."
+          fi
+
+          case "$SUBTYPE" in
+            error_max_turns)
+              fail "Claude stopped at the max-turns limit after $TURNS turns without finishing, so the scan is incomplete. Raise max-turns or narrow file-patterns." ;;
+            error_max_budget_usd)
+              fail "Claude stopped at the max-budget-usd ceiling after $TURNS turns without finishing, so the scan is incomplete. Raise max-budget-usd." ;;
+            success)
+              fail "Claude's result reported is_error, so the run errored without producing a real result.${ERRORS:+ Errors: $ERRORS}" ;;
+            *)
+              fail "Claude's run ended with result subtype '$SUBTYPE' after $TURNS turns.${ERRORS:+ Errors: $ERRORS}" ;;
+          esac
