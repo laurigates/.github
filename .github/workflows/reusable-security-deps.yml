@@ -1,5 +1,10 @@
 name: Dependency Security Audit (Reusable)
 
+# Triggers: call this from a `pull_request` workflow. That is the only event
+# with a diff range, so the only one that audits just the lockfiles a change
+# touched; workflow_dispatch and schedule audit every lockfile present. push,
+# and every other event anthropics/claude-code-action rejects, is refused
+# green with a notice and audits nothing (laurigates/.github#63).
 on:
   workflow_call:
     inputs:
@@ -75,20 +80,51 @@ jobs:
       count: ${{ steps.publish.outputs.count_total_vulnerabilities }}
       critical: ${{ steps.publish.outputs.count_critical_high }}
     steps:
+      # anthropics/claude-code-action v1 throws `Unsupported event type` for
+      # any event outside the `switch (context.eventName)` in its
+      # src/github/context.ts (lines 170-251 when this list was taken; @v1
+      # floats, so re-check there before adding an event). Without this step
+      # a push ran the action into that throw and failed red in a way that
+      # reads like a finding (laurigates/.github#63). Every step up to the
+      # analysis compares `supported == 'true'`, so an unset output fails
+      # closed. The step only decides: the shared 'Report that nothing was
+      # scanned' step publishes the notice and the job-summary line.
+      - name: Check trigger is supported
+        id: event
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          case "${EVENT_NAME:-}" in
+            issues | issue_comment | pull_request | pull_request_target | pull_request_review | pull_request_review_comment | workflow_dispatch | repository_dispatch | schedule | workflow_run)
+              echo "supported=true" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              { echo "supported=false"; echo "unsupported=${EVENT_NAME:-unknown}"; } >> "$GITHUB_OUTPUT"
+              echo "Trigger '${EVENT_NAME:-unknown}' is rejected by anthropics/claude-code-action; skipping everything up to the analysis."
+              ;;
+          esac
+
       - name: Checkout repository
+        if: steps.event.outputs.supported == 'true'
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - name: Check for lockfile changes
         id: changed
+        if: steps.event.outputs.supported == 'true'
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          MAX_DIFF_LINES: ${{ inputs.max-diff-lines }}
         run: |
           LOCKFILES="package-lock.json bun.lockb pnpm-lock.yaml yarn.lock Cargo.lock requirements.txt poetry.lock Pipfile.lock"
           CHANGED=""
 
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
+          if [ "$EVENT_NAME" = "pull_request" ]; then
             for lockfile in $LOCKFILES; do
-              if git diff --name-only origin/${{ github.base_ref }}...HEAD | grep -q "$lockfile"; then
+              if git diff --name-only "origin/$BASE_REF...HEAD" | grep -q "$lockfile"; then
                 CHANGED="$CHANGED $lockfile"
               fi
             done
@@ -101,16 +137,16 @@ jobs:
           fi
 
           # Only pull_request events have a base ref to diff against; the gate is inert otherwise
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
+          if [ "$EVENT_NAME" = "pull_request" ]; then
             # numstat prints '-' for binary files; awk sums those as 0
-            DIFF_LINES=$(git diff --numstat origin/${{ github.base_ref }}...HEAD 2>/dev/null | awk '{s+=$1+$2} END {print s+0}' || true)
+            DIFF_LINES=$(git diff --numstat "origin/$BASE_REF...HEAD" 2>/dev/null | awk '{s+=$1+$2} END {print s+0}' || true)
           else
             DIFF_LINES=0
           fi
 
           echo "lockfiles=$CHANGED" >> $GITHUB_OUTPUT
           echo "diff_lines=$DIFF_LINES" >> $GITHUB_OUTPUT
-          if [ "${{ inputs.max-diff-lines }}" -gt 0 ] && [ "$DIFF_LINES" -gt "${{ inputs.max-diff-lines }}" ]; then
+          if [ "$MAX_DIFF_LINES" -gt 0 ] && [ "$DIFF_LINES" -gt "$MAX_DIFF_LINES" ]; then
             echo "skip=true" >> $GITHUB_OUTPUT
           else
             echo "skip=false" >> $GITHUB_OUTPUT
@@ -122,34 +158,35 @@ jobs:
           fi
 
       - name: Diff-size skip notice
-        if: steps.changed.outputs.skip == 'true'
+        if: steps.event.outputs.supported == 'true' && steps.changed.outputs.skip == 'true'
         run: |
           MSG="Dependency Security Audit: skipping Claude analysis — PR diff ${{ steps.changed.outputs.diff_lines }} lines exceeds max-diff-lines ${{ inputs.max-diff-lines }}"
           echo "::notice::$MSG"
           echo "$MSG" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Setup Node.js
-        if: contains(fromJSON('["npm", "bun", "pnpm", "yarn"]'), inputs.package-manager)
+        if: steps.event.outputs.supported == 'true' && contains(fromJSON('["npm", "bun", "pnpm", "yarn"]'), inputs.package-manager)
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
       - name: Setup Bun
-        if: inputs.package-manager == 'bun'
+        if: steps.event.outputs.supported == 'true' && inputs.package-manager == 'bun'
         uses: oven-sh/setup-bun@v1
 
       - name: Setup Python
-        if: inputs.package-manager == 'pip'
+        if: steps.event.outputs.supported == 'true' && inputs.package-manager == 'pip'
         uses: actions/setup-python@v5
         with:
           python-version: '3.x'
 
       - name: Setup Rust
-        if: inputs.package-manager == 'cargo'
+        if: steps.event.outputs.supported == 'true' && inputs.package-manager == 'cargo'
         uses: dtolnay/rust-toolchain@stable
 
       - name: Run audit command
         id: audit-cmd
+        if: steps.event.outputs.supported == 'true'
         continue-on-error: true
         run: |
           case "${{ inputs.package-manager }}" in
@@ -185,7 +222,7 @@ jobs:
 
       - name: Claude Dependency Analysis
         id: analyze
-        if: steps.audit-cmd.outputs.results != '' && steps.changed.outputs.skip != 'true'
+        if: steps.audit-cmd.outputs.results != '' && steps.changed.outputs.skip != 'true' && steps.event.outputs.supported == 'true'
         # Failure here is classified by the 'Classify analysis outcome' step
         # below rather than failing the job outright.
         continue-on-error: true
@@ -423,10 +460,13 @@ jobs:
         env:
           TITLE: 'Dependency Security Audit'
           SKIPPED_FOR_SIZE: ${{ steps.changed.outputs.skip }}
+          UNSUPPORTED_EVENT: ${{ steps.event.outputs.unsupported }}
           NOTHING_SCANNED_REASON: 'no lockfile changed, or the audit command produced no output'
         run: |
           set -euo pipefail
-          if [ "${SKIPPED_FOR_SIZE:-false}" = "true" ]; then
+          if [ -n "${UNSUPPORTED_EVENT:-}" ]; then
+            REASON="this workflow does not support the '$UNSUPPORTED_EVENT' trigger (anthropics/claude-code-action rejects it); call it from pull_request"
+          elif [ "${SKIPPED_FOR_SIZE:-false}" = "true" ]; then
             REASON="the PR diff exceeded max-diff-lines, so the diff-size gate skipped the analysis"
           else
             REASON="${NOTHING_SCANNED_REASON:-the analysis step did not run}"
