@@ -144,6 +144,16 @@ publish-drift count="8":
 publish-fixtures workflow=".github/workflows/reusable-security-owasp.yml":
     bash .github/tests/publish-findings/run.sh "{{workflow}}"
 
+# Run every --json-schema analysis workflow's Classify step against fixtures
+[group: "validate"]
+analysis-verdict:
+    bash .github/tests/analysis-verdict/run.sh
+
+# Check the analysis workflows' schema, prompt and gate contract
+[group: "validate"]
+analysis-contract:
+    bash .github/tests/analysis-contract/run.sh
+
 # Run reusable-auto-fix.yml's issue dedup against real failure logs
 [group: "validate"]
 autofix-fixtures workflow=".github/workflows/reusable-auto-fix.yml":

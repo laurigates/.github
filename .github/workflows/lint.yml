@@ -55,6 +55,16 @@ jobs:
       - name: Renderer fixtures
         run: bash .github/tests/publish-findings/run.sh
 
+      # Every --json-schema analysis workflow: the analyze step is
+      # continue-on-error and the extracted 'Classify analysis outcome' step
+      # turns a missing structured_output green and every real failure red.
+      - name: Analysis verdict fixtures
+        run: bash .github/tests/analysis-verdict/run.sh
+
+      # Schema, prompt and gate contract of the same workflows, read with yq.
+      - name: Analysis contract
+        run: bash .github/tests/analysis-contract/run.sh
+
       # Real failure logs through reusable-auto-fix.yml's signature and
       # issue-lookup steps: one failure must map to one signature.
       - name: Auto-fix dedup fixtures
