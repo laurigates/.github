@@ -1,0 +1,2 @@
+{"type": "assistant", "parent_tool_use_id": null, "message": {"id": "msg_j1", "model": "claude-opus-4-5", "usage": {"input_tokens": 1, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 3, "output_tokens": 2}}}
+{"type": "result", "subtype": "success", "num_turns": 1}

@@ -482,6 +482,7 @@ jobs:
           path: .
 
       - name: Triage changelog into a tracking issue
+        id: triage
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -790,3 +791,164 @@ jobs:
             echo "- $FILED: $ISSUE_META"
             echo "- Ratchet PR $pr_url: $PR_META"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # Token counts for prompt tuning (issue #54). The job log cannot carry
+      # them: with show_full_output off the action logs only duration, turns,
+      # cost and denials, and strips usage on purpose (sanitizeModelUsage). It
+      # still writes every SDK message to its `execution_file` output, whatever
+      # show_full_output says, and this step reduces that file to NUMBERS: a
+      # per-call table and the cache hit rate in the job summary, and a
+      # numbers-only JSON artifact. No message text, tool result or raw id is
+      # copied out; this workflow is public, so show_full_output and
+      # display_report stay unset.
+      #
+      # Totals come from the result message's `modelUsage`, the SDK's own
+      # per-model aggregate over every API call (side and subagent calls
+      # included); the per-call table comes from assistant messages, and the
+      # gap between the two is shown. The SDK emits one assistant message per
+      # content block, repeating the response's usage, so calls are grouped by
+      # message.id with the per-field max.
+      #
+      # After publish and under !cancelled() with continue-on-error: it reports
+      # on a failed run (max-turns is the case worth tuning) and can never gate
+      # publication. It writes only to $RUNNER_TEMP and the summary, never the
+      # workspace. Harness: .github/tests/changelog-review-usage (just
+      # changelog-usage).
+      - name: Summarise triage token usage
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        env:
+          EXEC_FILE: ${{ steps.triage.outputs.execution_file }}
+        run: |
+          set -euo pipefail
+          # The output can be unset on the action's failure path; the file is
+          # written to this fixed path either way.
+          src=""
+          for f in "$EXEC_FILE" "$RUNNER_TEMP/claude-execution-output.json"; do
+            if [ -n "$f" ] && [ -s "$f" ]; then src="$f"; break; fi
+          done
+          if [ -z "$src" ]; then
+            echo "::notice::No Claude execution file found; triage token usage not reported"
+            exit 0
+          fi
+          out="$RUNNER_TEMP/triage-usage.json"
+
+          # Every value is untrusted: a count that is not a non-negative number
+          # becomes 0, and a name keeps only [A-Za-z0-9._-].
+          COMPUTE='
+            def num: if type == "number" and . >= 0 and . < 1e15 then floor else 0 end;
+            def clean: if type == "string" then gsub("[^A-Za-z0-9._-]"; "") | .[0:64] else "" end;
+            def obj: if type == "object" then . else {} end;
+            def pct: (.input + .cache_creation + .cache_read) as $d
+              | if $d > 0 then (.cache_read * 1000 / $d | round) / 10 else null end;
+            def withpct: . + {hit_rate_pct: pct};
+            def add4: reduce .[] as $x ({input: 0, cache_creation: 0, cache_read: 0, output: 0};
+              .input += $x.input | .cache_creation += $x.cache_creation
+              | .cache_read += $x.cache_read | .output += $x.output);
+            (if length == 1 and (.[0] | type) == "array" then .[0] else . end) as $msgs
+            | [ $msgs | to_entries[]
+                | select((.value | type) == "object" and .value.type == "assistant"
+                         and (.value.message | type) == "object")
+                | .key as $i | .value as $m | ($m.message.usage | obj) as $u
+                | { key: ($m.message.id | if type == "string" then (if length > 0 then "id:" + . else "idx:\($i)" end) else "idx:\($i)" end),
+                    i: $i,
+                    sub: ($m.parent_tool_use_id | if type == "string" then length > 0 else false end),
+                    model: ($m.message.model | clean),
+                    input: ($u.input_tokens | num),
+                    cache_creation: ($u.cache_creation_input_tokens | num),
+                    cache_read: ($u.cache_read_input_tokens | num),
+                    output: ($u.output_tokens | num) } ]
+            | group_by(.key)
+            | map({ i: (map(.i) | min),
+                    agent: (if any(.[]; .sub) then "subagent" else "main" end),
+                    model: ((map(.model | select(length > 0)) | .[0]) // "unknown"),
+                    input: (map(.input) | max),
+                    cache_creation: (map(.cache_creation) | max),
+                    cache_read: (map(.cache_read) | max),
+                    output: (map(.output) | max) })
+            | sort_by(.i) | to_entries | map({seq: (.key + 1)} + (.value | del(.i)) | withpct)
+            | . as $calls
+            | ([ $msgs[] | select(type == "object" and .type == "result") ] | last | obj) as $r
+            | ($r.modelUsage
+               | if type == "object" and length > 0 then
+                   [ to_entries[] | (.value | obj) as $v
+                     | { model: (.key | clean | if . == "" then "unknown" else . end),
+                         input: ($v.inputTokens | num),
+                         cache_creation: ($v.cacheCreationInputTokens | num),
+                         cache_read: ($v.cacheReadInputTokens | num),
+                         output: ($v.outputTokens | num) } | withpct ]
+                 else null end) as $mu
+            | ($calls | add4) as $all
+            | {
+                schema: 1,
+                subtype: ($r.subtype | clean | if . == "" then null else . end),
+                num_turns: ($r.num_turns | if type == "number" then num else null end),
+                total_cost_usd: ($r.total_cost_usd | if type == "number" and . >= 0 then (. * 10000 | round) / 10000 else null end),
+                totals_source: (if $mu then "modelUsage" else "per-call" end),
+                totals: ((if $mu then ($mu | add4) else $all end) | withpct),
+                models: $mu,
+                gap: (if $mu then ($mu | add4) as $t
+                        | {input: ($t.input - $all.input), cache_creation: ($t.cache_creation - $all.cache_creation),
+                           cache_read: ($t.cache_read - $all.cache_read), output: ($t.output - $all.output)}
+                      else null end),
+                per_call: {
+                  calls: ($calls | length),
+                  main_calls: ([$calls[] | select(.agent == "main")] | length),
+                  subagent_calls: ([$calls[] | select(.agent == "subagent")] | length),
+                  all: ($all | withpct),
+                  main: ([$calls[] | select(.agent == "main")] | add4 | withpct),
+                  subagent: ([$calls[] | select(.agent == "subagent")] | add4 | withpct) },
+                calls: $calls
+              }'
+          if ! jq -s "$COMPUTE" "$src" > "$out.tmp" 2>/dev/null; then
+            rm -f "$out.tmp"
+            echo "::warning::Could not parse the Claude execution file; triage token usage not reported"
+            exit 0
+          fi
+          mv "$out.tmp" "$out"
+
+          # Rendered from the numbers-only file above, never from the transcript.
+          RENDER='
+            def p: if . == null then "n/a" else ((. * 10 | round) as $t | "\($t / 10 | floor).\($t % 10)") end;
+            def row($label): "| \($label) | \(.input) | \(.cache_creation) | \(.cache_read) | \(.output) | \(.hit_rate_pct | p) |";
+            200 as $cap
+            | "### Triage token usage",
+              "",
+              "- Result: \(.subtype // "none") · turns \(.num_turns // "n/a") · cost \(if .total_cost_usd == null then "n/a" else "$\(.total_cost_usd)" end)",
+              "- Calls: \(.per_call.calls) (main \(.per_call.main_calls), subagent \(.per_call.subagent_calls))",
+              (if .totals_source == "modelUsage"
+               then "- Totals: result `modelUsage` (every API call, side and subagent calls included)"
+               else "- Totals: per-call sum; the result message carried no `modelUsage`" end),
+              "- **Cache hit rate: \(.totals.hit_rate_pct | p)%** (cache read ÷ (input + cache write + cache read))",
+              "",
+              "| Totals | Input | Cache write | Cache read | Output | Hit % |",
+              "|---|---:|---:|---:|---:|---:|",
+              (.models // [] | .[] | row("`\(.model)`")),
+              (.totals | row("**total**")),
+              (.per_call.main | row("per-call sum (main)")),
+              (.per_call.subagent | row("per-call sum (subagent)")),
+              (.gap // empty | "| gap (modelUsage − per-call) | \(.input) | \(.cache_creation) | \(.cache_read) | \(.output) | |"),
+              "",
+              "| # | Agent | Model | Input | Cache write | Cache read | Output | Hit % |",
+              "|---:|---|---|---:|---:|---:|---:|---:|",
+              (.calls[:$cap][] | "| \(.seq) | \(.agent) | \(.model) | \(.input) | \(.cache_creation) | \(.cache_read) | \(.output) | \(.hit_rate_pct | p) |"),
+              (if (.calls | length) > $cap then "", "_\((.calls | length) - $cap) more calls in the `changelog-triage-usage` artifact._" else empty end),
+              ""'
+          jq -r "$RENDER" "$out" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "Triage token usage: $(jq -r '"\(.per_call.calls) calls, cache hit rate \(.totals.hit_rate_pct // "n/a")% (\(.totals_source))"' "$out")"
+          if jq -e '.totals | .input + .cache_creation + .cache_read + .output == 0' "$out" >/dev/null; then
+            echo "::warning::The Claude execution file held no token usage; check the triage step's log"
+          fi
+
+      - name: Upload triage token usage
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: changelog-triage-usage
+          path: ${{ runner.temp }}/triage-usage.json
+          retention-days: 90
+          if-no-files-found: ignore
+          # "Re-run failed jobs" uploads this name again within the same run.
+          overwrite: true

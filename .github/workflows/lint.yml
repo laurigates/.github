@@ -85,3 +85,8 @@ jobs:
       # a stub gh: one tracking issue per run, labels read back, never retried.
       - name: Changelog-review publish harness
         run: bash .github/tests/changelog-review-publish/run.sh
+
+      # The same workflow's token-usage step, extracted and run against SDK
+      # execution-file fixtures: numbers only, deduplicated by message.id.
+      - name: Changelog-review usage harness
+        run: bash .github/tests/changelog-review-usage/run.sh

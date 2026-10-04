@@ -1,0 +1,4 @@
+[
+  {"type": "system", "subtype": "init", "model": "claude-opus-4-5"},
+  {"type": "result", "subtype": "error_during_execution", "num_turns": 0}
+]

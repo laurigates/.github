@@ -173,3 +173,8 @@ automerge-retry:
 [group: "validate"]
 changelog-publish workflow=".github/workflows/reusable-changelog-review.yml":
     bash .github/tests/changelog-review-publish/run.sh "{{workflow}}"
+
+# Run reusable-changelog-review.yml's token-usage summary against its fixtures
+[group: "validate"]
+changelog-usage workflow=".github/workflows/reusable-changelog-review.yml":
+    bash .github/tests/changelog-review-usage/run.sh "{{workflow}}"

@@ -1,0 +1,6 @@
+[
+  {"type": "assistant", "parent_tool_use_id": null, "message": {"id": "msg_s1", "model": "claude-opus-4-5", "content": [{"type": "text", "text": "Planning"}], "usage": {"input_tokens": 7, "cache_creation_input_tokens": 500, "cache_read_input_tokens": 300, "output_tokens": 1}}},
+  {"type": "assistant", "parent_tool_use_id": null, "message": {"id": "msg_s1", "model": "claude-opus-4-5", "content": [{"type": "tool_use", "id": "toolu_s", "name": "Read", "input": {"file_path": "excerpt.md"}}], "usage": {"input_tokens": 7, "cache_creation_input_tokens": 500, "cache_read_input_tokens": 300, "output_tokens": 120}}},
+  {"type": "result", "subtype": "success", "num_turns": 1, "total_cost_usd": 0.01,
+   "modelUsage": {"claude-opus-4-5": {"inputTokens": 7, "outputTokens": 120, "cacheReadInputTokens": 300, "cacheCreationInputTokens": 500}}}
+]
