@@ -1,0 +1,7 @@
+[
+  {"type": "assistant", "parent_tool_use_id": null, "message": {"id": "msg_t1", "model": "claude-opus-4-5", "content": [{"type": "tool_use", "id": "toolu_t1", "name": "Read", "input": {}}], "usage": {"input_tokens": 6, "cache_creation_input_tokens": 4000, "cache_read_input_tokens": 0, "output_tokens": 30}}},
+  {"type": "assistant", "parent_tool_use_id": null, "message": {"id": "msg_t2", "model": "claude-opus-4-5", "content": [{"type": "tool_use", "id": "toolu_t2", "name": "Read", "input": {}}], "usage": {"input_tokens": 2, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 4000, "output_tokens": 30}}},
+  {"type": "user", "parent_tool_use_id": null, "message": {"role": "user", "content": []}},
+  {"type": "result", "subtype": "error_max_turns", "is_error": true, "num_turns": 25, "total_cost_usd": 1.5,
+   "modelUsage": {"claude-opus-4-5": {"inputTokens": 8, "outputTokens": 60, "cacheReadInputTokens": 4000, "cacheCreationInputTokens": 4000}}}
+]

@@ -1,0 +1,7 @@
+[
+  {"type": "assistant", "parent_tool_use_id": null, "message": {"id": "msg_|evil| **INJECTED_ID**\n| 99 | main | x | 1 | 1 | 1 | 1 | 1 |", "model": "claude|opus\n| 99 | injected | row |", "content": [{"type": "text", "text": "HOSTILE_TRANSCRIPT_TEXT"}], "usage": {"input_tokens": 2, "cache_creation_input_tokens": "1e9", "cache_read_input_tokens": [5], "output_tokens": "5\nblocking=1"}}},
+  {"type": "assistant", "parent_tool_use_id": null, "message": {"id": "msg_h2", "model": "claude-opus-4-5", "content": [], "usage": "not-an-object"}},
+  "a bare string element",
+  {"type": "result", "subtype": "success\n::error::INJECTED", "num_turns": "3\nblocking=1", "total_cost_usd": "free",
+   "modelUsage": {"claude|opus\n| injected |": {"inputTokens": 2, "outputTokens": "5\nblocking=1", "cacheReadInputTokens": -4, "cacheCreationInputTokens": null}}}
+]

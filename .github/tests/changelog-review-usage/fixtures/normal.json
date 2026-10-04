@@ -1,0 +1,10 @@
+[
+  {"type": "system", "subtype": "init", "model": "claude-opus-4-5", "tools": ["Read"]},
+  {"type": "assistant", "parent_tool_use_id": null, "message": {"id": "msg_n1", "model": "claude-opus-4-5", "content": [{"type": "text", "text": "TRANSCRIPT_TEXT_ONE"}], "usage": {"input_tokens": 10, "cache_creation_input_tokens": 1000, "cache_read_input_tokens": 0, "output_tokens": 50}}},
+  {"type": "user", "parent_tool_use_id": null, "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": "TOOL_RESULT_TEXT"}]}},
+  {"type": "assistant", "parent_tool_use_id": null, "message": {"id": "msg_n2", "model": "claude-opus-4-5", "content": [{"type": "text", "text": "TRANSCRIPT_TEXT_TWO"}], "usage": {"input_tokens": 5, "cache_creation_input_tokens": 200, "cache_read_input_tokens": 1000, "output_tokens": 80}}},
+  {"type": "assistant", "parent_tool_use_id": null, "message": {"id": "msg_n3", "model": "claude-opus-4-5", "content": [{"type": "text", "text": "TRANSCRIPT_TEXT_THREE"}], "usage": {"input_tokens": 3, "cache_creation_input_tokens": 100, "cache_read_input_tokens": 1200, "output_tokens": 40}}},
+  {"type": "result", "subtype": "success", "is_error": false, "num_turns": 3, "total_cost_usd": 0.123456, "result": "RESULT_TEXT",
+   "usage": {"input_tokens": 18, "cache_creation_input_tokens": 1300, "cache_read_input_tokens": 2200, "output_tokens": 170},
+   "modelUsage": {"claude-opus-4-5": {"inputTokens": 18, "outputTokens": 170, "cacheReadInputTokens": 2200, "cacheCreationInputTokens": 1300, "costUSD": 0.123456}}}
+]
