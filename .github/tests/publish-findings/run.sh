@@ -204,6 +204,10 @@ assert_in "$OUTPUT" 'blocking=1'
 assert_in "$OUTPUT" 'itemised=2'
 assert_in "$OUTPUT" 'count_total_issues=2'
 assert_in "$OUTPUT" 'count_critical_issues=1'
+# `degraded` is what the verdict step fails a successful scan on. Exactly
+# one line, so no later write can shadow it.
+assert_lines "$OUTPUT" '^degraded=false$' 1
+assert_lines "$OUTPUT" '^degraded=' 1
 
 # --------------------------------------------------------- empty findings
 run_case empty-findings '{"total_issues":0,"critical_issues":0,"findings":[]}' success '' 'total_issues,critical_issues'
@@ -431,6 +435,8 @@ assert_degraded() {
   assert_in "$OUTPUT" 'itemised=0'
   assert_in "$OUTPUT" 'count_total_issues=0'
   assert_in "$OUTPUT" 'count_critical_issues=0'
+  assert_lines "$OUTPUT" '^degraded=true$' 1
+  assert_lines "$OUTPUT" '^degraded=' 1
 }
 DEGRADE_KEYS='total_issues,critical_issues'
 

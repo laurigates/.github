@@ -57,8 +57,15 @@ fixture empty-subtype.json "[$INIT,{\"type\":\"result\",\"subtype\":\"\",\"is_er
 fixture no-result.json "[$INIT,$ASSIST]"
 fixture not-json.txt 'Error: this is not JSON'
 fixture empty.json ''
+# The action's transcript in a shape this workflow does not read: an object
+# wrapping the messages. A floating @v1 could ship it, and the step still
+# reports success because the action itself found the structured_output.
+fixture reshaped.json "{\"messages\":[$INIT,{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"num_turns\":12,\"structured_output\":{\"total_issues\":2,\"critical_issues\":2,\"findings\":[{\"severity\":\"Critical\",\"category\":\"A03\",\"description\":\"sqli\"}]}}]}"
 
-# run_case <name> <outcome> <execution-file-or-empty>
+# run_case <name> <outcome> <execution-file-or-empty> [publish-degraded]
+# The fourth argument is what the publish step wrote as `degraded`. It
+# defaults to 'false' (publish read a payload), so the failure-path cases
+# below exercise the verdict's own classification only.
 run_case() {
   CASE="$WF_SHORT/$1"
   rm -rf "$work/run"
@@ -68,6 +75,7 @@ run_case() {
   export TITLE='Test Analysis'
   export ANALYZE_OUTCOME="$2"
   if [ -n "$3" ]; then export EXECUTION_FILE="$work/$3"; else unset EXECUTION_FILE; fi
+  export PUBLISH_DEGRADED="${4-false}"
   set +e
   bash "$work/verdict.sh" > "$work/run/out.txt" 2> "$work/run/err.txt"
   RC=$?
@@ -112,6 +120,11 @@ for WF in "${workflows[@]}"; do
   ok
   yq -e '[.jobs.*.steps[] | select(.id == "verdict")] | .[0].env.EXECUTION_FILE == "${{ steps.analyze.outputs.execution_file }}"' "$WF" >/dev/null 2>&1 \
     || fail "verdict step does not read EXECUTION_FILE from steps.analyze.outputs.execution_file"
+  # The success path is gated on what publish actually read, not on the
+  # analysis step's outcome alone. A mistyped output name evaluates to ''.
+  ok
+  yq -e '[.jobs.*.steps[] | select(.id == "verdict")] | .[0].env.PUBLISH_DEGRADED == "${{ steps.publish.outputs.degraded }}"' "$WF" >/dev/null 2>&1 \
+    || fail "verdict step does not read PUBLISH_DEGRADED from steps.publish.outputs.degraded: a successful scan whose findings publish failed to read would end green with zeroed counts"
 
   # 3. One behaviour across the set.
   ok
@@ -156,8 +169,43 @@ for WF in "${workflows[@]}"; do
       assert_lines "$work/pub/output" "^count_${k}=0\$" 1
     done
   fi
-  run_case caller-view-verdict failure no-verdict.json
+  run_case caller-view-verdict failure no-verdict.json "$(sed -n 's/^degraded=//p' "$work/pub/output")"
   assert_rc 0
+
+  # 4b. The success path fails closed. Under --json-schema an analyze outcome
+  #     of 'success' means the action HAD a structured_output, so a publish
+  #     that then degrades lost a real report to a read failure on this side,
+  #     and its zeroed counts would skip every severity gate. Shipped publish
+  #     -> shipped verdict, wired through publish's own `degraded` output.
+  for pc in ok:verdict.json:0 unset::1 empty:empty.json:1 reshaped:reshaped.json:1 no-result:no-result.json:1; do
+    IFS=: read -r pname pfile prc <<<"$pc"
+    rm -rf "$work/pub" && mkdir -p "$work/pub"
+    if [ -n "$pfile" ]; then pexec="$work/$pfile"; else pexec=""; fi
+    set +e
+    GITHUB_OUTPUT="$work/pub/output" GITHUB_STEP_SUMMARY="$work/pub/summary.md" \
+      RUNNER_TEMP="$work/pub" EXECUTION_FILE="$pexec" \
+      ANALYZE_OUTCOME=success TITLE='Test Analysis' \
+      BLOCKING_SEVERITIES="$(yq '[.jobs.*.steps[] | select(.id == "publish")] | .[0].env.BLOCKING_SEVERITIES' "$WF")" \
+      COUNT_KEYS="$keys" bash "$work/publish.sh" > "$work/pub/out.txt" 2>&1
+    set -e
+    CASE="$WF_SHORT/success-publish-$pname"
+    ok
+    deg="$(sed -n 's/^degraded=//p' "$work/pub/output")"
+    want_deg=true; [ "$prc" = 0 ] && want_deg=false
+    [ "$deg" = "$want_deg" ] || fail "publish wrote degraded='$deg', expected '$want_deg'"
+    run_case "success-publish-$pname" success "$pfile" "$deg"
+    assert_rc "$prc"
+    if [ "$prc" = 1 ]; then
+      assert_lines "$OUT" '^::error::' 1
+      assert_in "$OUT" 'could not read the findings'
+    else
+      assert_lines "$OUT" '^::' 0
+    fi
+  done
+  # Publish aborted before writing `degraded` at all: not a clean scan either.
+  run_case success-publish-no-output success verdict.json ''
+  assert_rc 1
+  assert_in "$OUT" 'could not read the findings'
 
   # 5. Behaviour.
   run_case no-structured-output failure no-verdict.json
