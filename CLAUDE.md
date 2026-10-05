@@ -150,7 +150,7 @@ Seven things not to re-derive:
 
 ### Other
 
-- **`reusable-sync-ai-rules.yml`** — syncs AI coding rules from this `.github` repo into calling repos via rulesync, creating a PR with tool-specific configs for Claude Code, Copilot, Gemini, and Cursor
+- **`reusable-sync-ai-rules.yml`** — syncs AI coding rules from this `.github` repo into calling repos via rulesync, creating a PR with tool-specific configs for Claude Code, Copilot, Antigravity CLI, and Cursor. Pass `app-id` + `APP_PRIVATE_KEY` to open that PR with an App token: `GITHUB_TOKEN` is refused outright in a repo where Actions may not create pull requests (GitHub's default), and a PR it does open triggers no CI
 - **`reusable-renovate.yml`** — centralized Renovate runner. Auths via a GitHub App token when `app-id` is set (with `APP_PRIVATE_KEY` secret), falling back to `GITHUB_TOKEN` otherwise. Scopes targets via `repositories` or `autodiscover`/`autodiscover-filter` inputs (default: the calling repo only); includes a ghcr.io host rule for container digest lookups
 
 ## Conventions
