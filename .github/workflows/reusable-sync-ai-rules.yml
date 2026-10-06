@@ -2,6 +2,16 @@ name: Sync AI Rules
 
 on:
   workflow_call:
+    inputs:
+      app-id:
+        description: 'GitHub App client ID (or numeric App ID; client ID recommended). When set, the sync PR is opened with an App token (via APP_PRIVATE_KEY) instead of GITHUB_TOKEN.'
+        required: false
+        type: string
+        default: ''
+    secrets:
+      APP_PRIVATE_KEY:
+        description: 'GitHub App private key. Required when app-id is set.'
+        required: false
 
 permissions:
   contents: write
@@ -11,6 +21,17 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
+      # GITHUB_TOKEN cannot open a PR in a repo where "Allow GitHub Actions to
+      # create and approve pull requests" is off (GitHub's default), and a PR it
+      # does open triggers no CI. An App token avoids both.
+      - name: Generate GitHub App token
+        id: app-token
+        if: inputs.app-id != ''
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ inputs.app-id }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
       - name: Checkout calling repo
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
@@ -54,6 +75,7 @@ jobs:
         if: steps.changes.outputs.changed == 'true'
         uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676 # v7.0.11
         with:
+          token: ${{ inputs.app-id != '' && steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
           commit-message: "chore: sync AI coding rules from .github repo"
           title: "chore: sync AI coding rules"
           body: |
