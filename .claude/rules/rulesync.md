@@ -4,6 +4,12 @@ This repo is the rules **source** for `reusable-sync-ai-rules.yml`: consumer
 repos run `rulesync fetch laurigates/.github --path .rulesync` and generate
 tool-specific configs from `.rulesync/rules/*.md` + the root `rulesync.jsonc`.
 
+The same files are the single source for the local workspace copy:
+`just laurigates rules-generate` in `~/repos` (repos-claude-config) generates
+the Claude output into `~/repos/laurigates/.claude/rules/`, and
+`just laurigates rules-drift` reports when the two differ. Edit facts here,
+never in the workspace copy.
+
 Facts proven empirically while fixing #10 (evidence trail in PR #31), all
 reproduced on rulesync 9.1.0:
 

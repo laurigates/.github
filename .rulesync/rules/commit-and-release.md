@@ -14,11 +14,11 @@ Every commit message follows [Conventional Commits](https://www.conventionalcomm
 type(scope): description
 ```
 
-Types: `feat`, `fix`, `docs`, `chore`, `refactor`, `test`, `style`, `ci`. The scope names the affected area (a workflow, package, or component). The description is a short imperative summary.
+Types: `feat`, `fix`, `perf`, `refactor`, `docs`, `test`, `style`, `build`, `ci`, `chore`, `revert`. The scope names the affected area (a workflow, package, or component). The description is a short imperative summary.
 
 ## Rule: release-please owns versioning
 
-Repos use [release-please](https://github.com/googleapis/release-please) for automated versioning and changelogs, driven by conventional commit types (`feat` → minor, `fix` → patch, `feat!`/`BREAKING CHANGE` → major).
+Applies to repos that have a `release-please-config.json` or `.release-please-manifest.json`. [release-please](https://github.com/googleapis/release-please) derives versions and changelogs from conventional commit types (`feat` → minor, `fix` → patch, `feat!`/`BREAKING CHANGE` → major).
 
 - **Never hand-edit `CHANGELOG.md`** — release-please generates it.
 - **Never hand-edit version fields** (`package.json` version, `pyproject.toml` version, `.release-please-manifest.json`) — release-please bumps them.
@@ -26,4 +26,4 @@ Repos use [release-please](https://github.com/googleapis/release-please) for aut
 
 ## Rule: PR titles follow conventional commits
 
-On squash-merge repos the PR title becomes the commit subject on the default branch, so PR titles must themselves be valid conventional commits — they are what release-please parses.
+On squash-merge repos the PR title becomes the commit subject on the default branch, so PR titles must themselves be valid conventional commits. In release-please repos, that subject is what release-please parses.

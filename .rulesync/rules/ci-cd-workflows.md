@@ -1,7 +1,7 @@
 ---
 root: false
 targets: ["claudecode", "copilot", "antigravity-cli", "cursor"]
-description: "CI/CD workflow conventions — call org reusable workflows, pin actions to SHA, minimal permissions"
+description: "CI/CD workflow conventions — call org reusable workflows, App token for PR-opening workflows, pin actions to SHA, minimal permissions"
 globs: ["**/.github/workflows/**"]
 ---
 # CI/CD Workflow Conventions
@@ -15,6 +15,10 @@ uses: laurigates/.github/.github/workflows/reusable-<name>.yml@main
 ```
 
 Key reusable workflows: container build/release (build-once/promote via GHCR), release-please, Claude PR review, auto-fix, conventional commit enforcement, sync-ai-rules.
+
+## Rule: Open PRs and push with a GitHub App token, not `GITHUB_TOKEN`
+
+A workflow that opens a pull request or pushes a commit uses a GitHub App token. `GITHUB_TOKEN` is refused outright when a repo does not allow Actions to create pull requests (GitHub's default), and any PR or push it does make triggers no further workflows, so CI never runs on it. Repos flagged `release_please = true` in `laurigates/gitops` receive the App credentials (`vars.RELEASE_PLEASE_CLIENT_ID`, `secrets.RELEASE_PLEASE_PRIVATE_KEY`); a repo without them needs that flag first. Pass them to reusable workflows that take `app-id` / `APP_PRIVATE_KEY`.
 
 ## Rule: Pin third-party actions to a full commit SHA
 
