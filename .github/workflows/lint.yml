@@ -97,3 +97,10 @@ jobs:
       # checks or build-command is never pushed; only `publish` can push.
       - name: Auto-resolve-conflicts fixtures
         run: bash .github/tests/auto-resolve-stacked/run.sh
+
+      # reusable-container-release.yml: the extracted version step must fail on
+      # a tag-prefix that does not prefix the tag, and the tags block (run
+      # through an emulation of the pinned metadata-action) must derive every
+      # image tag from the stripped version, with no second parser.
+      - name: Container-release tag derivation
+        run: bash .github/tests/container-release-tags/run.sh
