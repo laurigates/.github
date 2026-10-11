@@ -206,6 +206,11 @@ changelog-publish workflow=".github/workflows/reusable-changelog-review.yml":
 changelog-usage workflow=".github/workflows/reusable-changelog-review.yml":
     bash .github/tests/changelog-review-usage/run.sh "{{workflow}}"
 
+# Check reusable-container-release.yml derives every image tag from the stripped version
+[group: "validate"]
+container-release-tags:
+    bash .github/tests/container-release-tags/run.sh
+
 # Run reusable-auto-resolve-conflicts.yml's resolve/build/publish steps against git fixtures
 [group: "validate"]
 auto-resolve-fixtures workflow=".github/workflows/reusable-auto-resolve-conflicts.yml":
