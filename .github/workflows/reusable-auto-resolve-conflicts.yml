@@ -18,17 +18,24 @@ name: Auto-resolve PR Conflicts (Reusable)
 #                   only), checks the commit and exports it as a git bundle
 #   build           read-only token, no secrets: runs `build-command` (code
 #                   from the PR) on the exported merge
-#   publish         the only job that holds RELEASE_PLEASE_TOKEN or pushes;
-#                   runs no repository code: re-checks the merge against the
-#                   live branches, pushes it once, and posts every comment
-#                   about a resolution
+#   publish         the only job that holds RELEASE_PLEASE_TOKEN or mints the
+#                   App token, and the only one that pushes; runs no
+#                   repository code: re-checks the merge against the live
+#                   branches, pushes it once, and posts every comment about a
+#                   resolution
 #
 # CI on the pushed head: GitHub starts no workflow runs for a push made with
-# GITHUB_TOKEN. Pass RELEASE_PLEASE_TOKEN (a PAT or App token with
-# contents:write) so the resolution is built by the PR's own CI; without it the
-# push is announced on the PR as unbuilt. Setting `build-command` (for example
-# `make -j4` or `npm ci && npm run build`) validates the merge before it is
-# pushed at all, whichever token pushes.
+# GITHUB_TOKEN. Pass `app-id` + APP_PRIVATE_KEY (a GitHub App with
+# contents:write) or RELEASE_PLEASE_TOKEN (a PAT with contents:write) so the
+# resolution is built by the PR's own CI; the App token wins when both are
+# set. Without either the push is announced on the PR as unbuilt. Setting
+# `build-command` (for example `make -j4` or `npm ci && npm run build`)
+# validates the merge before it is pushed at all, whichever token pushes.
+#
+# A repo that also calls reusable-fix-release-conflicts.yml should set
+# `skip-release-please: true`. Both run on push to main; this workflow closes a
+# conflicting release-please PR without retriggering release-please, so when it
+# gets there first the other finds no open PR and never recreates it.
 #
 # Calling workflow should trigger on:
 #   push:
@@ -57,12 +64,35 @@ on:
         required: false
         type: string
         default: ''
+      app-id:
+        description: 'GitHub App client ID (or numeric App ID; client ID recommended). When set, the publish job pushes with an App token (via APP_PRIVATE_KEY) instead of RELEASE_PLEASE_TOKEN.'
+        required: false
+        type: string
+        default: ''
+      model:
+        description: 'Claude model that resolves the conflicts'
+        required: false
+        type: string
+        default: 'claude-opus-5-5'
+      effort:
+        description: "Claude effort level, passed as --effort. Set to '' to omit the flag"
+        required: false
+        type: string
+        default: 'medium'
+      skip-release-please:
+        description: 'Leave release-please PRs alone (neither resolved nor closed). Set this when the repo also calls reusable-fix-release-conflicts.yml, which closes them and retriggers release-please; both run on push to main and would race to close the same PR.'
+        required: false
+        type: boolean
+        default: false
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         description: 'OAuth token for Claude Code CLI'
         required: true
       RELEASE_PLEASE_TOKEN:
-        description: 'PAT or App token with contents:write; without it the push uses GITHUB_TOKEN and no CI runs on the resolved head'
+        description: 'PAT with contents:write, used when app-id is empty; without it (or an App token) the push uses GITHUB_TOKEN and no CI runs on the resolved head'
+        required: false
+      APP_PRIVATE_KEY:
+        description: 'GitHub App private key. Required when app-id is set. Only the publish job mints the token.'
         required: false
 
 # Only one conflict resolution run at a time per repo
@@ -102,6 +132,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           PR_INPUT: ${{ inputs.pr_number }}
+          SKIP_RELEASE_PLEASE: ${{ inputs.skip-release-please }}
         run: |
           set -euo pipefail
           if [ -n "$PR_INPUT" ]; then
@@ -111,8 +142,11 @@ jobs:
             fi
             PRS=$(gh pr view "$PR_INPUT" --repo "$REPO" --json number,headRefName,isCrossRepository --jq '[.]')
           else
-            PRS=$(gh pr list --repo "$REPO" --state open --json number,mergeable,headRefName,isCrossRepository \
-              --jq '[.[] | select(.mergeable == "CONFLICTING")]')
+            # skip-release-please: fix-release-conflicts owns those PRs. An
+            # explicit pr_number (above) is not filtered.
+            PRS=$(gh pr list --repo "$REPO" --state open --json number,mergeable,headRefName,isCrossRepository |
+              jq -c --arg skip "$SKIP_RELEASE_PLEASE" '[.[] | select(.mergeable == "CONFLICTING")
+                | select($skip != "true" or (.headRefName | startswith("release-please--branches--") | not))]')
           fi
 
           if ! DEFAULT_BRANCH=$(gh api "repos/$REPO" --jq '.default_branch') || [ -z "$DEFAULT_BRANCH" ]; then
@@ -386,6 +420,8 @@ jobs:
           BASE_BRANCH: ${{ steps.pr.outputs.base_branch }}
           CONFLICTED_FILES: ${{ steps.merge.outputs.conflicted_files }}
           BUILD_COMMAND: ${{ inputs.build-command }}
+          MODEL: ${{ inputs.model }}
+          EFFORT: ${{ inputs.effort }}
         run: |
           set -euo pipefail
           # The agent's only directory outside the checkout. Not RUNNER_TEMP
@@ -456,7 +492,8 @@ jobs:
             "$RUNNER_TEMP/auto-resolve-prompt.tpl" > "$RUNNER_TEMP/auto-resolve-prompt.md"
 
           npx @anthropic-ai/claude-code --print \
-            --model sonnet \
+            --model "$MODEL" \
+            ${EFFORT:+--effort "$EFFORT"} \
             --max-turns 50 \
             --add-dir "$AGENT_DIR" \
             --allowedTools "Read,Write,Edit,Grep,Glob,TodoWrite,Bash(git status *),Bash(git diff *),Bash(git log *),Bash(git show *),Bash(git add *),Bash(git commit *),Bash(git merge *),Bash(jq *)" \
@@ -691,11 +728,12 @@ jobs:
           overwrite: true
           if-no-files-found: error
 
-  # The only job that holds RELEASE_PLEASE_TOKEN or pushes, and the only one
-  # that comments about a resolution (find-conflicts comments only on the stale
-  # automated PRs it closes). It runs no repository code: it pushes from a
-  # repository it creates, and re-checks the merge against the live branches
-  # instead of trusting the report.
+  # The only job that holds RELEASE_PLEASE_TOKEN or the App token, the only
+  # one that pushes, and the only one that comments about a resolution
+  # (find-conflicts comments only on the stale automated PRs it closes). It
+  # runs no repository code: it pushes from a repository it creates, and
+  # re-checks the merge against the live branches instead of trusting the
+  # report.
   publish:
     needs: [find-conflicts, resolve, build]
     if: ${{ !cancelled() && needs.find-conflicts.outputs.has_conflicts == 'true' }}
@@ -706,6 +744,16 @@ jobs:
       max-parallel: 1
       fail-fast: false
     steps:
+      # Minted here and nowhere else: `resolve` and `build` run repository
+      # code and must hold no push credential.
+      - name: Generate GitHub App token
+        id: app-token
+        if: inputs.app-id != ''
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ inputs.app-id }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
       - name: Get PR details
         id: pr
         env:
@@ -824,8 +872,9 @@ jobs:
         if: steps.report.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
-          PUSH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
-          HAS_PAT: ${{ secrets.RELEASE_PLEASE_TOKEN != '' }}
+          PUSH_TOKEN: ${{ inputs.app-id != '' && steps.app-token.outputs.token || secrets.RELEASE_PLEASE_TOKEN || github.token }}
+          # Which of the three PUSH_TOKEN resolved to, by the same precedence.
+          PUSH_CREDENTIAL: ${{ inputs.app-id != '' && 'app-token' || secrets.RELEASE_PLEASE_TOKEN != '' && 'RELEASE_PLEASE_TOKEN' || 'GITHUB_TOKEN' }}
           BUILD_COMMAND: ${{ inputs.build-command }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ matrix.pr_number }}
@@ -957,12 +1006,17 @@ jobs:
             exit 1
           fi
 
-          if [ "$HAS_PAT" = "true" ]; then
-            CREDENTIAL="Pushed with \`RELEASE_PLEASE_TOKEN\`, so the PR's CI runs on this head as usual."
-          else
-            CREDENTIAL="Pushed with \`GITHUB_TOKEN\`. GitHub starts no workflow runs for such a push, so **no CI ran on this head**: push a commit or re-run the checks before merging."
-            echo "::warning::PR #$PR_NUMBER: resolution $MERGE was pushed with GITHUB_TOKEN, so no CI runs on it. Pass RELEASE_PLEASE_TOKEN to have pushes trigger CI."
-          fi
+          # Anything but the two known values is treated as GITHUB_TOKEN: the
+          # comment then errs towards "no CI ran".
+          case "$PUSH_CREDENTIAL" in
+            app-token)
+              CREDENTIAL="Pushed with the GitHub App token (\`app-id\`), so the PR's CI runs on this head as usual." ;;
+            RELEASE_PLEASE_TOKEN)
+              CREDENTIAL="Pushed with \`RELEASE_PLEASE_TOKEN\`, so the PR's CI runs on this head as usual." ;;
+            *)
+              CREDENTIAL="Pushed with \`GITHUB_TOKEN\`. GitHub starts no workflow runs for such a push, so **no CI ran on this head**: push a commit or re-run the checks before merging."
+              echo "::warning::PR #$PR_NUMBER: resolution $MERGE was pushed with GITHUB_TOKEN, so no CI runs on it. Pass app-id + APP_PRIVATE_KEY or RELEASE_PLEASE_TOKEN to have pushes trigger CI." ;;
+          esac
           {
             printf 'Merge conflicts with `%s` were resolved automatically in %s.\n\n' "$BASE_BRANCH" "$MERGE"
             printf -- '- %s\n- %s\n' "$VALIDATED" "$CREDENTIAL"
