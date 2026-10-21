@@ -93,6 +93,15 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          # Without this, checkout@v6 leaves GITHUB_TOKEN as an extraheader in
+          # an includeIf-loaded file that claude-code-action's credential
+          # cleanup does not scan (it reads include.path only). git sends that
+          # header ahead of the App token in the origin URL, so @claude's pushes
+          # landed as github-actions[bot]: the PR's runs were held for approval
+          # and then refused by every claude-code-action scan as a non-human
+          # actor. With no persisted credential the push uses the Claude App
+          # token and arrives as claude[bot], which the scans admit by default.
+          persist-credentials: false
 
       - name: Run Claude Code
         id: claude
