@@ -24,10 +24,10 @@ on:
         type: string
         default: 'opus'
       allowed-bots:
-        description: "Comma-separated bot usernames allowed to trigger analysis (e.g. 'renovate[bot]'). The default admits pushes from reusable-claude.yml's @claude runs; a caller that sets this replaces the default, so keep 'claude[bot],claude' in its list to keep that"
+        description: "Comma-separated bot usernames allowed to trigger analysis (e.g. 'renovate[bot]'). The default admits @claude pushes from reusable-claude.yml: they arrive as github-actions[bot] until anthropics/claude-code-action#1721 is fixed, and as claude[bot] after. A caller that sets this replaces the default, so keep those names in its list"
         required: false
         type: string
-        default: 'claude[bot],claude'
+        default: 'claude[bot],claude,github-actions[bot]'
       use-sticky-comment:
         description: "Forwarded to claude-code-action's use_sticky_comment. This workflow publishes findings to the job summary and file annotations, never a PR comment"
         required: false
