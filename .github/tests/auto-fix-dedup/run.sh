@@ -498,7 +498,7 @@ fi
 
 # -------------------------------------------------------------------- report
 if [ "$failures" -eq 0 ]; then
-  printf 'auto-fix-dedup: %d assertion(s) passed.\n' "$checks"
+  printf 'PASS: auto-fix-dedup (%d assertion(s))\n' "$checks"
 else
   printf 'auto-fix-dedup: %d assertion(s) FAILED out of %d.\n' "$failures" "$checks"
   exit 1

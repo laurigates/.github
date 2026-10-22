@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Purpose
 
-This is the **laurigates/.github** repository — a special GitHub repo that provides default community health files and reusable GitHub Actions workflows for all [@laurigates](https://github.com/laurigates) repositories. It contains no application code, build system, or tests.
+This is the **laurigates/.github** repository — a special GitHub repo that provides default community health files and reusable GitHub Actions workflows for all [@laurigates](https://github.com/laurigates) repositories. It contains no application code or build system; its own workflow tests live under `.github/tests/` (see [Testing](#testing)).
 
 ## Repository Structure
 
@@ -151,8 +151,28 @@ Seven things not to re-derive:
 
 ### Other
 
-- **`reusable-sync-ai-rules.yml`** — syncs AI coding rules from this `.github` repo into calling repos via rulesync, creating a PR with tool-specific configs for Claude Code, Copilot, Antigravity CLI, and Cursor. Pass `app-id` + `APP_PRIVATE_KEY` to open that PR with an App token: `GITHUB_TOKEN` is refused outright in a repo where Actions may not create pull requests (GitHub's default), and a PR it does open triggers no CI
+- **`reusable-sync-ai-rules.yml`** — syncs AI coding rules from this `.github` repo into calling repos via rulesync, creating a PR with tool-specific configs for Claude Code, Copilot, Antigravity CLI, and Cursor. Pass `app-id` + `APP_PRIVATE_KEY` to open that PR with an App token: `GITHUB_TOKEN` is refused outright in a repo where Actions may not create pull requests (GitHub's default), and a PR it does open triggers no CI. Both rulesync steps run one exact version (`npx rulesync@40.2.0`), never `@latest`: rulesync ships a major almost daily, and every caller runs this workflow at `@main` (`tool-pins`; see `.claude/rules/rulesync.md`)
 - **`reusable-renovate.yml`** — centralized Renovate runner. Auths via a GitHub App token when `app-id` is set (with `APP_PRIVATE_KEY` secret), falling back to `GITHUB_TOKEN` otherwise. Scopes targets via `repositories` or `autodiscover`/`autodiscover-filter` inputs (default: the calling repo only); includes a ghcr.io host rule for container digest lookups
+
+## Testing
+
+`.github/workflows/lint.yml` gates every PR and push to `main`: YAML validity, actionlint, the publish-block drift check, a scratch-dir `rulesync generate`, and `bash .github/tests/run.sh`, which discovers and runs every `.github/tests/<name>/run.sh`. Locally:
+
+```bash
+just lint                     # yq YAML check + actionlint at the pinned actionlint_version
+just rules-check              # lint.yml's rulesync step: generate in a scratch copy, never at the root
+just test                     # every test, via .github/tests/run.sh
+just test workflow-contract   # only the named test(s)
+```
+
+A test passes only if it exits 0 **and** its last output line starts with `PASS: ` (print `PASS: <name> (<n> assertion(s))`); an exit-0 test without that line is reported FAIL, because it may have stopped before asserting anything, and the runner fails when it discovers no tests. A new test therefore needs no lint.yml step, and must not get one: `workflow-contract` rejects a step that runs a single test. Conventions are in `.github/tests/README.md`. The per-test recipes (`just publish-fixtures`, `just autofix-fixtures`, …) stay for running one harness against a non-default workflow path. Tests that guard the repo as a whole rather than one workflow:
+
+- **`runner`** — the runner itself, against fixture tests in scratch repos: a test that reads stdin (or fd 3, where the runner keeps the list) cannot swallow the tests after it, a failing test is still reported after one, and a run whose count differs from the discovered count fails. Each test gets stdin from `/dev/null`; before that, a stub `gh` doing `cat > file` would have consumed the rest of the list and the runner would have printed "All 1 test(s) passed." with exit 0
+- **`workflow-contract`** — every `reusable-*.yml` declares `workflow_call` and a top-level `permissions:` map; lint.yml runs the runner unconditionally, SHA-pins every `uses:`, and sets `persist-credentials: false` and `timeout-minutes`; every `uses: laurigates/.github/.github/{workflows,actions}/…` in a tracked file names something that exists here
+- **`tool-pins`** — every rulesync run through npx carries one exact `@X.Y.Z` version (lint.yml and `reusable-sync-ai-rules.yml` both run it), and lint.yml's `ACTIONLINT_VERSION` equals the justfile's `actionlint_version`. Nothing tracks these automatically (no `renovate.json` here), so a bump edits every site
+- **`sync-ai-rules-targets`** — the shipped `rulesync generate` passes `--targets`/`--features` equal to `rulesync.jsonc` and `fetch` passes `--path .rulesync`, the two exit-0-with-zero-files traps
+- **`rulesync-ignore`** — `.rulesync/.aiignore` covers no tracked file, in particular not `.rulesync/` or `rulesync.jsonc`. Every line there becomes a `Read(...)` deny in each consumer's generated `.claude/settings.json`, which also blocks Edit, Write and path-naming Bash, so listing the rule source made it uneditable wherever it was synced
+- **`claude-action-permissions`** — `additional_permissions` is a permissions map (see the trap above), and a claude-code-action step that can run in tag mode, or allows `mcp__github_ci__*`, has `actions: read` on the job token
 
 ## Conventions
 
