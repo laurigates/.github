@@ -164,6 +164,11 @@ event-guard-fixtures:
 autofix-fixtures workflow=".github/workflows/reusable-auto-fix.yml":
     bash .github/tests/auto-fix-dedup/run.sh "{{workflow}}"
 
+# Run reusable-claude.yml's failure-type and continuation-comment steps against fixtures
+[group: "validate"]
+claude-failure-type workflow=".github/workflows/reusable-claude.yml":
+    bash .github/tests/claude-failure-type/run.sh "{{workflow}}"
+
 # Run reusable-auto-merge-image-updater.yml's merge-retry step against stub gh
 [group: "validate"]
 automerge-retry:

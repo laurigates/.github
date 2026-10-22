@@ -76,6 +76,12 @@ jobs:
       - name: Auto-fix dedup fixtures
         run: bash .github/tests/auto-fix-dedup/run.sh
 
+      # reusable-claude.yml's failure path: no ${{ }} in any script body, and
+      # the extracted 'Detect failure type' and continuation-comment steps run
+      # against hostile execution files (#78).
+      - name: Claude failure-type fixtures
+        run: bash .github/tests/claude-failure-type/run.sh
+
       # The merge-retry step of reusable-auto-merge-image-updater.yml, extracted
       # and run against a stub gh that reproduces the base-moved race.
       - name: Auto-merge retry
