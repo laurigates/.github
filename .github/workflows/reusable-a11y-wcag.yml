@@ -22,7 +22,12 @@ on:
         description: 'Claude model to use'
         required: false
         type: string
-        default: 'opus'
+        default: 'claude-opus-5-5'
+      effort:
+        description: "Claude effort level, passed as --effort. Set to '' to omit the flag"
+        required: false
+        type: string
+        default: 'low'
       allowed-bots:
         description: "Comma-separated bot usernames allowed to trigger analysis (e.g. 'renovate[bot]')"
         required: false
@@ -185,6 +190,7 @@ jobs:
           use_sticky_comment: ${{ inputs.use-sticky-comment }}
           claude_args: >-
             --model ${{ inputs.model }}
+            ${{ inputs.effort != '' && format('--effort {0}', inputs.effort) || '' }}
             --max-turns ${{ inputs.max-turns }}
             ${{ inputs.max-budget-usd > 0 && format('--max-budget-usd {0}', inputs.max-budget-usd) || '' }}
             --json-schema '{"type":"object","properties":{"total_issues":{"type":"integer","description":"Total WCAG violations detected"},"level_a_issues":{"type":"integer","description":"Level A violations"},"level_aa_issues":{"type":"integer","description":"Level AA violations"},"findings":{"type":"array","description":"Every issue found, most severe first","items":{"type":"object","properties":{"file":{"type":"string","description":"Repository-relative path, exactly as it appears in the file list"},"line":{"type":"integer"},"severity":{"type":"string","enum":["Critical","High","Medium","Low"],"description":"Level A maps to Critical, AA to High, AAA to Medium"},"category":{"type":"string","description":"WCAG criterion with level, e.g. WCAG 1.1.1 Non-text Content (Level A)"},"description":{"type":"string"},"remediation":{"type":"string"}},"required":["file","severity","category","description"]}}},"required":["total_issues","level_a_issues","level_aa_issues","findings"]}'
