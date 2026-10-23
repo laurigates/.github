@@ -25,9 +25,17 @@ on:
         required: false
         type: string
         default: 'release-please.yml'
+      app-id:
+        description: 'GitHub App client ID (or numeric App ID; client ID recommended). When set, uses an App token (via APP_PRIVATE_KEY) instead of RELEASE_PLEASE_TOKEN.'
+        required: false
+        type: string
+        default: ''
     secrets:
       RELEASE_PLEASE_TOKEN:
         description: 'PAT with contents:write and pull-requests:write scopes (falls back to GITHUB_TOKEN)'
+        required: false
+      APP_PRIVATE_KEY:
+        description: 'GitHub App private key. Required when app-id is set.'
         required: false
 
 concurrency:
@@ -44,6 +52,14 @@ jobs:
     # ubuntu-slim: pure `gh` API calls, no checkout, no toolchain.
     runs-on: ubuntu-slim
     steps:
+      - name: Generate GitHub App token
+        id: app-token
+        if: inputs.app-id != ''
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ inputs.app-id }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
       - name: Wait for release-please to finish
         if: github.event_name == 'push'
         run: sleep 30
@@ -51,7 +67,7 @@ jobs:
       - name: Check for conflicted release-please PR
         id: check
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ inputs.app-id != '' && steps.app-token.outputs.token || secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           # Find open release-please PRs
           PR_JSON=$(gh pr list \
@@ -85,7 +101,7 @@ jobs:
       - name: Close conflicted PR and delete branch
         if: steps.check.outputs.has_conflict == 'true'
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ inputs.app-id != '' && steps.app-token.outputs.token || secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           PR_NUMBER="${{ steps.check.outputs.pr_number }}"
           BRANCH="${{ steps.check.outputs.branch }}"
@@ -102,7 +118,7 @@ jobs:
       - name: Retrigger release-please
         if: steps.check.outputs.has_conflict == 'true'
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ inputs.app-id != '' && steps.app-token.outputs.token || secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           echo "Triggering ${{ inputs.release-workflow-file }} to recreate the PR"
           gh workflow run "${{ inputs.release-workflow-file }}" \
