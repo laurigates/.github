@@ -82,7 +82,7 @@ The PR-phase build's scan is **advisory by default** (`scan-mode: advisory|block
 
 ### Claude-Powered Workflows
 
-- **`reusable-claude.yml`** — enables `@claude` mentions in issues and PRs. Supports configurable runner, max turns, and system prompt for CI turn budget awareness. Posts continuation comments on max-turns exhaustion
+- **`reusable-claude.yml`** — enables `@claude` mentions in issues and PRs. Supports configurable runner, max turns, and system prompt for CI turn budget awareness. Posts continuation comments on max-turns exhaustion. Its pushes arrive as `github-actions[bot]`, not `claude[bot]`: checkout@v6 keeps `GITHUB_TOKEN` as an extraheader in an `includeIf` file that claude-code-action's cleanup does not scan (anthropics/claude-code-action#1721), and that header outranks the App token. The pushed head's runs are held for approval, and the analysis workflows default `allowed-bots` to `claude[bot],claude,github-actions[bot]` so they do not refuse them (`security-deps` keeps `*`). Do not fix this with `persist-credentials: false`: tag mode fetches before it configures git auth, so every mention fails on a private repo (anthropics/claude-code-action#1711)
 - **`reusable-claude-review.yml`** — automated PR review using Claude Code. Skips release-please PRs and bot actors by default
 - **`reusable-auto-fix.yml`** — analyzes failed CI workflows and either auto-fixes (commit + push) or opens a GitHub issue. Includes recent-fix detection to prevent loops. Its tool list was inert (see the trap below), which silently disabled the commit/push and issue-creation the workflow exists for; it also never forwarded `actions: read`, so Claude could not read CI results either
 
