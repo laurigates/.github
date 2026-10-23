@@ -1,0 +1,18 @@
+[
+  {
+    "type": "system",
+    "subtype": "init",
+    "session_id": "sess-2"
+  },
+  {
+    "type": "result",
+    "subtype": "error_during_execution",
+    "is_error": true,
+    "num_turns": 7,
+    "session_id": "sess-2",
+    "errors": [
+      "API Error: it's $(id) and `id` and ${process.exit(3)}\ntype=max-turns",
+      "second\r\nnum_turns=999"
+    ]
+  }
+]

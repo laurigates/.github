@@ -579,7 +579,7 @@ assert_not_in "$SUMMARY" 'trigger'
 
 # ------------------------------------------------------------------ report
 if [ "$failures" -eq 0 ]; then
-  printf 'publish-findings: %d assertion(s) passed.\n' "$checks"
+  printf 'PASS: publish-findings (%d assertion(s))\n' "$checks"
 else
   printf 'publish-findings: %d assertion(s) FAILED out of %d.\n' "$failures" "$checks"
   exit 1
