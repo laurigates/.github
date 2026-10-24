@@ -657,3 +657,110 @@ jobs:
             echo "::error::Dependency audit reported ${REPORTED} critical/high vulnerabilities but itemised none of them. The scan did not establish anything; re-run it."
           fi
           exit 1
+
+  # Deterministic dependency audit beside the Claude analysis above.
+  # osv-scanner reads the lockfiles and manifests it recognises
+  # (package-lock.json, bun.lock, pnpm-lock.yaml, yarn.lock, Cargo.lock,
+  # poetry.lock, uv.lock, requirements.txt, ...) and reports each known
+  # advisory with its CVSS score, which is what the Claude step restates from
+  # an audit tool's JSON. Like the Claude step, on a pull_request it runs only
+  # when a lockfile changed, and fails only when fail-on-high is set.
+  osv-scanner:
+    runs-on: ubuntu-slim
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # OSV_SCANNER_VERSION and OSV_SCANNER_SHA256 change together; the hash
+      # is the release's osv-scanner_SHA256SUMS entry for linux_amd64.
+      - name: Install osv-scanner
+        env:
+          OSV_SCANNER_VERSION: '2.7.0'
+          OSV_SCANNER_SHA256: '160c6253e2922e9e0a6a9771c5c4c40a4b3c6090b34a3cdd5e80c96cc2e4218b'
+        run: |
+          set -euo pipefail
+          bin="$RUNNER_TEMP/osv-scanner-bin"
+          mkdir -p "$bin"
+          curl -fsSL -o "$bin/osv-scanner" \
+            "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64"
+          echo "${OSV_SCANNER_SHA256}  $bin/osv-scanner" | sha256sum -c -
+          chmod +x "$bin/osv-scanner"
+          echo "$bin" >> "$GITHUB_PATH"
+
+      # osv-scanner exits 0 with no advisories, 1 with some, and 128 when it
+      # finds no package source at all; anything else is a failed scan.
+      - name: Scan dependencies
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          FAIL_ON_HIGH: ${{ inputs.fail-on-high }}
+        run: |
+          set -euo pipefail
+          lockfiles='(^|/)(package-lock\.json|bun\.lockb?|pnpm-lock\.yaml|yarn\.lock|Cargo\.lock|requirements[^/]*\.txt|poetry\.lock|Pipfile\.lock|uv\.lock)$'
+          if [ "$EVENT_NAME" = pull_request ]; then
+            if ! changed="$(git diff --name-only "origin/${BASE_REF}...HEAD")"; then
+              echo "::error::osv-scanner: cannot diff origin/${BASE_REF}...HEAD; nothing was audited."
+              exit 1
+            fi
+            if ! grep -qE "$lockfiles" <<<"$changed"; then
+              echo "::notice::osv-scanner: no lockfile changed in this PR; nothing to audit."
+              exit 0
+            fi
+          fi
+
+          out="$RUNNER_TEMP/osv-results.json"
+          rc=0
+          osv-scanner scan source --recursive --format json --output-file "$out" . > "$RUNNER_TEMP/osv-scanner.log" 2>&1 || rc=$?
+          case "$rc" in
+            0 | 1) ;;
+            128)
+              echo "::notice::osv-scanner: no lockfile or manifest it recognises in this repository; nothing to audit."
+              exit 0
+              ;;
+            *)
+              cat "$RUNNER_TEMP/osv-scanner.log"
+              echo "::error::osv-scanner exited ${rc}; nothing was audited."
+              exit 1
+              ;;
+          esac
+
+          # One row per advisory group: the lockfile (relative to the
+          # checkout), the package, the advisory ids and the highest CVSS.
+          jq -c --arg root "$PWD/" '
+            [.results[]? as $r | $r.packages[]? as $p | $p.groups[]?
+             | { file: ($r.source.path | ltrimstr($root)),
+                 pkg: "\($p.package.name)@\($p.package.version)",
+                 ecosystem: ($p.package.ecosystem // ""),
+                 ids: (.ids | join(", ")),
+                 score: ((.max_severity // "") | tonumber? // null) }]
+            | sort_by(-(.score // 0))' "$out" > "$RUNNER_TEMP/osv-rows.json"
+          total="$(jq length "$RUNNER_TEMP/osv-rows.json")"
+          high="$(jq '[.[] | select((.score // 0) >= 7)] | length' "$RUNNER_TEMP/osv-rows.json")"
+          {
+            echo "## Dependency audit (osv-scanner)"
+            echo ""
+            echo "**Advisories:** ${total} · **CVSS 7.0 or higher:** ${high}"
+            echo ""
+            if [ "$total" -gt 0 ]; then
+              echo "| Lockfile | Package | Advisories | CVSS |"
+              echo "|---|---|---|---|"
+              jq -r '.[] | "| `\(.file)` | `\(.pkg)` (\(.ecosystem)) | \(.ids) | \(.score // "unscored") |"' "$RUNNER_TEMP/osv-rows.json"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          # Escaped like the analysis annotations: a newline in a value would
+          # start a new workflow command.
+          jq -r '
+            def esc: tostring | gsub("%"; "%25") | gsub("\r"; "%0D") | gsub("\n"; "%0A");
+            .[:10][]
+            | "::warning file=\(.file | esc | gsub(","; "%2C"))::osv-scanner: \(.pkg | esc) has \(.ids | esc) (CVSS \(.score // "unscored"))"
+          ' "$RUNNER_TEMP/osv-rows.json"
+          if [ "$FAIL_ON_HIGH" = true ] && [ "$high" -gt 0 ]; then
+            echo "::error::osv-scanner: ${high} advisory group(s) at CVSS 7.0 or higher, and fail-on-high is set."
+            exit 1
+          fi
