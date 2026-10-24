@@ -153,7 +153,7 @@ Eight things not to re-derive:
 ### Other
 
 - **`reusable-sync-ai-rules.yml`** — syncs AI coding rules from this `.github` repo into calling repos via rulesync, creating a PR with tool-specific configs for Claude Code, Copilot, Antigravity CLI, and Cursor. Pass `app-id` + `APP_PRIVATE_KEY` to open that PR with an App token: `GITHUB_TOKEN` is refused outright in a repo where Actions may not create pull requests (GitHub's default), and a PR it does open triggers no CI. Both rulesync steps run one exact version (`npx rulesync@40.2.0`), never `@latest`: rulesync ships a major almost daily, and every caller runs this workflow at `@main` (`tool-pins`; see `.claude/rules/rulesync.md`)
-- **`reusable-renovate.yml`** — centralized Renovate runner. Auths via a GitHub App token when `app-id` is set (with `APP_PRIVATE_KEY` secret), falling back to `GITHUB_TOKEN` otherwise. Scopes targets via `repositories` or `autodiscover`/`autodiscover-filter` inputs (default: the calling repo only); includes a ghcr.io host rule for container digest lookups
+- **`reusable-renovate.yml`** — centralized Renovate runner. Auths via a GitHub App token when `app-id` is set (with `APP_PRIVATE_KEY` secret). Without `app-id` the job fails unless the caller sets `allow-github-token: true`: `GITHUB_TOKEN` cannot open a PR in a repo where Actions may not create pull requests, branches it pushes trigger no CI, and the silent fallback ran as a second Renovate beside the owner-wide App runner while staying green. Scopes targets via `repositories` or `autodiscover`/`autodiscover-filter` inputs (default: the calling repo only); includes a ghcr.io host rule for container digest lookups
 
 ## Testing
 
