@@ -119,6 +119,16 @@ assert_contains "$(step_field "$CLAUDE_STEP" .with.claude_args)" \
   "\${{ steps.existing.outputs.mode != 'create' && '--disallowedTools \"Bash(gh issue create *),Bash(gh issue new *)\"' || '' }}" \
   "Claude step claude_args"
 
+# A bot actor the action would refuse skips the job before a runner starts,
+# and the action and the gate read the same list (mcu-tinkering-lab ran 66 red
+# auto-fix runs in 30 days on Renovate and release-please failures).
+CASE_NAME=actor-gate
+assert_eq "$(yq -r '.jobs["auto-fix"].if // ""' "$WORKFLOW")" \
+  "!endsWith(github.actor, '[bot]') || inputs.allowed_bots == '*' || contains(format(',{0},', inputs.allowed_bots), format(',{0},', github.actor))" \
+  "auto-fix job if:"
+assert_eq "$(step_field "$CLAUDE_STEP" .with.allowed_bots)" "\${{ inputs.allowed_bots }}" "Claude step allowed_bots"
+assert_eq "$(yq -r '.on.workflow_call.inputs.allowed_bots.default' "$WORKFLOW")" 'claude[bot],claude' "allowed_bots default"
+
 # Step wiring. A mistyped `steps.<id>.outputs.<key>` is neither a YAML nor an
 # actionlint error; it evaluates to '' at run time. An empty SIGNATURE turns
 # dedup off with every check green, which is the original bug again.
