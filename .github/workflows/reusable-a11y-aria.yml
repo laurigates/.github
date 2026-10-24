@@ -120,6 +120,11 @@ jobs:
           FILE_PATTERNS: ${{ inputs.file-patterns }}
           FILE_LIMIT: ${{ inputs.file-limit }}
           MAX_DIFF_LINES: ${{ inputs.max-diff-lines }}
+          # Glob pathspecs, so `**/` matches zero or more directories and
+          # `**/*.py` includes a top-level server.py. In git's default mode
+          # `*` crosses `/` but the literal `/` in `**/` must still match,
+          # which dropped every root-level file from the scan.
+          GIT_GLOB_PATHSPECS: '1'
         run: |
           set -f
           if [ "$EVENT_NAME" = "pull_request" ]; then
