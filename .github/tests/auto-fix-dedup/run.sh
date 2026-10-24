@@ -123,6 +123,23 @@ assert_contains "$(step_field "$CLAUDE_STEP" .with.claude_args)" \
   "\${{ steps.existing.outputs.mode != 'create' && '--disallowedTools \"Bash(gh issue create *),Bash(gh issue new *)\"' || '' }}" \
   "Claude step claude_args"
 
+# The fix commit is pushed with the checkout's credential, and a GITHUB_TOKEN
+# push starts no CI (mcu-tinkering-lab#749 merged an unverified fix). App
+# token first, then PAT_TOKEN, then GITHUB_TOKEN; the App token step must run
+# before the checkout that uses it.
+CASE_NAME=push-credential
+CHECKOUT_STEP='Checkout failed branch'
+APP_STEP='Generate GitHub App token'
+assert_eq "$(step_field "$CHECKOUT_STEP" .with.token)" \
+  "\${{ inputs.app-id != '' && steps.app-token.outputs.token || secrets.PAT_TOKEN || github.token }}" "checkout token"
+assert_eq "$(step_field "$APP_STEP" .id)" app-token "'$APP_STEP' id"
+assert_eq "$(step_field "$APP_STEP" .if)" "inputs.app-id != ''" "'$APP_STEP' if:"
+assert_eq "$(yq -r '.on.workflow_call.secrets.APP_PRIVATE_KEY.required' "$WORKFLOW")" false "secret APP_PRIVATE_KEY required"
+p_app="$(pos "$APP_STEP")"; p_checkout="$(pos "$CHECKOUT_STEP")"
+ok
+[ -n "$p_app" ] && [ -n "$p_checkout" ] && [ "$p_app" -lt "$p_checkout" ] \
+  || fail "'$APP_STEP' (${p_app:-missing}) must run before '$CHECKOUT_STEP' (${p_checkout:-missing})"
+
 # Step wiring. A mistyped `steps.<id>.outputs.<key>` is neither a YAML nor an
 # actionlint error; it evaluates to '' at run time. An empty SIGNATURE turns
 # dedup off with every check green, which is the original bug again.
@@ -158,6 +175,7 @@ refs_report="$(yq -o=json '.jobs["auto-fix"].steps' "$WORKFLOW" | jq -r '
       | (first(range($i) | select($s[.].id == $id)) // null) as $d
       | { at: $s[$i].name, ref: "steps.\($id).outputs.\($key)",
           problem: (if $d == null then "no earlier step has id \($id)"
+                    elif (($s[$d].uses // "") | startswith("actions/create-github-app-token@")) and $key == "token" then null
                     elif (($s[$d].run // "") | test("echo \"" + $key + "(=|<<)") | not)
                     then "step \($id) never writes \($key) to GITHUB_OUTPUT"
                     else null end) } ]
