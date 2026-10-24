@@ -536,13 +536,13 @@ awk '
   inrun                                            { print }
 ' "$WORKFLOW" | sed 's/^          //' > "$work/report.sh"
 
-# run_report <name> <unsupported-event> <skipped-for-size>
+# run_report <name> <unsupported-event> <skipped-for-size> [<refused-actor>]
 run_report() {
   CASE_NAME="report/$1"
   rm -rf "$work/run"
   mkdir -p "$work/run"
   set +e
-  TITLE='Test Analysis' UNSUPPORTED_EVENT="$2" SKIPPED_FOR_SIZE="$3" \
+  TITLE='Test Analysis' UNSUPPORTED_EVENT="$2" SKIPPED_FOR_SIZE="$3" REFUSED_ACTOR="${4:-}" \
     NOTHING_SCANNED_REASON='no changed file matched the configured patterns' \
     GITHUB_STEP_SUMMARY="$work/run/summary.md" \
     bash "$work/report.sh" > "$work/run/annotations.txt" 2> "$work/run/stderr.txt"
@@ -565,6 +565,22 @@ assert_in "$ANNOTATIONS" 'call it from pull_request'
 assert_in "$SUMMARY" "'push'"
 assert_in "$SUMMARY" 'green because nothing was scanned'
 assert_not_in "$SUMMARY" 'no changed file matched'
+
+# A bot the action would refuse (Renovate on a caller with the default
+# allowed-bots) is named, and outranks the size gate the skipped file list
+# never reached.
+run_report refused-actor '' '' 'laurigates-renovate[bot]'
+assert_rc 0
+assert_lines "$ANNOTATIONS" '^::notice::' 1
+assert_in "$SUMMARY" "the actor 'laurigates-renovate[bot]' is a bot that allowed-bots does not list"
+assert_in "$SUMMARY" 'green because nothing was scanned'
+assert_not_in "$SUMMARY" 'no changed file matched'
+
+# An unsupported trigger still wins: the actor step never ran.
+run_report unsupported-and-refused push '' 'laurigates-renovate[bot]'
+assert_rc 0
+assert_in "$SUMMARY" "does not support the 'push' trigger"
+assert_not_in "$SUMMARY" 'allowed-bots'
 
 run_report diff-size '' true
 assert_rc 0

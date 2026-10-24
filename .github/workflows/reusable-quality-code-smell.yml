@@ -110,15 +110,58 @@ jobs:
               ;;
           esac
 
-      - name: Checkout repository
+      # claude-code-action refuses a bot actor that allowed-bots does not
+      # list ("Workflow initiated by non-human actor"), and the refusal
+      # failed this job red on every Renovate PR without Claude running. This
+      # step applies the action's rule first: a login ending in [bot] is a
+      # bot, names compare lowercase with the [bot] suffix and surrounding
+      # spaces dropped, and '*' admits every bot. A refused actor skips
+      # everything up to the analysis, and the shared 'Report that nothing
+      # was scanned' step says why. The action itself decides by account
+      # type, so a bot whose login lacks the suffix still reaches it.
+      - name: Check actor is allowed
+        id: actor
         if: steps.event.outputs.supported == 'true'
+        env:
+          ACTOR: ${{ github.actor }}
+          ALLOWED_BOTS: ${{ inputs.allowed-bots }}
+        run: |
+          set -euo pipefail
+          trim() { local s="$1"; s="${s#"${s%%[![:space:]]*}"}"; printf '%s' "${s%"${s##*[![:space:]]}"}"; }
+          actor="$(printf '%s' "${ACTOR:-}" | tr '[:upper:]' '[:lower:]')"
+          name="${actor%\[bot\]}"
+          allowed=false
+          if [ "$name" = "$actor" ]; then
+            allowed=true
+          elif [ "$(trim "${ALLOWED_BOTS:-}")" = '*' ]; then
+            allowed=true
+          else
+            IFS=, read -r -a bots <<<"$(printf '%s' "${ALLOWED_BOTS:-}" | tr '[:upper:]' '[:lower:]')"
+            for bot in "${bots[@]}"; do
+              bot="$(trim "$bot")"
+              bot="${bot%\[bot\]}"
+              if [ -n "$bot" ] && [ "$bot" = "$name" ]; then allowed=true; fi
+            done
+          fi
+          if [ "$allowed" = true ]; then
+            echo "allowed=true" >> "$GITHUB_OUTPUT"
+          else
+            # A login is [A-Za-z0-9-] plus the suffix; anything else is dropped
+            # before it reaches GITHUB_OUTPUT or a workflow command.
+            shown="$(printf '%s' "${ACTOR:-}" | tr -cd 'A-Za-z0-9_.[]-')"
+            { echo "allowed=false"; echo "refused=${shown}"; } >> "$GITHUB_OUTPUT"
+            echo "Actor '${shown}' is a bot that allowed-bots does not list; skipping everything up to the analysis."
+          fi
+
+      - name: Checkout repository
+        if: steps.event.outputs.supported == 'true' && steps.actor.outputs.allowed == 'true'
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - name: Get changed files
         id: changed
-        if: steps.event.outputs.supported == 'true'
+        if: steps.event.outputs.supported == 'true' && steps.actor.outputs.allowed == 'true'
         env:
           EVENT_NAME: ${{ github.event_name }}
           BASE_REF: ${{ github.base_ref }}
@@ -162,7 +205,7 @@ jobs:
           echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Diff-size skip notice
-        if: steps.event.outputs.supported == 'true' && steps.changed.outputs.skip == 'true'
+        if: steps.event.outputs.supported == 'true' && steps.changed.outputs.skip == 'true' && steps.actor.outputs.allowed == 'true'
         run: |
           MSG="Code Smell Detection: skipping Claude analysis — PR diff ${{ steps.changed.outputs.diff_lines }} lines exceeds max-diff-lines ${{ inputs.max-diff-lines }}"
           echo "::notice::$MSG"
@@ -170,7 +213,7 @@ jobs:
 
       - name: Claude Code Smell Analysis
         id: analyze
-        if: steps.changed.outputs.count != '0' && steps.changed.outputs.skip != 'true' && steps.event.outputs.supported == 'true'
+        if: steps.changed.outputs.count != '0' && steps.changed.outputs.skip != 'true' && steps.event.outputs.supported == 'true' && steps.actor.outputs.allowed == 'true'
         # Failure here is classified by the 'Classify analysis outcome' step
         # below rather than failing the job outright.
         continue-on-error: true
@@ -420,11 +463,14 @@ jobs:
           TITLE: 'Code Smell Detection'
           SKIPPED_FOR_SIZE: ${{ steps.changed.outputs.skip }}
           UNSUPPORTED_EVENT: ${{ steps.event.outputs.unsupported }}
+          REFUSED_ACTOR: ${{ steps.actor.outputs.refused }}
           NOTHING_SCANNED_REASON: 'no changed file matched the configured patterns'
         run: |
           set -euo pipefail
           if [ -n "${UNSUPPORTED_EVENT:-}" ]; then
             REASON="this workflow does not support the '$UNSUPPORTED_EVENT' trigger (anthropics/claude-code-action rejects it); call it from pull_request"
+          elif [ -n "${REFUSED_ACTOR:-}" ]; then
+            REASON="the actor '$REFUSED_ACTOR' is a bot that allowed-bots does not list, and anthropics/claude-code-action refuses it"
           elif [ "${SKIPPED_FOR_SIZE:-false}" = "true" ]; then
             REASON="the PR diff exceeded max-diff-lines, so the diff-size gate skipped the analysis"
           else
