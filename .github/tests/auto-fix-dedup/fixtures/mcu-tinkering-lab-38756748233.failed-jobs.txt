@@ -1,0 +1,12 @@
+Job: Python Simulation Tests
+Status: failure
+Steps:
+  - Install dependencies: failure
+Job: Code Quality Checks
+Status: failure
+Steps:
+  - Sync simulation dev dependencies (for ty pre-commit hook): failure
+Job: Test Summary
+Status: failure
+Steps:
+  - Check test results: failure

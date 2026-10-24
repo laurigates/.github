@@ -207,9 +207,15 @@ jobs:
       # neither sees nor chooses the signature.
       #
       # The line it hashes, in order of preference: the first failing
-      # pre-commit hook id; else the first `##[error]` that is not the
-      # runner's generic "Process completed with exit code N"; else the last
-      # exception-shaped line ("...Error: ...") before that exit line.
+      # pre-commit hook id; else, from the first job in the log that failed,
+      # its first `##[error]` that is not the runner's generic "Process
+      # completed with exit code N", else its last exception-shaped line
+      # ("...Error: ...", or uv/cargo's lowercase "error: ...") before that
+      # exit line, else that job's failed step from failed-jobs.txt. Scoping
+      # to the first failed job matters: a summary job that only checks
+      # `needs` results re-fails later with its own `##[error]`, and in
+      # mcu-tinkering-lab's Test Suite that line gave every failure, whatever
+      # the cause, the same signature.
       # `--log-failed` prefixes every line with job, step and timestamp
       # columns, and the step column alone reads "UNKNOWN STEP" or "Set up
       # job" for the same failure, so all three are dropped. Run/job ids,
@@ -228,9 +234,13 @@ jobs:
         run: |
           set -euo pipefail
           log="${CONTEXT_DIR}/failure-logs.txt"
+          # failed-jobs.txt names each failed job's failed step; it is the
+          # fallback for a job whose log shows no specific line.
+          steps_file="${CONTEXT_DIR}/failed-jobs.txt"
+          [ -s "$steps_file" ] || steps_file=/dev/null
           picked=""
           if [ -s "$log" ]; then
-            picked="$(jq -Rrs --arg branch "$BRANCH" '
+            picked="$(jq -Rrs --arg branch "$BRANCH" --rawfile failed_jobs "$steps_file" '
               def msg:
                 sub("^[^\t]*\t[^\t]*\t"; "")
                 | sub("^\\x{FEFF}"; "")
@@ -256,19 +266,51 @@ jobs:
                 | gsub("\\s+"; " ")
                 | sub("^ "; "")
                 | sub(" $"; "");
-              [splits("\n") | msg] as $l
+              # uv and cargo print a lowercase `error:` (cargo `error[E0425]:`).
+              # pip and uv also print `×` lines, but not as the cause: pip
+              # closes a build failure with "× Failed to build installable
+              # wheels", after the line that names why.
+              def exc_shaped:
+                test("(^|[^A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_.]*)?(Error|Exception): ")
+                or test("^error(\\[[A-Za-z0-9]+\\])?: ");
+              # The job column, before msg strips it.
+              def job: if test("\t") then sub("\t.*$"; "") else "" end;
+              # "Job: <name>" then "  - <step>: failure" lines -> {job: step}.
+              def failed_steps:
+                reduce ($failed_jobs | splits("\n")) as $x ({cur: null, m: {}};
+                  if ($x | startswith("Job: ")) then .cur = ($x | ltrimstr("Job: "))
+                  elif .cur != null and .m[.cur] == null and ($x | test("^  - .+: failure$"))
+                  then .m[.cur] = ($x | sub("^  - "; "") | sub(": failure$"; ""))
+                  else . end)
+                | .m;
+              [splits("\n") | {j: job, m: msg}] as $all
+              | ($all | map(.m)) as $l
               | ($l | length) as $n
-              | (first(range($n) | select($l[.] | generic)) // $n) as $end
+              | failed_steps as $steps
               | (first(range($n) | select($l[.] | test("\\.{3,}Failed$"))) // null) as $hook
-              | (first($l[] | select(startswith("##[error]") and (generic | not))) // null) as $err
-              | (last($l[:$end][] | select(test("(^|[^A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_.]*)?(Error|Exception): "))) // null) as $exc
               | if $hook != null then
                   ((($l[$hook + 1] // "") | capture("^- hook id: (?<id>\\S+)").id)
                     // ($l[$hook] | sub("\\s*\\.{3,}Failed$"; "")))
                   | "hook\tpre-commit hook failed: \(norm)"
-                elif $err != null then "error\t\($err | ltrimstr("##[error]") | norm)"
-                elif $exc != null then "exception\t\($exc | norm)"
-                else empty
+                else
+                  # Jobs in log order; the first one that failed decides. A
+                  # summary job that only aggregates `needs` results (its
+                  # "Critical quality checks failed!") comes after the job
+                  # that failed, so it no longer gives every failure of a
+                  # workflow the same signature.
+                  first(
+                    ($all | map(.j) | reduce .[] as $j ([]; if any(.[]; . == $j) then . else . + [$j] end))[] as $j
+                    | [$all[] | select(.j == $j) | .m] as $jl
+                    | select(any($jl[]; generic or startswith("##[error]")))
+                    | (first(range($jl | length) | select($jl[.] | generic)) // ($jl | length)) as $end
+                    | (first($jl[] | select(startswith("##[error]") and (generic | not))) // null) as $err
+                    | (last($jl[:$end][] | select(exc_shaped)) // null) as $exc
+                    | if $err != null then "error\t\($err | ltrimstr("##[error]") | norm)"
+                      elif $exc != null then "exception\t\($exc | norm)"
+                      elif $steps[$j] != null then "step\tfailed step: \("\($j) / \($steps[$j])" | norm)"
+                      else empty
+                      end
+                  ) // empty
                 end
             ' "$log")"
           fi

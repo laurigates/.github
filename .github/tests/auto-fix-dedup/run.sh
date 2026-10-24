@@ -11,8 +11,12 @@
 #
 # The logs in fixtures/ are real `gh run view <id> --log-failed` output. The
 # Homebrew and context-budget logs are whole; the StyLua and mcu-tinkering-lab
-# logs are cut to their header plus the failing region onwards. cases.tsv maps
-# each log to the workflow name and branch of its run and to its failure group.
+# logs are cut to their header plus the failing region onwards (the 38xxx
+# ones keep, per job, its first line, the 40 lines before its first generic
+# exit line and every ##[error] line). A `<log>.failed-jobs.txt` beside a log
+# is the same run's `gh run view <id> --json jobs` summary in the shape
+# `Gather failure context` writes. cases.tsv maps each log to the workflow
+# name and branch of its run and to its failure group.
 #
 # Usage: bash .github/tests/auto-fix-dedup/run.sh [workflow-file]
 set -euo pipefail
@@ -195,6 +199,9 @@ run_sig() { # <log file or ''> <workflow name> <branch>
   rm -rf "$work/run"
   mkdir -p "$work/run/ctx"
   if [ -n "$1" ]; then cp "$1" "$work/run/ctx/failure-logs.txt"; fi
+  if [ -n "$1" ] && [ -f "${1%.log}.failed-jobs.txt" ]; then
+    cp "${1%.log}.failed-jobs.txt" "$work/run/ctx/failed-jobs.txt"
+  fi
   : > "$work/run/output"
   set +e
   GITHUB_OUTPUT="$work/run/output" CONTEXT_DIR="$work/run/ctx" WORKFLOW_NAME="$2" BRANCH="$3" \
@@ -222,6 +229,28 @@ expect_group() {
     mcu-ty)
       EXP_SRC=hook
       EXP_LINE='pre-commit hook failed: ty' ;;
+    # Test Suite's summary job re-fails with "Critical quality checks
+    # failed!" after the job that broke. Picking that line gave these three
+    # unrelated failures one signature (716cd5820e62); the first failing
+    # job now decides, falling back to its failed step.
+    mcu-suite-sync)
+      EXP_SRC=step
+      EXP_LINE='failed step: Code Quality Checks / Sync simulation dev dependencies (for ty pre-commit hook)' ;;
+    mcu-suite-precommit)
+      EXP_SRC=step
+      EXP_LINE='failed step: Code Quality Checks / Run pre-commit hooks' ;;
+    mcu-suite-torch)
+      EXP_SRC=exception
+      # shellcheck disable=SC2016 # the backticks are part of the log line
+      EXP_LINE='error: Distribution `torch==2.14.1 @ registry+https://pypi.org/simple` can'"'"'t be installed because it doesn'"'"'t have a source distribution or wheel for the current platform' ;;
+    # uv's lowercase `error:` matched no pattern, so these had no signature.
+    mcu-build-deps)
+      EXP_SRC=step
+      EXP_LINE='failed step: Build Python Simulation / Install dependencies' ;;
+    mcu-build-torch)
+      EXP_SRC=exception
+      # shellcheck disable=SC2016 # the backticks are part of the log line
+      EXP_LINE='error: Distribution `torch==2.14.1 @ registry+https://pypi.org/simple` can'"'"'t be installed because it doesn'"'"'t have a source distribution or wheel for the current platform' ;;
     *) EXP_SRC='?'; EXP_LINE='?' ;;
   esac
 }
