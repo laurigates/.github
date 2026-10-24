@@ -162,7 +162,7 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
           MAX_DIFF_LINES: ${{ inputs.max-diff-lines }}
         run: |
-          LOCKFILES="package-lock.json bun.lockb pnpm-lock.yaml yarn.lock Cargo.lock requirements.txt poetry.lock Pipfile.lock"
+          LOCKFILES="package-lock.json bun.lock bun.lockb pnpm-lock.yaml yarn.lock Cargo.lock requirements.txt poetry.lock Pipfile.lock uv.lock"
           CHANGED=""
 
           if [ "$EVENT_NAME" = "pull_request" ]; then
@@ -248,11 +248,21 @@ jobs:
               yarn audit --json > audit-results.json 2>&1 || true
               ;;
             pip)
-              pip install pip-audit > /dev/null 2>&1
-              pip-audit --format json > audit-results.json 2>&1 || true
+              # A bare `pip-audit` audits the runner's own environment, not
+              # the project. Audit the requirements file, else the project.
+              pip install pip-audit > /dev/null || { echo "::error::pip-audit failed to install"; exit 1; }
+              if [ -f requirements.txt ]; then
+                pip-audit -r requirements.txt --format json > audit-results.json 2>&1 || true
+              elif [ -f pyproject.toml ]; then
+                pip-audit --format json . > audit-results.json 2>&1 || true
+              else
+                echo "::warning::package-manager is pip, but there is no requirements.txt or pyproject.toml to audit"
+              fi
               ;;
             cargo)
-              cargo install cargo-audit > /dev/null 2>&1
+              # An install failure used to be discarded, and its error text
+              # reached Claude as "audit results".
+              cargo install --locked cargo-audit > /dev/null || { echo "::error::cargo-audit failed to install"; exit 1; }
               cargo audit --json > audit-results.json 2>&1 || true
               ;;
           esac
@@ -265,7 +275,9 @@ jobs:
 
       - name: Claude Dependency Analysis
         id: analyze
-        if: steps.audit-cmd.outputs.results != '' && steps.changed.outputs.skip != 'true' && steps.event.outputs.supported == 'true' && steps.actor.outputs.allowed == 'true'
+        # has_lockfiles was computed and never read, so Claude ran on every
+        # PR (an audit error message also counts as results), lockfile or not.
+        if: steps.audit-cmd.outputs.results != '' && steps.changed.outputs.has_lockfiles == 'true' && steps.changed.outputs.skip != 'true' && steps.event.outputs.supported == 'true' && steps.actor.outputs.allowed == 'true'
         # Failure here is classified by the 'Classify analysis outcome' step
         # below rather than failing the job outright.
         continue-on-error: true
