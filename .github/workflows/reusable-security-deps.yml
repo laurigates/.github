@@ -524,6 +524,7 @@ jobs:
           SKIPPED_FOR_SIZE: ${{ steps.changed.outputs.skip }}
           UNSUPPORTED_EVENT: ${{ steps.event.outputs.unsupported }}
           REFUSED_ACTOR: ${{ steps.actor.outputs.refused }}
+          UNCHANGED_SINCE_CLEAN: ${{ steps.changed.outputs.unchanged }}
           NOTHING_SCANNED_REASON: 'no lockfile changed, or the audit command produced no output'
         run: |
           set -euo pipefail
@@ -533,6 +534,8 @@ jobs:
             REASON="the actor '$REFUSED_ACTOR' is a bot that allowed-bots does not list, and anthropics/claude-code-action refuses it"
           elif [ "${SKIPPED_FOR_SIZE:-false}" = "true" ]; then
             REASON="the PR diff exceeded max-diff-lines, so the diff-size gate skipped the analysis"
+          elif [ "${UNCHANGED_SINCE_CLEAN:-}" = "true" ]; then
+            REASON="no PR file in the configured patterns changed since the previous head, which was scanned clean"
           else
             REASON="${NOTHING_SCANNED_REASON:-the analysis step did not run}"
           fi
