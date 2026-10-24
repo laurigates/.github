@@ -128,16 +128,6 @@ on:
         required: false
         type: string
         default: ''
-      plugins:
-        description: 'Claude Code plugins to load'
-        required: false
-        type: string
-        default: ''
-      plugin_marketplaces:
-        description: 'Claude Code plugin marketplace URLs'
-        required: false
-        type: string
-        default: ''
       allowed_bots:
         description: >-
           Comma-separated bot logins, no spaces, that may trigger the fix (e.g.
@@ -148,6 +138,16 @@ on:
         required: false
         type: string
         default: 'claude[bot],claude'
+      plugins:
+        description: 'Claude Code plugins to load'
+        required: false
+        type: string
+        default: ''
+      plugin_marketplaces:
+        description: 'Claude Code plugin marketplace URLs'
+        required: false
+        type: string
+        default: ''
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
