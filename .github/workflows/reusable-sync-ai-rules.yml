@@ -44,7 +44,7 @@ jobs:
       # root of the source repo (GET /contents/rules), so the .rulesync/ layout
       # must be addressed explicitly or fetch 404s and returns zero files.
       - name: Fetch rules from .github repo
-        run: npx rulesync@latest fetch laurigates/.github --features rules,ignore --conflict overwrite --path .rulesync
+        run: npx rulesync@40.2.0 fetch laurigates/.github --features rules,ignore --conflict overwrite --path .rulesync
 
       # fetch exits 0 even when it fetches nothing, and generate then fails
       # (or silently no-ops) — fail fast with a pointer to the rules source.
@@ -59,7 +59,7 @@ jobs:
       # (fetch does not pull it), and the no-config default is the agentsmd
       # target only, which generates nothing for these rules.
       - name: Generate tool-specific files
-        run: npx rulesync@latest generate --targets claudecode,copilot,antigravity-cli,cursor --features rules,ignore
+        run: npx rulesync@40.2.0 generate --targets claudecode,copilot,antigravity-cli,cursor --features rules,ignore
 
       - name: Check for changes
         id: changes

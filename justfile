@@ -3,6 +3,9 @@
 
 set positional-arguments
 
+# Must equal ACTIONLINT_VERSION in .github/workflows/lint.yml (tool-pins checks it).
+actionlint_version := "1.7.12"
+
 # Show available recipes
 default:
     @just --list
@@ -125,14 +128,33 @@ lint:
         exit 1
     fi
     if command -v mise >/dev/null 2>&1; then
-        # -shellcheck= disables shellcheck integration: its style findings on
-        # run: blocks are accepted pre-existing noise; actionlint still checks
-        # expressions, action inputs, and workflow structure.
-        mise exec aqua:rhysd/actionlint@latest -- actionlint -shellcheck= -oneline .github/workflows/*.yml \
-            && echo "actionlint: clean"
+        al=(mise exec "aqua:rhysd/actionlint@{{ actionlint_version }}" -- actionlint)
+    elif command -v actionlint >/dev/null 2>&1; then
+        al=(actionlint)
     else
-        echo "skip: mise not found - actionlint not run"
+        echo "actionlint not found: install mise or actionlint {{ actionlint_version }}" >&2
+        exit 1
     fi
+    # -shellcheck= disables shellcheck integration: its style findings on
+    # run: blocks are accepted pre-existing noise; actionlint still checks
+    # expressions, action inputs, and workflow structure.
+    "${al[@]}" -shellcheck= -oneline .github/workflows/*.yml
+    echo "actionlint: clean"
+
+# Generate the rules in a scratch repo with the pinned rulesync (lint.yml's step, extracted); never at the root
+[group: "validate"]
+rules-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    step='rulesync generate (scratch copy)'
+    body=$(STEP="$step" yq '.jobs.lint.steps[] | select(.name == strenv(STEP)) | .run // ""' .github/workflows/lint.yml)
+    [ -n "$body" ] || { echo "no step named '$step' in lint.yml" >&2; exit 1; }
+    bash --noprofile --norc -eo pipefail -c "$body"
+
+# Run every test under .github/tests/, or only the named ones
+[group: "validate"]
+test *names:
+    @bash .github/tests/run.sh "$@"
 
 # Fail if the shared publish block has drifted between analysis workflows
 [group: "validate"]
@@ -163,6 +185,11 @@ event-guard-fixtures:
 [group: "validate"]
 autofix-fixtures workflow=".github/workflows/reusable-auto-fix.yml":
     bash .github/tests/auto-fix-dedup/run.sh "{{workflow}}"
+
+# Run reusable-claude.yml's failure-type and continuation-comment steps against fixtures
+[group: "validate"]
+claude-failure-type workflow=".github/workflows/reusable-claude.yml":
+    bash .github/tests/claude-failure-type/run.sh "{{workflow}}"
 
 # Run reusable-auto-merge-image-updater.yml's merge-retry step against stub gh
 [group: "validate"]

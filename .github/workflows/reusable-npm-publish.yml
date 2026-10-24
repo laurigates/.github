@@ -35,6 +35,10 @@ on:
         type: string
         default: "."
 
+# The job below widens this to what publishing needs (id-token: write).
+permissions:
+  contents: read
+
 jobs:
   publish:
     runs-on: ubuntu-latest

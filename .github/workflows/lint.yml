@@ -1,7 +1,11 @@
 name: Lint workflows
 
-# This repo ships eight reusable workflows that every consuming repo calls at
-# `@main` with no pinning, and until now nothing verified they even parse.
+# This repo ships reusable workflows that every consuming repo calls at
+# `@main` with no pinning, so a broken file on main breaks its callers on
+# their next run. This job is the gate in front of main: YAML validity,
+# actionlint, the publish-block drift check, a scratch-dir rulesync generate,
+# and every test under .github/tests/. `just lint`, `just rules-check` and
+# `just test` run the same commands locally.
 
 on:
   pull_request:
@@ -14,10 +18,10 @@ permissions:
 
 jobs:
   lint:
-    # ubuntu-slim carries bash, Node, python3, gcc, git, gh, jq, yq, curl and
-    # the cloud CLIs — and nothing else. No Docker daemon, so the actionlint
-    # Docker action cannot be used here; download the pinned release binary
-    # instead, the same tool `just lint` runs via aqua.
+    # ubuntu-slim carries bash, Node/npm, python3, gcc, git, gh, jq, yq, curl
+    # and the cloud CLIs — and nothing else. No Docker daemon, so the
+    # actionlint Docker action cannot be used here; download the pinned
+    # release binary instead, the same version `just lint` runs via aqua.
     #
     # The YAML check runs on `yq`, which slim ships, NOT on
     # `python3 -c "import yaml"`: PyYAML is not stdlib and slim does not carry
@@ -25,8 +29,11 @@ jobs:
     # every PR to this repo red. `just lint` runs the same yq command, so a
     # local pass and a CI pass mean the same thing.
     runs-on: ubuntu-slim
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
 
       - name: Validate workflow YAML
         run: |
@@ -37,6 +44,9 @@ jobs:
           echo "All workflow files are valid YAML."
 
       - name: actionlint
+        # ACTIONLINT_VERSION must equal the justfile's actionlint_version
+        # (tool-pins checks it). A bump also needs the new ACTIONLINT_SHA256:
+        #   curl -fsSL <release asset url> | sha256sum
         env:
           ACTIONLINT_VERSION: '1.7.12'
           ACTIONLINT_SHA256: '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8'
@@ -52,48 +62,34 @@ jobs:
       - name: Publish-block drift check
         run: bash scripts/check-publish-drift.sh 8
 
-      - name: Renderer fixtures
-        run: bash .github/tests/publish-findings/run.sh
+      # This repo commits no generated rule copies, and generate must never
+      # run at the root: CLAUDE.md is one of its targets. So the rule sources
+      # are copied into a scratch repo and generated there, with the same
+      # rulesync version reusable-sync-ai-rules.yml ships to consumers
+      # (tool-pins checks they agree). A schema hard-fail (a removed target
+      # such as geminicli, in rulesync.jsonc or rule frontmatter) fails here,
+      # and so does a version that exits 0 without writing one Claude rule
+      # per source (every rule here targets claudecode).
+      # `just rules-check` runs this body.
+      - name: rulesync generate (scratch copy)
+        run: |
+          set -euo pipefail
+          src=$PWD
+          work=$(mktemp -d)
+          trap 'rm -rf "$work"' EXIT
+          cp -R "$src/rulesync.jsonc" "$src/.rulesync" "$work/"
+          cd "$work"
+          git init -q .
+          npx --yes rulesync@40.2.0 generate
+          n=$(find .rulesync/rules -name '*.md' | wc -l)
+          got=0
+          [ ! -d .claude/rules ] || got=$(find .claude/rules -name '*.md' | wc -l)
+          [ "$n" -gt 0 ] || { echo "::error::no rule sources under .rulesync/rules"; exit 1; }
+          [ "$got" -eq "$n" ] || { echo "::error::rulesync generated $got .claude/rules/*.md file(s) for $n rule source(s)"; exit 1; }
+          echo "rulesync: generated $got Claude rule file(s) from $n source(s)."
 
-      # Every --json-schema analysis workflow: the analyze step is
-      # continue-on-error and the extracted 'Classify analysis outcome' step
-      # turns a missing structured_output green and every real failure red.
-      - name: Analysis verdict fixtures
-        run: bash .github/tests/analysis-verdict/run.sh
-
-      # Schema, prompt and gate contract of the same workflows, read with yq.
-      - name: Analysis contract
-        run: bash .github/tests/analysis-contract/run.sh
-
-      # The same workflows on a trigger claude-code-action rejects (push):
-      # the extracted 'Check trigger is supported' step must refuse it and
-      # every step up to the analysis must be gated on its output (#63).
-      - name: Event-guard fixtures
-        run: bash .github/tests/event-guard/run.sh
-
-      # Real failure logs through reusable-auto-fix.yml's signature and
-      # issue-lookup steps: one failure must map to one signature.
-      - name: Auto-fix dedup fixtures
-        run: bash .github/tests/auto-fix-dedup/run.sh
-
-      # The merge-retry step of reusable-auto-merge-image-updater.yml, extracted
-      # and run against a stub gh that reproduces the base-moved race.
-      - name: Auto-merge retry
-        run: bash .github/tests/auto-merge-retry/run.sh
-
-      # reusable-changelog-review.yml's publish step, extracted and run against
-      # a stub gh: one tracking issue per run, labels read back, never retried.
-      - name: Changelog-review publish harness
-        run: bash .github/tests/changelog-review-publish/run.sh
-
-      # The same workflow's token-usage step, extracted and run against SDK
-      # execution-file fixtures: numbers only, deduplicated by message.id.
-      - name: Changelog-review usage harness
-        run: bash .github/tests/changelog-review-usage/run.sh
-
-      # reusable-auto-resolve-conflicts.yml's steps from all four jobs,
-      # extracted and run in sequence against real git fixtures and a stub gh:
-      # a stacked PR is commented on, never merged; a merge that fails the
-      # checks or build-command is never pushed; only `publish` can push.
-      - name: Auto-resolve-conflicts fixtures
-        run: bash .github/tests/auto-resolve-stacked/run.sh
+      # Every .github/tests/<name>/run.sh, discovered, so a new test cannot
+      # be left out of CI. A test passes only if it exits 0 and its last line
+      # starts with "PASS: " (see .github/tests/README.md).
+      - name: Workflow tests
+        run: bash .github/tests/run.sh
