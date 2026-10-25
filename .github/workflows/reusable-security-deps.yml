@@ -231,30 +231,34 @@ jobs:
         id: audit-cmd
         if: steps.event.outputs.supported == 'true' && steps.actor.outputs.allowed == 'true'
         continue-on-error: true
+        # stderr goes to audit-stderr.log, not into audit-results.json.
+        # pip-audit prints its summary line to stderr on every run, and npm,
+        # bun and cargo print their errors there, so with `2>&1` the results
+        # file was not JSON. 'Count audit vulnerabilities' parses it.
         run: |
           case "${{ inputs.package-manager }}" in
             npm)
-              npm audit --json > audit-results.json 2>&1 || true
+              npm audit --json > audit-results.json 2> audit-stderr.log || true
               ;;
             bun)
               # bun audit reads bun.lock natively (Bun >=1.2.15); no install needed.
               # npm audit ENOLOCKs here since the repo has no package-lock.json.
-              bun audit --json > audit-results.json 2>&1 || true
+              bun audit --json > audit-results.json 2> audit-stderr.log || true
               ;;
             pnpm)
-              pnpm audit --json > audit-results.json 2>&1 || true
+              pnpm audit --json > audit-results.json 2> audit-stderr.log || true
               ;;
             yarn)
-              yarn audit --json > audit-results.json 2>&1 || true
+              yarn audit --json > audit-results.json 2> audit-stderr.log || true
               ;;
             pip)
               # A bare `pip-audit` audits the runner's own environment, not
               # the project. Audit the requirements file, else the project.
               pip install pip-audit > /dev/null || { echo "::error::pip-audit failed to install"; exit 1; }
               if [ -f requirements.txt ]; then
-                pip-audit -r requirements.txt --format json > audit-results.json 2>&1 || true
+                pip-audit -r requirements.txt --format json > audit-results.json 2> audit-stderr.log || true
               elif [ -f pyproject.toml ]; then
-                pip-audit --format json . > audit-results.json 2>&1 || true
+                pip-audit --format json . > audit-results.json 2> audit-stderr.log || true
               else
                 echo "::warning::package-manager is pip, but there is no requirements.txt or pyproject.toml to audit"
               fi
@@ -263,7 +267,7 @@ jobs:
               # An install failure used to be discarded, and its error text
               # reached Claude as "audit results".
               cargo install --locked cargo-audit > /dev/null || { echo "::error::cargo-audit failed to install"; exit 1; }
-              cargo audit --json > audit-results.json 2>&1 || true
+              cargo audit --json > audit-results.json 2> audit-stderr.log || true
               ;;
           esac
 
@@ -273,11 +277,81 @@ jobs:
             echo "EOF" >> $GITHUB_OUTPUT
           fi
 
+      # Any non-empty audit output used to reach Claude: a report with zero
+      # vulnerabilities, and the error text of an audit that never ran (npm
+      # ENOLOCK). This step reads the vulnerability count from the report
+      # each manager prints (npm 11, pnpm 10, yarn 1, bun 1.4, pip-audit 2.10
+      # and cargo-audit 0.22; real output is in the deps-lockfile-gate
+      # fixtures), and Claude runs only when it is above 0. A failed audit
+      # step, empty output, output that is not JSON, and JSON with no count
+      # (an error object) fail the job instead of reaching the model. No
+      # file at all skips: only the pip branch writes none, after a warning.
+      - name: Count audit vulnerabilities
+        id: audit-count
+        if: steps.event.outputs.supported == 'true' && steps.actor.outputs.allowed == 'true' && steps.changed.outputs.has_lockfiles == 'true' && steps.changed.outputs.skip != 'true'
+        env:
+          PACKAGE_MANAGER: ${{ inputs.package-manager }}
+          AUDIT_OUTCOME: ${{ steps.audit-cmd.outcome }}
+        run: |
+          set -euo pipefail
+          RESULTS=audit-results.json
+          fail() {
+            echo "::error::Dependency Security Audit: $1. The audit failed, so nothing was sent to Claude."
+            # The prefix keeps an output line from being read as a workflow command.
+            if [ -s "$RESULTS" ]; then
+              echo "First 2000 bytes of $RESULTS:"
+              head -c 2000 "$RESULTS" | sed 's/^/  | /'
+              echo
+            fi
+            if [ -s audit-stderr.log ]; then
+              echo "Last 20 lines of the audit's stderr:"
+              tail -n 20 audit-stderr.log | sed 's/^/  | /'
+            fi
+            exit 1
+          }
+          if [ "${AUDIT_OUTCOME:-}" != success ]; then
+            fail "the audit command step ended '${AUDIT_OUTCOME:-unset}'"
+          fi
+          if [ ! -e "$RESULTS" ]; then
+            echo "The audit wrote no $RESULTS; skipping the analysis."
+            exit 0
+          fi
+          [ -s "$RESULTS" ] || fail "$PACKAGE_MANAGER audit printed nothing on stdout"
+          # yarn 1 prints one JSON value per line; -s reads them as one array.
+          jqr() {
+            if [ "$PACKAGE_MANAGER" = yarn ]; then jq -r -s "$1" "$RESULTS"; else jq -r "$1" "$RESULTS"; fi
+          }
+          jqr empty > /dev/null 2>&1 || fail "$RESULTS is not valid JSON"
+          case "$PACKAGE_MANAGER" in
+            npm | pnpm)
+              # npm's counts carry a total; pnpm's do not.
+              FILTER='.metadata.vulnerabilities | [to_entries[] | select(.key != "total") | .value] | add' ;;
+            yarn)
+              FILTER='[.[] | select(type == "object" and .type == "auditSummary")] | if length == 1 then [.[0].data.vulnerabilities[]] | add else null end' ;;
+            bun)
+              # One key per vulnerable package, each an array of advisories.
+              FILTER='if type == "object" and all(.[]; type == "array") then [.[] | length] | add // 0 else null end' ;;
+            pip)
+              FILTER='if (.dependencies | type) == "array" then [.dependencies[] | .vulns[]?] | length else null end' ;;
+            cargo)
+              FILTER='.vulnerabilities.count' ;;
+            *)
+              fail "no vulnerability count is defined for package-manager '$PACKAGE_MANAGER'" ;;
+          esac
+          COUNT="$(jqr "try ($FILTER) catch null" 2> /dev/null)" || COUNT=""
+          case "$COUNT" in
+            '' | *[!0-9]*) fail "$RESULTS carries no vulnerability count in the shape $PACKAGE_MANAGER audit prints" ;;
+          esac
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+          echo "The audit reports $COUNT vulnerabilities."
+
       - name: Claude Dependency Analysis
         id: analyze
         # has_lockfiles was computed and never read, so Claude ran on every
         # PR (an audit error message also counts as results), lockfile or not.
-        if: steps.audit-cmd.outputs.results != '' && steps.changed.outputs.has_lockfiles == 'true' && steps.changed.outputs.skip != 'true' && steps.event.outputs.supported == 'true' && steps.actor.outputs.allowed == 'true'
+        # The count gate is numeric: a skipped count step leaves the output
+        # empty, which compares as 0.
+        if: steps.audit-cmd.outputs.results != '' && steps.audit-count.outputs.count > 0 && steps.changed.outputs.has_lockfiles == 'true' && steps.changed.outputs.skip != 'true' && steps.event.outputs.supported == 'true' && steps.actor.outputs.allowed == 'true'
         # Failure here is classified by the 'Classify analysis outcome' step
         # below rather than failing the job outright.
         continue-on-error: true
@@ -525,7 +599,7 @@ jobs:
           UNSUPPORTED_EVENT: ${{ steps.event.outputs.unsupported }}
           REFUSED_ACTOR: ${{ steps.actor.outputs.refused }}
           UNCHANGED_SINCE_CLEAN: ${{ steps.changed.outputs.unchanged }}
-          NOTHING_SCANNED_REASON: 'no lockfile changed, or the audit command produced no output'
+          NOTHING_SCANNED_REASON: 'no lockfile changed, the audit reported no vulnerabilities, or the audit wrote no output'
         run: |
           set -euo pipefail
           if [ -n "${UNSUPPORTED_EVENT:-}" ]; then
