@@ -88,7 +88,7 @@ upstream-changes days="14":
 leak-check:
     #!/usr/bin/env bash
     set -euo pipefail
-    paths=(.github/workflows .github/actions)
+    paths=(.github/workflows .github/actions .github/tests scripts)
     [[ -f rulesync.jsonc ]] && paths+=(rulesync.jsonc)
     [[ -d .rulesync ]] && paths+=(.rulesync)
     if rg -in 'fvh|forumvirium' "${paths[@]}"; then
