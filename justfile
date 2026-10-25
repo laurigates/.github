@@ -211,6 +211,11 @@ changelog-usage workflow=".github/workflows/reusable-changelog-review.yml":
 container-release-tags:
     bash .github/tests/container-release-tags/run.sh
 
+# Run reusable-bun-ci.yml's extracted steps against stub bun, and the repo-wide inline-input baseline
+[group: "validate"]
+bun-ci:
+    bash .github/tests/bun-ci/run.sh
+
 # Run reusable-auto-resolve-conflicts.yml's resolve/build/publish steps against git fixtures
 [group: "validate"]
 auto-resolve-fixtures workflow=".github/workflows/reusable-auto-resolve-conflicts.yml":
