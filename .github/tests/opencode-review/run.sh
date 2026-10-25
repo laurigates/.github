@@ -27,6 +27,9 @@
 #                        warning). Re-capture both when either changes; the
 #                        wiring checks fail until the restricted one matches.
 #
+# The install cases build their release tarballs at run time instead, and the
+# tools cases derive one agent per condition from the restricted capture.
+#
 # Usage: bash .github/tests/opencode-review/run.sh [workflow]
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
@@ -81,15 +84,18 @@ STUB
 cat > "$bin/curl" <<'STUB'
 #!/usr/bin/env bash
 printf 'STUB-CURL %s\n' "$*" >> "$STUB_DIR/curl.log"
-cat > "$STUB_DIR/curl-config"
-[ "${CURL_FAIL:-}" = 1 ] && { echo 'curl: (6) Could not resolve host' >&2; exit 6; }
-o=""
+o="" w="" k=""
 while [ "$#" -gt 0 ]; do
-  case "$1" in -o) o="$2"; shift ;; esac
+  case "$1" in -o) o="$2"; shift ;; -w) w=1; shift ;; -K) k="$2"; shift ;; esac
   shift
 done
-[ -n "$o" ] && cp "$FX_MODELS" "$o"
-printf '%s' "${CURL_CODE:-200}"
+[ "$k" = - ] && cat > "$STUB_DIR/curl-config"
+[ "${CURL_FAIL:-}" = 1 ] && { echo 'curl: (6) Could not resolve host' >&2; exit 6; }
+# FX_DOWNLOAD is the release tarball for the install step, FX_MODELS the
+# model list for the model step.
+[ -n "$o" ] && cp "${FX_DOWNLOAD:-$FX_MODELS}" "$o"
+[ -n "$w" ] && printf '%s' "${CURL_CODE:-200}"
+exit 0
 STUB
 cat > "$bin/opencode" <<'STUB'
 #!/usr/bin/env bash
@@ -124,7 +130,7 @@ run_step() {
   RC=0
   ( cd "${CWD:-$PWD}" && env PATH="$bin:$PATH" STUB_DIR="$run/stub" RUNNER_TEMP="${TEMP_DIR:-$run/temp}" \
       GITHUB_OUTPUT="$run/out" GITHUB_STEP_SUMMARY="$run/summary" "$@" bash "$work/$id.sh" ) \
-    > "$run/stdout" 2>&1 || RC=$?
+    < /dev/null > "$run/stdout" 2>&1 || RC=$?
 }
 rc()     { eq "$RC" "$1" "exit status ($(head -c 300 "$run/stdout" | tr '\n' ' '))"; }
 review() { eq "$(out_of review "$run/out")" "$1" "review output"; }
@@ -265,6 +271,44 @@ has "$run/stdout" "300 or more files changed since the last review" "truncation 
 CASE=diff/sync-human-marker-only; jq '[.[1]]' "$FIX/reviews.json" > "$work/reviews-human.json"
 ACT=synchronize REVIEWS="$work/reviews-human.json" diffstep; rc 0; review true; has "$run/stdout" "no earlier OpenCode review" "a marker in a human's review is ignored"
 
+# ------------------------------------------------------------------ install
+# The stub curl serves a tarball built here whose `opencode` prints a given
+# version, so the shipped body runs the real sha256sum -c, tar and --version.
+# Each failing case breaks one check only: a tarball that is right except
+# for its digest, then one whose digest matches but whose binary reports
+# another version.
+WF_VER="$(yq "${steps}[] | select(.id == \"install\") | .env.OPENCODE_VERSION" "$WF")"
+release() { # release <name> <printed version>: builds $work/rel-<name>/opencode.tar.gz, prints its sha256
+  mkdir -p "$work/rel-$1/src"
+  printf '#!/bin/sh\necho %s\n' "$2" > "$work/rel-$1/src/opencode"
+  chmod +x "$work/rel-$1/src/opencode"
+  tar -czf "$work/rel-$1/opencode.tar.gz" -C "$work/rel-$1/src" opencode
+  python3 -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$work/rel-$1/opencode.tar.gz"
+}
+good_sha="$(release good "$WF_VER")"
+other_sha="$(release other 0.0.1)"
+near_sha="$(release near "${WF_VER}1")"
+install() {
+  run_step install OPENCODE_VERSION="$WF_VER" OPENCODE_SHA256="${SHA:-$good_sha}" \
+    FX_DOWNLOAD="$work/rel-${REL:-good}/opencode.tar.gz" GITHUB_PATH="$work/run/github-path"
+  cli="$run/temp/opencode-cli"
+}
+not_installed() {
+  ok; [ ! -s "$run/github-path" ] || fail "the CLI directory was added to GITHUB_PATH: $(cat "$run/github-path")"
+}
+CASE=install/verified; install; rc 0
+has "$run/stub/curl.log" "STUB-CURL" "curl stub ran"
+has "$run/stub/curl.log" "https://github.com/anomalyco/opencode/releases/download/v${WF_VER}/opencode-linux-x64.tar.gz" "release URL for OPENCODE_VERSION"
+eq "$(cat "$run/github-path" 2>/dev/null)" "$cli" "GITHUB_PATH entry"
+eq "$("$cli/opencode" --version 2>/dev/null)" "$WF_VER" "extracted binary"
+CASE=install/wrong-digest; SHA="$other_sha" install; rc 1; not_installed
+has "$run/stdout" "FAILED" "sha256sum -c reports the mismatch"
+ok; [ ! -e "$cli/opencode" ] || fail "a tarball that failed its digest was extracted"
+CASE=install/wrong-version; REL=other SHA="$other_sha" install; rc 1; not_installed
+error "the installed opencode reports version '0.0.1', expected $WF_VER"
+CASE=install/version-prefix; REL=near SHA="$near_sha" install; rc 1; not_installed
+error "reports version '${WF_VER}1', expected $WF_VER"
+
 # ------------------------------------------------------------------ tools
 tools() { run_step tools OPENCODE_PERMISSION="${PERM-$(yq '.jobs.review.env.OPENCODE_PERMISSION' "$WF")}" FX_AGENT="$1"; }
 CASE=tools/restricted; tools "$FIX/agent-build-restricted.json"; rc 0
@@ -279,6 +323,27 @@ tools "$work/agent-late.json"; rc 1; error "editing repository files is not deni
 CASE=tools/glob-rule
 jq '.permission += [{"permission": "*", "pattern": "l?", "action": "allow"}]' "$FIX/agent-build-restricted.json" > "$work/agent-glob.json"
 tools "$work/agent-glob.json"; rc 1; error "bash is not denied"
+# One case per condition of the check: each agent differs from the
+# restricted capture in one value, and the error must name that condition
+# and no other. "ask" counts as not denied, since only deny is safe.
+only() { eq "$(sed -n 's/^::error title=OpenCode review::the review agent is not read-only: //p' "$run/stdout")" "$1" "the only failed condition"; }
+broken() { # broken <label> <jq edit of the restricted capture> <the one expected failure>
+  CASE="tools/$1"; jq "$2" "$FIX/agent-build-restricted.json" > "$work/agent-$1.json"
+  tools "$work/agent-$1.json"; rc 1; only "$3"
+}
+rule() { printf '.permission += [{"permission": "%s", "pattern": "%s", "action": "%s"}]' "$1" "$2" "$3"; }
+broken bash-tool '.tools.bash = true' "the bash tool is enabled"
+broken webfetch-tool '.tools.webfetch = true' "the webfetch tool is enabled"
+broken websearch-tool '.tools.websearch = true' "the websearch tool is enabled"
+broken task-tool 'del(.tools.task)' "the task tool is enabled"
+broken read-off '.tools.read = false' "read or write is disabled, so the model cannot review"
+broken write-off 'del(.tools.write)' "read or write is disabled, so the model cannot review"
+broken bash-rule "$(rule bash '*' ask)" "bash is not denied"
+broken edit-rule "$(rule edit 'src/*' allow)" "editing repository files is not denied"
+broken findings-rule "$(rule edit .opencode-review/findings.json deny)" "writing .opencode-review/findings.json is not allowed"
+broken external-rule "$(rule external_directory '/proc/*' ask)" "reading outside the checkout is not denied"
+broken env-rule "$(rule read '*.env' allow)" "reading .env is not denied"
+broken webfetch-rule "$(rule webfetch '*' ask)" "webfetch is not denied"
 
 # ------------------------------------------------------------------ review
 checkout="$work/checkout"
