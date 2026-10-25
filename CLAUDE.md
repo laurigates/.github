@@ -55,7 +55,7 @@ The container workflows implement a two-phase pattern:
 1. **`reusable-container-build.yml`** (PR phase) — builds and pushes a `:next-{version}` pre-release image to GHCR during the release-please PR
 2. **`reusable-container-release.yml`** (tag phase) — resolves a single release *candidate* (promoted `:next-{version}` digest, or a rebuild), scans it, and only then creates the release tags. Optional cosign keyless signing via Sigstore
 
-The version is extracted from the version file (default: `package.json`) during build, and from the git tag (stripping `tag-prefix`) during release.
+The version is extracted from the version file (default: `package.json`) during build, and from the git tag (stripping `tag-prefix`) during release. The release tags derive from that stripped version alone, so a `tag-prefix` that does not prefix the release tag fails the run. `.github/tests/container-release-tags/run.sh` (`just container-release-tags`) pins this.
 
 #### The vulnerability scan is a publication gate, not a report
 

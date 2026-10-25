@@ -87,6 +87,8 @@ jobs:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 ```
 
+`tag-prefix` must prefix every release tag the caller triggers on: the release workflow strips it and derives all image tags from what remains (`my-app-v1.2.3` → `1.2.3`, `1.2`, `1`, `latest`; a pre-release such as `my-app-v1.2.3-rc.1` → `1.2.3-rc.1` only). A tag the prefix does not match fails the run with an `::error::`.
+
 ## Missed-Release Guard
 
 release-please can discard every commit in a push and still exit green. Its
