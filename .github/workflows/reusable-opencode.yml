@@ -2,12 +2,14 @@ name: OpenCode (Reusable)
 
 # Enables /opencode (or /oc) mentions in issue comments and PR review comments.
 #
-# The upstream action is mention-only by construction: github/index.ts opens with
-# assertContextEvent("issue_comment", "pull_request_review_comment") and throws
-# `Unsupported event type` on anything else, then throws again if the comment body
-# does not match /(?:^|\s)(?:\/opencode|\/oc)(?=$|\s)/. There is therefore no
-# pull_request-triggered "automatic review" mode to expose here — callers must wire
-# the two comment events below.
+# This workflow wires only the two comment events below. The action accepts more:
+# its action.yml runs `opencode github run`, whose handler
+# (packages/opencode/src/cli/cmd/github.handler.ts, SUPPORTED_EVENTS at v1.19.4)
+# also takes pull_request, issues, schedule and workflow_dispatch. github/index.ts,
+# which rejects every event but these two, is not what the action runs. Automatic
+# PR review is reusable-opencode-review.yml. The handler finds a mention with a
+# substring test, so the guard step below is what keeps "/october" from starting
+# a run.
 #
 # Auth: OIDC App-token exchange (id-token: write). This requires the opencode-agent
 # GitHub App (https://github.com/apps/opencode-agent) to be installed on the calling
@@ -74,9 +76,9 @@ permissions:
 jobs:
   opencode:
     # Cheap pre-filter only — the authoritative token-boundary check is the guard
-    # step below, which mirrors the action's own regex. Keeping this loose avoids
-    # false negatives; the guard prevents the action from throwing on a false
-    # positive such as "/october".
+    # step below. Keeping this loose avoids false negatives; the guard keeps a
+    # false positive such as "/october" from running the action, whose handler
+    # would accept it (it matches mentions as substrings).
     if: |
       github.event.sender.type != 'Bot' &&
       (contains(github.event.comment.body, '/oc') || contains(github.event.comment.body, '/opencode'))
@@ -107,7 +109,7 @@ jobs:
 
       - name: Run opencode
         if: steps.guard.outputs.match == 'true'
-        uses: anomalyco/opencode/github@aec0b9a6d8898f68f923aaf08b7306d931fd9d76 # v1.18.34
+        uses: anomalyco/opencode/github@148842ef7cb1bc34192b3fff57d0f9721ab9c801 # v1.19.4
         env:
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

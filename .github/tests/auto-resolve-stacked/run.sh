@@ -452,7 +452,7 @@ run_detect() {
 }
 
 # ------------------------------------------------------------ find-conflicts
-CASE_NAME=find
+CASE_NAME='find'
 new_case find
 cat > "$STUB_DIR/prs.json" <<'JSON'
 [{"number": 7, "mergeable": "CONFLICTING", "headRefName": "feature", "isCrossRepository": false},
@@ -886,7 +886,7 @@ done
 check_after_agent "PATH=$C/evil:$work/bin:$PATH"
 assert_eq "$CHECK_RC" 0 "check exit ($(stderr_tail))"
 assert_eq "$(outv outcome "$C/check.out")" resolved "check outcome"
-ok; if ls "$C"/EVIL-RAN-* >/dev/null 2>&1; then fail "the check step ran a tool from an injected PATH entry: $(ls "$C" | grep EVIL-RAN | tr '\n' ' ')"; fi
+ok; if ls "$C"/EVIL-RAN-* >/dev/null 2>&1; then fail "the check step ran a tool from an injected PATH entry: $(cd "$C" && echo EVIL-RAN-*)"; fi
 
 # The incident: both copies kept, the build catches the redefinition.
 CASE_NAME=incident
@@ -989,7 +989,7 @@ ok; [ "$RC" -ne 0 ] || fail "a cross-repository PR must not be pushed"
 not_pushed
 
 # The report reader rejects a malformed or foreign report.
-CASE_NAME=report-reader
+CASE_NAME='report-reader'
 R="$C/tmp/auto-resolve-report/report.json"
 cp "$R" "$C/report.good"
 run_read
