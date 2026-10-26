@@ -128,10 +128,10 @@ The PR-phase build's scan is **advisory by default** (`scan-mode: advisory|block
 
 #### Claude-Powered Analysis Workflows
 
-Security, quality, and accessibility workflows use `anthropics/claude-code-action@v1`. Each exposes `max-turns` (default 50) and `model` inputs — opus for deep-reasoning jobs, sonnet for the more mechanical ones:
-- **Security**: `reusable-security-{secrets,deps}.yml` (sonnet), `reusable-security-owasp.yml` (opus)
-- **Quality**: `reusable-quality-{code-smell,typescript}.yml` (sonnet), `reusable-quality-async.yml` (opus)
-- **Accessibility**: `reusable-a11y-aria.yml` (sonnet), `reusable-a11y-wcag.yml` (opus)
+Security, quality, and accessibility workflows use `anthropics/claude-code-action@v1`. Each exposes `max-turns` (default 50), `model` (default `claude-opus-5-5`) and `effort` (default `low`, passed as `--effort`; `''` omits the flag) inputs:
+- **Security**: `reusable-security-{secrets,deps,owasp}.yml`
+- **Quality**: `reusable-quality-{code-smell,typescript,async}.yml`
+- **Accessibility**: `reusable-a11y-{aria,wcag}.yml`
 
 All require `CLAUDE_CODE_OAUTH_TOKEN` secret. They analyze changed files in PRs and publish findings to the **job summary and PR file annotations** — never a PR comment. The action grants no comment tool, so a prompt asking Claude to comment only produced denials and discarded the findings (issue #47); `$GITHUB_STEP_SUMMARY` and `::warning`/`::error` both work under the `contents: read` these jobs already hold, and need nothing in `additional_permissions:`.
 
