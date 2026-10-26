@@ -12,9 +12,9 @@ name: Merge Method (Reusable)
 #     GitHub cannot tell a check which method the merge will use.
 #   - exactly one `merge:rebase` or `merge:squash` label, applied by this
 #     workflow. A label a human applies instead is an override: the decision
-#     script reads the labeled event's actor, reports OVERRIDE=<label>, and this
-#     workflow then leaves the labels alone. Remove the human label to hand the
-#     choice back. The labels themselves are provisioned by laurigates/gitops
+#     script reads the labeled event's actor and reports OVERRIDE=<label>, and
+#     this workflow keeps that label and removes the opposite one. Remove the
+#     human label to hand the choice back. The labels themselves are provisioned by laurigates/gitops
 #     (labels.tf); a repo without them still gets the check run.
 #
 # The decision is git-plugin/scripts/pr-merge-method.py in laurigates/claude-plugins,
@@ -129,9 +129,10 @@ jobs:
             echo "::error::pr-merge-method.py failed: $(get REASON)"
             exit 1
           fi
-          # A human-applied label is the decision; leave the labels as they are.
-          [ "$override" = none ] || exit 0
-
+          # No decision, no label: an unreadable or empty result posted "unknown".
+          case "$method" in rebase | squash) ;; *) exit 0 ;; esac
+          # Under an override METHOD is the human label's method, so `want` is
+          # that label and only the opposite one (the earlier bot label) goes.
           want="merge:$method"
           other="merge:squash"
           [ "$method" = rebase ] || other="merge:rebase"
