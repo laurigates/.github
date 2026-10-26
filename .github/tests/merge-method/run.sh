@@ -6,7 +6,7 @@
 # decision script itself is tested in laurigates/claude-plugins
 # (git-plugin/scripts/tests/test-pr-merge-method.sh); each case here feeds a
 # canned KEY=VALUE result and checks only what this step adds: the check run's
-# title and conclusion, the label swap, the override hands-off, a missing label
+# title and conclusion, the label swap, the override keeping only the human label, a missing label
 # not failing the run, and a script ERROR failing it after posting a neutral
 # check run.
 #
@@ -118,7 +118,24 @@ BODY_LINT=0
 STATUS=OK'
 rc_is 0
 has 'Overridden by the human-applied'
-lacks 'issues/5/labels'
+lacks 'labels[]='
+lacks 'DELETE'
+
+# The human merge:rebase sits next to the earlier bot merge:squash: keep the
+# human one, drop the other, so the PR shows exactly one.
+STUB_LABELS=$'merge:squash\nmerge:rebase' run_case override-drops-bot-label 'METHOD=rebase
+RULE=1
+REASON=override_label
+DETAIL=merge:rebase applied by a human
+OVERRIDE=merge:rebase
+TITLE=→ Rebase and merge (label override)
+COMMITS=3
+SQUASH_BODY=PR_BODY
+BODY_LINT=0
+STATUS=OK'
+rc_is 0
+has 'api -X DELETE repos/o/r/issues/5/labels/merge:squash'
+lacks 'labels[]='
 
 STUB_LABEL_MISSING=1 run_case label-missing "$REBASE"
 rc_is 0
