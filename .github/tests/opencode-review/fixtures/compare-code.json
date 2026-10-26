@@ -1,0 +1,8 @@
+{
+  "status": "ahead",
+  "files": [
+    { "filename": "src/stats.py", "status": "modified", "additions": 1, "deletions": 1, "changes": 2, "patch": "@@ -2,3 +2,3 @@ def mean(xs):\n     total = 0\n-    for i in range(0, len(xs)):\n+    for i in range(1, len(xs)):\n         total += xs[i]" },
+    { "filename": "lib/from_main.py", "status": "added", "additions": 1, "deletions": 0, "changes": 1, "patch": "@@ -0,0 +1 @@\n+x = 1" },
+    { "filename": "README.md", "status": "modified", "additions": 1, "deletions": 0, "changes": 1, "patch": "@@ -1 +1,2 @@\n # example\n+tweak" }
+  ]
+}
