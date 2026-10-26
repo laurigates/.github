@@ -13,6 +13,8 @@
 #               actionlint_version and is X.Y.Z; ACTIONLINT_SHA256 is 64 hex
 #               characters and the step that downloads the binary checks it
 #               with `sha256sum -c`. The justfile runs no tool at @latest.
+#   ShellCheck  the same checks as actionlint, for SHELLCHECK_VERSION /
+#               SHELLCHECK_SHA256 and the justfile's shellcheck_version.
 #
 # Nothing here tracks these versions automatically (this repo has no
 # renovate.json); a bump edits every site, and this test fails until they agree.
@@ -112,40 +114,49 @@ check(len(rs_versions) == 1,
       f"expected one rulesync version everywhere, found {rs_versions}: "
       + ", ".join(f"{p}:{n}={v}" for p, n, v in sorted(set(rulesync_sites))))
 
-# --------------------------------------------------------------- actionlint
-jv = just_var("actionlint_version")
-check(jv is not None and SEMVER.match(jv or ""), f"justfile: actionlint_version := \"X.Y.Z\" missing or not exact (got {jv!r})")
-check(re.search(r"actionlint@\{\{\s*actionlint_version\s*\}\}", justfile) is not None,
-      "justfile: actionlint is not run at {{ actionlint_version }}")
+# ------------------------------------------------- actionlint, shellcheck
 for m in re.finditer(r"@latest\b", justfile):
     failures.append(f"justfile:{lineno(justfile, m.start())}: a tool is run at @latest; pin it")
 assertions += 1
 
-found_lint = False
-shas = set()
-for path in workflows:
-    text = read(path)
-    for m in re.finditer(r"^[ \t]*ACTIONLINT_VERSION:[ \t]*(\S+)[ \t]*$", text, re.M):
-        v = m.group(1).strip("'\"")
-        where = f"{path}:{lineno(text, m.start())}"
-        found_lint = found_lint or path == ".github/workflows/lint.yml"
-        check(SEMVER.match(v), f"{where}: ACTIONLINT_VERSION {v!r} is not an exact X.Y.Z version")
-        check(v == jv, f"{where}: ACTIONLINT_VERSION {v} != justfile actionlint_version {jv}")
-    for m in re.finditer(r"^[ \t]*ACTIONLINT_SHA256:[ \t]*(\S+)[ \t]*$", text, re.M):
-        s = m.group(1).strip("'\"")
-        check(re.fullmatch(r"[0-9a-f]{64}", s), f"{path}:{lineno(text, m.start())}: ACTIONLINT_SHA256 is not 64 lowercase hex characters")
-        shas.add(s)
-    body = yq('[.jobs[].steps[] | select(.env.ACTIONLINT_VERSION != null) | .run] | join("\\n---\\n")', path)
-    if body.strip():
-        check("${ACTIONLINT_SHA256}" in body and "sha256sum -c" in body,
-              f"{path}: the step with ACTIONLINT_VERSION does not verify ${{ACTIONLINT_SHA256}} with sha256sum -c")
-check(found_lint, ".github/workflows/lint.yml has no ACTIONLINT_VERSION")
-check(len(shas) == 1, f"ACTIONLINT_SHA256 is missing or differs between workflows: {sorted(shas)}")
+
+def check_binary_pin(tool):
+    """lint.yml downloads <tool> at <TOOL>_VERSION, verified against
+    <TOOL>_SHA256; the justfile runs it at {{ <tool>_version }}."""
+    env = tool.upper()
+    jv = just_var(f"{tool}_version")
+    check(jv is not None and SEMVER.match(jv or ""), f"justfile: {tool}_version := \"X.Y.Z\" missing or not exact (got {jv!r})")
+    check(re.search(rf"{tool}@\{{\{{\s*{tool}_version\s*\}}\}}", justfile) is not None,
+          f"justfile: {tool} is not run at {{{{ {tool}_version }}}}")
+    found_lint = False
+    shas = set()
+    for path in workflows:
+        text = read(path)
+        for m in re.finditer(rf"^[ \t]*{env}_VERSION:[ \t]*(\S+)[ \t]*$", text, re.M):
+            v = m.group(1).strip("'\"")
+            where = f"{path}:{lineno(text, m.start())}"
+            found_lint = found_lint or path == ".github/workflows/lint.yml"
+            check(SEMVER.match(v), f"{where}: {env}_VERSION {v!r} is not an exact X.Y.Z version")
+            check(v == jv, f"{where}: {env}_VERSION {v} != justfile {tool}_version {jv}")
+        for m in re.finditer(rf"^[ \t]*{env}_SHA256:[ \t]*(\S+)[ \t]*$", text, re.M):
+            s = m.group(1).strip("'\"")
+            check(re.fullmatch(r"[0-9a-f]{64}", s), f"{path}:{lineno(text, m.start())}: {env}_SHA256 is not 64 lowercase hex characters")
+            shas.add(s)
+        body = yq(f'[.jobs[].steps[] | select(.env.{env}_VERSION != null) | .run] | join("\\n---\\n")', path)
+        if body.strip():
+            check(f"${{{env}_SHA256}}" in body and "sha256sum -c" in body,
+                  f"{path}: the step with {env}_VERSION does not verify ${{{env}_SHA256}} with sha256sum -c")
+    check(found_lint, f".github/workflows/lint.yml has no {env}_VERSION")
+    check(len(shas) == 1, f"{env}_SHA256 is missing or differs between workflows: {sorted(shas)}")
+    return jv
+
+
+pins = {tool: check_binary_pin(tool) for tool in ("actionlint", "shellcheck")}
 
 if failures:
     for f in failures:
         print(f"FAIL: {NAME}: {f}", file=sys.stderr)
     sys.exit(1)
-print(f"pins: rulesync {rs_versions[0]}, actionlint {jv}")
+print(f"pins: rulesync {rs_versions[0]}, " + ", ".join(f"{t} {v}" for t, v in pins.items()))
 print(f"PASS: {NAME} ({assertions} assertion(s))")
 PY
