@@ -14,6 +14,7 @@ components:
   gitignore: "2025.1"
   editor: "2025.1"
   mcp: "2025.1"
+  claude-plugins: "2025.1"
   tests: "2025.1"
   justfile: "2025.1"
   readme: "2025.1"
@@ -26,5 +27,3 @@ deviations:
     reason: The gates run through `just lint` / `just test` and lint.yml; no hook layer.
   - component: mise
     reason: Tool versions are pinned in justfile and lint.yml and kept equal by the tool-pins test.
-  - component: claude-plugins
-    reason: .claude/settings.json not yet added; CI sessions take plugins from claude.yml.
