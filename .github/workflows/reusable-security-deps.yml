@@ -235,8 +235,10 @@ jobs:
         # pip-audit prints its summary line to stderr on every run, and npm,
         # bun and cargo print their errors there, so with `2>&1` the results
         # file was not JSON. 'Count audit vulnerabilities' parses it.
+        env:
+          PACKAGE_MANAGER: ${{ inputs.package-manager }}
         run: |
-          case "${{ inputs.package-manager }}" in
+          case "$PACKAGE_MANAGER" in
             npm)
               npm audit --json > audit-results.json 2> audit-stderr.log || true
               ;;

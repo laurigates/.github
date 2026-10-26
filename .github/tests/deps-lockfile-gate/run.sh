@@ -123,14 +123,13 @@ if grep -qF '${{' "$work/count.sh"; then fail "audit-count interpolates an expre
 # The audit step must keep stderr out of audit-results.json: pip-audit prints
 # its summary there on every run, and npm, bun and cargo their errors. Its
 # body is run with stub tools that print JSON on stdout and text on stderr;
-# its one expression, the package-manager input, becomes $PM.
+# the package-manager input arrives as $PACKAGE_MANAGER.
 CASE=audit-stderr
-yq '[.jobs.*.steps[] | select(.id == "audit-cmd")] | .[0].run // ""' "$WORKFLOW" \
-  | sed 's/\${{ inputs\.package-manager }}/${PM}/' > "$work/audit.sh"
+yq '[.jobs.*.steps[] | select(.id == "audit-cmd")] | .[0].run // ""' "$WORKFLOW" > "$work/audit.sh"
 ok; [ -s "$work/audit.sh" ] || fail "no run: body for the step with id 'audit-cmd'"
 ok
 # shellcheck disable=SC2016
-if grep -qF '${{' "$work/audit.sh"; then fail "audit-cmd has an expression besides inputs.package-manager"; fi
+if grep -qF '${{' "$work/audit.sh"; then fail "audit-cmd's run: body holds a \${{ }} expression; bind it through env:"; fi
 stubs="$work/stubs"
 mkdir -p "$stubs"
 for tool in npm bun pnpm yarn pip-audit cargo; do
@@ -155,7 +154,7 @@ for PM in npm bun pnpm yarn pip cargo; do
   : > "$work/audit-out"
   : > "$work/stub-log"
   rc=0
-  (cd "$dir" && PM="$PM" PATH="$stubs:$PATH" STUB_LOG="$work/stub-log" GITHUB_OUTPUT="$work/audit-out" bash "$work/audit.sh") \
+  (cd "$dir" && PACKAGE_MANAGER="$PM" PATH="$stubs:$PATH" STUB_LOG="$work/stub-log" GITHUB_OUTPUT="$work/audit-out" bash "$work/audit.sh") \
     > "$work/stdout" 2>&1 || rc=$?
   ok; [ "$rc" = 0 ] || fail "audit step exited $rc: $(head -c 200 "$work/stdout")"
   ok; grep -qx "$tool" "$work/stub-log" || fail "the $tool stub did not run, so the real tool may have"
