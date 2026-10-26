@@ -1,0 +1,2 @@
+error: missing lockfile, nothing to audit
+note: run 'bun install' first

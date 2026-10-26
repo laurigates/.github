@@ -115,16 +115,91 @@ jobs:
               ;;
           esac
 
-      - name: Checkout repository
+      # claude-code-action refuses a bot actor that allowed-bots does not
+      # list ("Workflow initiated by non-human actor"), and the refusal
+      # failed this job red on every Renovate PR without Claude running. This
+      # step applies the action's rule first: a login ending in [bot] is a
+      # bot, names compare lowercase with the [bot] suffix and surrounding
+      # spaces dropped, and '*' admits every bot. A refused actor skips
+      # everything up to the analysis, and the shared 'Report that nothing
+      # was scanned' step says why. The action itself decides by account
+      # type, so a bot whose login lacks the suffix still reaches it.
+      - name: Check actor is allowed
+        id: actor
         if: steps.event.outputs.supported == 'true'
+        env:
+          ACTOR: ${{ github.actor }}
+          ALLOWED_BOTS: ${{ inputs.allowed-bots }}
+        run: |
+          set -euo pipefail
+          trim() { local s="$1"; s="${s#"${s%%[![:space:]]*}"}"; printf '%s' "${s%"${s##*[![:space:]]}"}"; }
+          actor="$(printf '%s' "${ACTOR:-}" | tr '[:upper:]' '[:lower:]')"
+          name="${actor%\[bot\]}"
+          allowed=false
+          if [ "$name" = "$actor" ]; then
+            allowed=true
+          elif [ "$(trim "${ALLOWED_BOTS:-}")" = '*' ]; then
+            allowed=true
+          else
+            IFS=, read -r -a bots <<<"$(printf '%s' "${ALLOWED_BOTS:-}" | tr '[:upper:]' '[:lower:]')"
+            for bot in "${bots[@]}"; do
+              bot="$(trim "$bot")"
+              bot="${bot%\[bot\]}"
+              if [ -n "$bot" ] && [ "$bot" = "$name" ]; then allowed=true; fi
+            done
+          fi
+          if [ "$allowed" = true ]; then
+            echo "allowed=true" >> "$GITHUB_OUTPUT"
+          else
+            # A login is [A-Za-z0-9-] plus the suffix; anything else is dropped
+            # before it reaches GITHUB_OUTPUT or a workflow command.
+            shown="$(printf '%s' "${ACTOR:-}" | tr -cd 'A-Za-z0-9_.[]-')"
+            { echo "allowed=false"; echo "refused=${shown}"; } >> "$GITHUB_OUTPUT"
+            echo "Actor '${shown}' is a bot that allowed-bots does not list; skipping everything up to the analysis."
+          fi
+
+      - name: Checkout repository
+        if: steps.event.outputs.supported == 'true' && steps.actor.outputs.allowed == 'true'
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      # Incremental re-scan on a PR push (synchronize): when the previous PR
+      # head was analysed clean, only the PR files this push changed need
+      # analysing again. A one-byte cache entry keyed on that head is the
+      # proof; `Check whether this scan was clean` decides when to write
+      # one. Its key carries this workflow's name and a hash of every input,
+      # so a marker from another scan or another configuration never
+      # counts. Caches a PR run writes are readable by its later runs and by
+      # no other PR. No marker, a force-push, or any lookup failure falls
+      # back to the whole PR.
+      - name: Key the clean-scan marker
+        id: scankey
+        if: steps.event.outputs.supported == 'true' && steps.actor.outputs.allowed == 'true'
+        env:
+          SCAN: 'quality-code-smell'
+          INPUTS_JSON: ${{ toJSON(inputs) }}
+        run: |
+          set -euo pipefail
+          h="$(printf '%s' "$INPUTS_JSON" | sha256sum | cut -c1-16)"
+          echo "prefix=analysis-clean-v1-${SCAN}-${h}" >> "$GITHUB_OUTPUT"
+
+      - name: Look up a clean scan of the previous head
+        id: prior
+        if: steps.event.outputs.supported == 'true' && steps.actor.outputs.allowed == 'true' && github.event_name == 'pull_request' && github.event.action == 'synchronize'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/analysis-clean-marker
+          key: ${{ steps.scankey.outputs.prefix }}-${{ github.event.before }}
+          lookup-only: true
+
       - name: Get changed files
         id: changed
-        if: steps.event.outputs.supported == 'true'
+        if: steps.event.outputs.supported == 'true' && steps.actor.outputs.allowed == 'true'
         env:
+          PRIOR_CLEAN: ${{ steps.prior.outputs.cache-hit }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.pull_request.head.sha }}
           EVENT_NAME: ${{ github.event_name }}
           BASE_REF: ${{ github.base_ref }}
           FILE_PATTERNS: ${{ inputs.file-patterns }}
@@ -140,7 +215,26 @@ jobs:
           # Unquoted on purpose: space-separated pathspecs, and `set -f`
           # above keeps the shell from globbing them before git sees them.
           ALL_FILES=$(git diff --name-only "$RANGE" -- $FILE_PATTERNS 2>/dev/null || echo "")
+          # Incremental re-scan (see 'Key the clean-scan marker'): when the
+          # previous head was scanned clean and this push fast-forwards it,
+          # keep only the PR files the push changed. Intersecting with the
+          # PR's own files drops what a merge from the base brought in.
+          UNCHANGED=false
+          NARROWED=false
+          if [ "${PRIOR_CLEAN:-}" = "true" ] && [ -n "$ALL_FILES" ] \
+             && git merge-base --is-ancestor "$BEFORE" "$AFTER" 2>/dev/null \
+             && INC=$(git diff --name-only "$BEFORE" "$AFTER" -- $FILE_PATTERNS 2>/dev/null); then
+            PR_TOTAL=$(echo "$ALL_FILES" | grep -c '.' || true)
+            ALL_FILES=$(LC_ALL=C comm -12 <(printf '%s\n' "$ALL_FILES" | LC_ALL=C sort -u) <(printf '%s\n' "$INC" | LC_ALL=C sort -u) | sed '/^$/d')
+            NARROWED=true
+            if [ -z "$ALL_FILES" ]; then UNCHANGED=true; fi
+            MSG="Code Smell Detection: the previous head ${BEFORE:0:12} was scanned clean; re-scanning the $(echo "$ALL_FILES" | grep -c '.' || true) of $PR_TOTAL PR file(s) this push changed"
+            echo "::notice::$MSG"
+            echo "$MSG" >> "$GITHUB_STEP_SUMMARY"
+          fi
           set +f
+          echo "unchanged=$UNCHANGED" >> $GITHUB_OUTPUT
+          echo "narrowed=$NARROWED" >> $GITHUB_OUTPUT
           FILES=$(echo "$ALL_FILES" | head -n "$FILE_LIMIT" || true)
           TOTAL_FILES=$(echo "$ALL_FILES" | grep -c '.' || true)
           FILE_COUNT=$(echo "$FILES" | grep -c '.' || true)
@@ -167,7 +261,7 @@ jobs:
           echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Diff-size skip notice
-        if: steps.event.outputs.supported == 'true' && steps.changed.outputs.skip == 'true'
+        if: steps.event.outputs.supported == 'true' && steps.changed.outputs.skip == 'true' && steps.actor.outputs.allowed == 'true'
         run: |
           MSG="Code Smell Detection: skipping Claude analysis — PR diff ${{ steps.changed.outputs.diff_lines }} lines exceeds max-diff-lines ${{ inputs.max-diff-lines }}"
           echo "::notice::$MSG"
@@ -175,7 +269,7 @@ jobs:
 
       - name: Claude Code Smell Analysis
         id: analyze
-        if: steps.changed.outputs.count != '0' && steps.changed.outputs.skip != 'true' && steps.event.outputs.supported == 'true'
+        if: steps.changed.outputs.count != '0' && steps.changed.outputs.skip != 'true' && steps.event.outputs.supported == 'true' && steps.actor.outputs.allowed == 'true'
         # Failure here is classified by the 'Classify analysis outcome' step
         # below rather than failing the job outright.
         continue-on-error: true
@@ -426,13 +520,19 @@ jobs:
           TITLE: 'Code Smell Detection'
           SKIPPED_FOR_SIZE: ${{ steps.changed.outputs.skip }}
           UNSUPPORTED_EVENT: ${{ steps.event.outputs.unsupported }}
+          REFUSED_ACTOR: ${{ steps.actor.outputs.refused }}
+          UNCHANGED_SINCE_CLEAN: ${{ steps.changed.outputs.unchanged }}
           NOTHING_SCANNED_REASON: 'no changed file matched the configured patterns'
         run: |
           set -euo pipefail
           if [ -n "${UNSUPPORTED_EVENT:-}" ]; then
             REASON="this workflow does not support the '$UNSUPPORTED_EVENT' trigger (anthropics/claude-code-action rejects it); call it from pull_request"
+          elif [ -n "${REFUSED_ACTOR:-}" ]; then
+            REASON="the actor '$REFUSED_ACTOR' is a bot that allowed-bots does not list, and anthropics/claude-code-action refuses it"
           elif [ "${SKIPPED_FOR_SIZE:-false}" = "true" ]; then
             REASON="the PR diff exceeded max-diff-lines, so the diff-size gate skipped the analysis"
+          elif [ "${UNCHANGED_SINCE_CLEAN:-}" = "true" ]; then
+            REASON="no PR file in the configured patterns changed since the previous head, which was scanned clean"
           else
             REASON="${NOTHING_SCANNED_REASON:-the analysis step did not run}"
           fi
@@ -537,3 +637,42 @@ jobs:
             *)
               fail "Claude's run ended with result subtype '$SUBTYPE' after $TURNS turns.${ERRORS:+ Errors: $ERRORS}" ;;
           esac
+
+      # Writes the marker the next push's lookup reads, keyed on this head.
+      # Runs only on a pull_request and only when every step above passed,
+      # and calls the scan clean only when Claude analysed every file it was
+      # given (no truncation) and its result has no finding and no non-zero
+      # count, or when no PR file had changed since a clean previous head.
+      # The payload file is the one the shared publish block extracts.
+      - name: Check whether this scan was clean
+        id: clean
+        if: github.event_name == 'pull_request' && steps.scankey.outputs.prefix != ''
+        env:
+          ANALYZE_OUTCOME: ${{ steps.analyze.outcome }}
+          DEGRADED: ${{ steps.publish.outputs.degraded }}
+          TRUNCATED: ${{ steps.changed.outputs.truncated }}
+          UNCHANGED: ${{ steps.changed.outputs.unchanged }}
+        run: |
+          set -euo pipefail
+          payload="$RUNNER_TEMP/publish-findings-input.json"
+          clean=false
+          if [ "${UNCHANGED:-}" = true ]; then
+            clean=true
+          elif [ "${ANALYZE_OUTCOME:-}" = success ] && [ "${DEGRADED:-}" = false ] && [ "${TRUNCATED:-}" = false ] \
+               && jq -e 'type == "object" and ((.findings // []) | length) == 0
+                         and ([to_entries[] | .value | numbers | select(. != 0)] | length) == 0' "$payload" >/dev/null 2>&1; then
+            clean=true
+          fi
+          if [ "$clean" = true ]; then
+            mkdir -p "$RUNNER_TEMP/analysis-clean-marker"
+            printf '%s\n' "$GITHUB_SHA" > "$RUNNER_TEMP/analysis-clean-marker/scanned"
+          fi
+          echo "clean=$clean" >> "$GITHUB_OUTPUT"
+          echo "Clean-scan marker for this head: $clean"
+
+      - name: Record a clean scan
+        if: steps.clean.outputs.clean == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/analysis-clean-marker
+          key: ${{ steps.scankey.outputs.prefix }}-${{ github.event.pull_request.head.sha }}
