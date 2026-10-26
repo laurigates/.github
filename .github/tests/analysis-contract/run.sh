@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Regression test for laurigates/.github#65 (upstream
-# ForumViriumHelsinki/.github#115 §2): the request half of the fix. The
+# Regression test for laurigates/.github#65 (the upstream org issue's
+# §2): the request half of the fix. The
 # publish block (publish-findings) and the verdict step (analysis-verdict)
 # only help if findings reach them, and that depends on three things in each
 # workflow that neither of those tests reads:
