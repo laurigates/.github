@@ -128,6 +128,16 @@ on:
         required: false
         type: string
         default: ''
+      allowed_bots:
+        description: >-
+          Comma-separated bot logins, no spaces, that may trigger the fix (e.g.
+          'claude[bot],laurigates-renovate[bot]'), or '*' for any bot. Passed to
+          claude-code-action, which refuses any other bot actor, and also checked
+          by the job's `if:` first so that a refused bot starts no runner. Name
+          each bot by its full login, `[bot]` included.
+        required: false
+        type: string
+        default: 'claude[bot],claude'
       plugins:
         description: 'Claude Code plugins to load'
         required: false
@@ -170,6 +180,17 @@ permissions:
 
 jobs:
   auto-fix:
+    # claude-code-action refuses a bot actor that allowed_bots does not list,
+    # after the job has checked out the branch with full history and
+    # computed a signature, and the run goes red with no fix and no issue:
+    # 66 runs on Renovate and release-please failures in mcu-tinkering-lab
+    # over 30 days, from a caller without its own actor `if:`. This gate
+    # skips the job instead. Expressions cannot strip the `[bot]` suffix, so
+    # it matches full logins only; the input says so.
+    if: >-
+      !endsWith(github.actor, '[bot]')
+      || inputs.allowed_bots == '*'
+      || contains(format(',{0},', inputs.allowed_bots), format(',{0},', github.actor))
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.timeout_minutes }}
     steps:
@@ -535,7 +556,7 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          allowed_bots: "claude[bot],claude"
+          allowed_bots: ${{ inputs.allowed_bots }}
           # The tool boundary belongs in `--allowedTools`. It used to sit in
           # `additional_permissions:`, but that input takes a GitHub permissions
           # MAP ("actions: read"), not a Claude tool list — so the list was inert,

@@ -1,0 +1,50 @@
+[
+  {
+    "filename": "src/stats.py",
+    "status": "modified",
+    "additions": 4,
+    "deletions": 1,
+    "changes": 5,
+    "patch": "@@ -1,2 +1,5 @@\n def mean(xs):\n-    return sum(xs) / len(xs)\n+    total = 0\n+    for i in range(1, len(xs)):\n+        total += xs[i]\n+    return total / len(xs)"
+  },
+  {
+    "filename": "src/new_helper.py",
+    "status": "renamed",
+    "previous_filename": "src/old_helper.py",
+    "additions": 1,
+    "deletions": 1,
+    "changes": 2,
+    "patch": "@@ -10,3 +10,3 @@ def helper():\n     a = 1\n-    b = 2\n+    b = 3\n     return a + b"
+  },
+  {
+    "filename": "src/legacy.py",
+    "status": "removed",
+    "additions": 0,
+    "deletions": 2,
+    "changes": 2,
+    "patch": "@@ -1,2 +0,0 @@\n-def legacy():\n-    pass"
+  },
+  {
+    "filename": "assets/logo.png",
+    "status": "added",
+    "additions": 0,
+    "deletions": 0,
+    "changes": 0
+  },
+  {
+    "filename": "README.md",
+    "status": "modified",
+    "additions": 2,
+    "deletions": 0,
+    "changes": 2,
+    "patch": "@@ -1 +1,3 @@\n # example\n+\n+Now with a mean."
+  },
+  {
+    "filename": "Cargo.lock",
+    "status": "modified",
+    "additions": 5000,
+    "deletions": 0,
+    "changes": 5000,
+    "patch": "@@ -1 +1,2 @@\n version = 3\n+# (5000 lines elided in this fixture)"
+  }
+]

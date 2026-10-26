@@ -22,7 +22,12 @@ on:
         description: 'Claude model to use'
         required: false
         type: string
-        default: 'sonnet'
+        default: 'claude-opus-5-5'
+      effort:
+        description: "Claude effort level, passed as --effort. Set to '' to omit the flag"
+        required: false
+        type: string
+        default: 'low'
       allowed-bots:
         description: "Comma-separated bot usernames allowed to trigger analysis, or '*' for any bot. Defaults to '*' because dependency PRs are bot-authored and re-runs replay the original bot-sender event"
         required: false
@@ -105,21 +110,64 @@ jobs:
               ;;
           esac
 
-      - name: Checkout repository
+      # claude-code-action refuses a bot actor that allowed-bots does not
+      # list ("Workflow initiated by non-human actor"), and the refusal
+      # failed this job red on every Renovate PR without Claude running. This
+      # step applies the action's rule first: a login ending in [bot] is a
+      # bot, names compare lowercase with the [bot] suffix and surrounding
+      # spaces dropped, and '*' admits every bot. A refused actor skips
+      # everything up to the analysis, and the shared 'Report that nothing
+      # was scanned' step says why. The action itself decides by account
+      # type, so a bot whose login lacks the suffix still reaches it.
+      - name: Check actor is allowed
+        id: actor
         if: steps.event.outputs.supported == 'true'
+        env:
+          ACTOR: ${{ github.actor }}
+          ALLOWED_BOTS: ${{ inputs.allowed-bots }}
+        run: |
+          set -euo pipefail
+          trim() { local s="$1"; s="${s#"${s%%[![:space:]]*}"}"; printf '%s' "${s%"${s##*[![:space:]]}"}"; }
+          actor="$(printf '%s' "${ACTOR:-}" | tr '[:upper:]' '[:lower:]')"
+          name="${actor%\[bot\]}"
+          allowed=false
+          if [ "$name" = "$actor" ]; then
+            allowed=true
+          elif [ "$(trim "${ALLOWED_BOTS:-}")" = '*' ]; then
+            allowed=true
+          else
+            IFS=, read -r -a bots <<<"$(printf '%s' "${ALLOWED_BOTS:-}" | tr '[:upper:]' '[:lower:]')"
+            for bot in "${bots[@]}"; do
+              bot="$(trim "$bot")"
+              bot="${bot%\[bot\]}"
+              if [ -n "$bot" ] && [ "$bot" = "$name" ]; then allowed=true; fi
+            done
+          fi
+          if [ "$allowed" = true ]; then
+            echo "allowed=true" >> "$GITHUB_OUTPUT"
+          else
+            # A login is [A-Za-z0-9-] plus the suffix; anything else is dropped
+            # before it reaches GITHUB_OUTPUT or a workflow command.
+            shown="$(printf '%s' "${ACTOR:-}" | tr -cd 'A-Za-z0-9_.[]-')"
+            { echo "allowed=false"; echo "refused=${shown}"; } >> "$GITHUB_OUTPUT"
+            echo "Actor '${shown}' is a bot that allowed-bots does not list; skipping everything up to the analysis."
+          fi
+
+      - name: Checkout repository
+        if: steps.event.outputs.supported == 'true' && steps.actor.outputs.allowed == 'true'
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - name: Check for lockfile changes
         id: changed
-        if: steps.event.outputs.supported == 'true'
+        if: steps.event.outputs.supported == 'true' && steps.actor.outputs.allowed == 'true'
         env:
           EVENT_NAME: ${{ github.event_name }}
           BASE_REF: ${{ github.base_ref }}
           MAX_DIFF_LINES: ${{ inputs.max-diff-lines }}
         run: |
-          LOCKFILES="package-lock.json bun.lockb pnpm-lock.yaml yarn.lock Cargo.lock requirements.txt poetry.lock Pipfile.lock"
+          LOCKFILES="package-lock.json bun.lock bun.lockb pnpm-lock.yaml yarn.lock Cargo.lock requirements.txt poetry.lock Pipfile.lock uv.lock"
           CHANGED=""
 
           if [ "$EVENT_NAME" = "pull_request" ]; then
@@ -158,59 +206,75 @@ jobs:
           fi
 
       - name: Diff-size skip notice
-        if: steps.event.outputs.supported == 'true' && steps.changed.outputs.skip == 'true'
+        if: steps.event.outputs.supported == 'true' && steps.changed.outputs.skip == 'true' && steps.actor.outputs.allowed == 'true'
         run: |
           MSG="Dependency Security Audit: skipping Claude analysis — PR diff ${{ steps.changed.outputs.diff_lines }} lines exceeds max-diff-lines ${{ inputs.max-diff-lines }}"
           echo "::notice::$MSG"
           echo "$MSG" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Setup Node.js
-        if: steps.event.outputs.supported == 'true' && contains(fromJSON('["npm", "bun", "pnpm", "yarn"]'), inputs.package-manager)
+        if: steps.event.outputs.supported == 'true' && contains(fromJSON('["npm", "bun", "pnpm", "yarn"]'), inputs.package-manager) && steps.actor.outputs.allowed == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
       - name: Setup Bun
-        if: steps.event.outputs.supported == 'true' && inputs.package-manager == 'bun'
+        if: steps.event.outputs.supported == 'true' && inputs.package-manager == 'bun' && steps.actor.outputs.allowed == 'true'
         uses: oven-sh/setup-bun@v1
 
       - name: Setup Python
-        if: steps.event.outputs.supported == 'true' && inputs.package-manager == 'pip'
+        if: steps.event.outputs.supported == 'true' && inputs.package-manager == 'pip' && steps.actor.outputs.allowed == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: '3.x'
 
       - name: Setup Rust
-        if: steps.event.outputs.supported == 'true' && inputs.package-manager == 'cargo'
+        if: steps.event.outputs.supported == 'true' && inputs.package-manager == 'cargo' && steps.actor.outputs.allowed == 'true'
         uses: dtolnay/rust-toolchain@stable
 
       - name: Run audit command
         id: audit-cmd
-        if: steps.event.outputs.supported == 'true'
+        if: steps.event.outputs.supported == 'true' && steps.actor.outputs.allowed == 'true'
         continue-on-error: true
+        # stderr goes to audit-stderr.log, not into audit-results.json.
+        # pip-audit prints its summary line to stderr on every run, and npm,
+        # bun and cargo print their errors there, so with `2>&1` the results
+        # file was not JSON. 'Count audit vulnerabilities' parses it.
+        env:
+          PACKAGE_MANAGER: ${{ inputs.package-manager }}
         run: |
-          case "${{ inputs.package-manager }}" in
+          case "$PACKAGE_MANAGER" in
             npm)
-              npm audit --json > audit-results.json 2>&1 || true
+              npm audit --json > audit-results.json 2> audit-stderr.log || true
               ;;
             bun)
               # bun audit reads bun.lock natively (Bun >=1.2.15); no install needed.
               # npm audit ENOLOCKs here since the repo has no package-lock.json.
-              bun audit --json > audit-results.json 2>&1 || true
+              bun audit --json > audit-results.json 2> audit-stderr.log || true
               ;;
             pnpm)
-              pnpm audit --json > audit-results.json 2>&1 || true
+              pnpm audit --json > audit-results.json 2> audit-stderr.log || true
               ;;
             yarn)
-              yarn audit --json > audit-results.json 2>&1 || true
+              yarn audit --json > audit-results.json 2> audit-stderr.log || true
               ;;
             pip)
-              pip install pip-audit > /dev/null 2>&1
-              pip-audit --format json > audit-results.json 2>&1 || true
+              # A bare `pip-audit` audits the runner's own environment, not
+              # the project. Audit the requirements file, else the project.
+              pip install pip-audit > /dev/null || { echo "::error::pip-audit failed to install"; exit 1; }
+              if [ -f requirements.txt ]; then
+                pip-audit -r requirements.txt --format json > audit-results.json 2> audit-stderr.log || true
+              elif [ -f pyproject.toml ]; then
+                pip-audit --format json . > audit-results.json 2> audit-stderr.log || true
+              else
+                echo "::warning::package-manager is pip, but there is no requirements.txt or pyproject.toml to audit"
+              fi
               ;;
             cargo)
-              cargo install cargo-audit > /dev/null 2>&1
-              cargo audit --json > audit-results.json 2>&1 || true
+              # An install failure used to be discarded, and its error text
+              # reached Claude as "audit results".
+              cargo install --locked cargo-audit > /dev/null || { echo "::error::cargo-audit failed to install"; exit 1; }
+              cargo audit --json > audit-results.json 2> audit-stderr.log || true
               ;;
           esac
 
@@ -220,9 +284,81 @@ jobs:
             echo "EOF" >> $GITHUB_OUTPUT
           fi
 
+      # Any non-empty audit output used to reach Claude: a report with zero
+      # vulnerabilities, and the error text of an audit that never ran (npm
+      # ENOLOCK). This step reads the vulnerability count from the report
+      # each manager prints (npm 11, pnpm 10, yarn 1, bun 1.4, pip-audit 2.10
+      # and cargo-audit 0.22; real output is in the deps-lockfile-gate
+      # fixtures), and Claude runs only when it is above 0. A failed audit
+      # step, empty output, output that is not JSON, and JSON with no count
+      # (an error object) fail the job instead of reaching the model. No
+      # file at all skips: only the pip branch writes none, after a warning.
+      - name: Count audit vulnerabilities
+        id: audit-count
+        if: steps.event.outputs.supported == 'true' && steps.actor.outputs.allowed == 'true' && steps.changed.outputs.has_lockfiles == 'true' && steps.changed.outputs.skip != 'true'
+        env:
+          PACKAGE_MANAGER: ${{ inputs.package-manager }}
+          AUDIT_OUTCOME: ${{ steps.audit-cmd.outcome }}
+        run: |
+          set -euo pipefail
+          RESULTS=audit-results.json
+          fail() {
+            echo "::error::Dependency Security Audit: $1. The audit failed, so nothing was sent to Claude."
+            # The prefix keeps an output line from being read as a workflow command.
+            if [ -s "$RESULTS" ]; then
+              echo "First 2000 bytes of $RESULTS:"
+              head -c 2000 "$RESULTS" | sed 's/^/  | /'
+              echo
+            fi
+            if [ -s audit-stderr.log ]; then
+              echo "Last 20 lines of the audit's stderr:"
+              tail -n 20 audit-stderr.log | sed 's/^/  | /'
+            fi
+            exit 1
+          }
+          if [ "${AUDIT_OUTCOME:-}" != success ]; then
+            fail "the audit command step ended '${AUDIT_OUTCOME:-unset}'"
+          fi
+          if [ ! -e "$RESULTS" ]; then
+            echo "The audit wrote no $RESULTS; skipping the analysis."
+            exit 0
+          fi
+          [ -s "$RESULTS" ] || fail "$PACKAGE_MANAGER audit printed nothing on stdout"
+          # yarn 1 prints one JSON value per line; -s reads them as one array.
+          jqr() {
+            if [ "$PACKAGE_MANAGER" = yarn ]; then jq -r -s "$1" "$RESULTS"; else jq -r "$1" "$RESULTS"; fi
+          }
+          jqr empty > /dev/null 2>&1 || fail "$RESULTS is not valid JSON"
+          case "$PACKAGE_MANAGER" in
+            npm | pnpm)
+              # npm's counts carry a total; pnpm's do not.
+              FILTER='.metadata.vulnerabilities | [to_entries[] | select(.key != "total") | .value] | add' ;;
+            yarn)
+              FILTER='[.[] | select(type == "object" and .type == "auditSummary")] | if length == 1 then [.[0].data.vulnerabilities[]] | add else null end' ;;
+            bun)
+              # One key per vulnerable package, each an array of advisories.
+              FILTER='if type == "object" and all(.[]; type == "array") then [.[] | length] | add // 0 else null end' ;;
+            pip)
+              FILTER='if (.dependencies | type) == "array" then [.dependencies[] | .vulns[]?] | length else null end' ;;
+            cargo)
+              FILTER='.vulnerabilities.count' ;;
+            *)
+              fail "no vulnerability count is defined for package-manager '$PACKAGE_MANAGER'" ;;
+          esac
+          COUNT="$(jqr "try ($FILTER) catch null" 2> /dev/null)" || COUNT=""
+          case "$COUNT" in
+            '' | *[!0-9]*) fail "$RESULTS carries no vulnerability count in the shape $PACKAGE_MANAGER audit prints" ;;
+          esac
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+          echo "The audit reports $COUNT vulnerabilities."
+
       - name: Claude Dependency Analysis
         id: analyze
-        if: steps.audit-cmd.outputs.results != '' && steps.changed.outputs.skip != 'true' && steps.event.outputs.supported == 'true'
+        # has_lockfiles was computed and never read, so Claude ran on every
+        # PR (an audit error message also counts as results), lockfile or not.
+        # The count gate is numeric: a skipped count step leaves the output
+        # empty, which compares as 0.
+        if: steps.audit-cmd.outputs.results != '' && steps.audit-count.outputs.count > 0 && steps.changed.outputs.has_lockfiles == 'true' && steps.changed.outputs.skip != 'true' && steps.event.outputs.supported == 'true' && steps.actor.outputs.allowed == 'true'
         # Failure here is classified by the 'Classify analysis outcome' step
         # below rather than failing the job outright.
         continue-on-error: true
@@ -237,6 +373,7 @@ jobs:
           use_sticky_comment: ${{ inputs.use-sticky-comment }}
           claude_args: >-
             --model ${{ inputs.model }}
+            ${{ inputs.effort != '' && format('--effort {0}', inputs.effort) || '' }}
             --max-turns ${{ inputs.max-turns }}
             ${{ inputs.max-budget-usd > 0 && format('--max-budget-usd {0}', inputs.max-budget-usd) || '' }}
             --json-schema '{"type":"object","properties":{"total_vulnerabilities":{"type":"integer","description":"Total vulnerabilities found"},"critical_high":{"type":"integer","description":"Critical and high severity vulnerabilities"},"findings":{"type":"array","description":"Every issue found, most severe first","items":{"type":"object","properties":{"file":{"type":"string","description":"The lockfile or manifest that declares the vulnerable package"},"line":{"type":"integer"},"severity":{"type":"string","enum":["Critical","High","Medium","Low"]},"category":{"type":"string","description":"Package, version and advisory id, e.g. lodash@4.17.20 - GHSA-35jh-r3h4-6jhm"},"description":{"type":"string"},"remediation":{"type":"string"}},"required":["file","severity","category","description"]}}},"required":["total_vulnerabilities","critical_high","findings"]}'
@@ -468,13 +605,19 @@ jobs:
           TITLE: 'Dependency Security Audit'
           SKIPPED_FOR_SIZE: ${{ steps.changed.outputs.skip }}
           UNSUPPORTED_EVENT: ${{ steps.event.outputs.unsupported }}
-          NOTHING_SCANNED_REASON: 'no lockfile changed, or the audit command produced no output'
+          REFUSED_ACTOR: ${{ steps.actor.outputs.refused }}
+          UNCHANGED_SINCE_CLEAN: ${{ steps.changed.outputs.unchanged }}
+          NOTHING_SCANNED_REASON: 'no lockfile changed, the audit reported no vulnerabilities, or the audit wrote no output'
         run: |
           set -euo pipefail
           if [ -n "${UNSUPPORTED_EVENT:-}" ]; then
             REASON="this workflow does not support the '$UNSUPPORTED_EVENT' trigger (anthropics/claude-code-action rejects it); call it from pull_request"
+          elif [ -n "${REFUSED_ACTOR:-}" ]; then
+            REASON="the actor '$REFUSED_ACTOR' is a bot that allowed-bots does not list, and anthropics/claude-code-action refuses it"
           elif [ "${SKIPPED_FOR_SIZE:-false}" = "true" ]; then
             REASON="the PR diff exceeded max-diff-lines, so the diff-size gate skipped the analysis"
+          elif [ "${UNCHANGED_SINCE_CLEAN:-}" = "true" ]; then
+            REASON="no PR file in the configured patterns changed since the previous head, which was scanned clean"
           else
             REASON="${NOTHING_SCANNED_REASON:-the analysis step did not run}"
           fi
@@ -599,3 +742,110 @@ jobs:
             echo "::error::Dependency audit reported ${REPORTED} critical/high vulnerabilities but itemised none of them. The scan did not establish anything; re-run it."
           fi
           exit 1
+
+  # Deterministic dependency audit beside the Claude analysis above.
+  # osv-scanner reads the lockfiles and manifests it recognises
+  # (package-lock.json, bun.lock, pnpm-lock.yaml, yarn.lock, Cargo.lock,
+  # poetry.lock, uv.lock, requirements.txt, ...) and reports each known
+  # advisory with its CVSS score, which is what the Claude step restates from
+  # an audit tool's JSON. Like the Claude step, on a pull_request it runs only
+  # when a lockfile changed, and fails only when fail-on-high is set.
+  osv-scanner:
+    runs-on: ubuntu-slim
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # OSV_SCANNER_VERSION and OSV_SCANNER_SHA256 change together; the hash
+      # is the release's osv-scanner_SHA256SUMS entry for linux_amd64.
+      - name: Install osv-scanner
+        env:
+          OSV_SCANNER_VERSION: '2.7.0'
+          OSV_SCANNER_SHA256: '160c6253e2922e9e0a6a9771c5c4c40a4b3c6090b34a3cdd5e80c96cc2e4218b'
+        run: |
+          set -euo pipefail
+          bin="$RUNNER_TEMP/osv-scanner-bin"
+          mkdir -p "$bin"
+          curl -fsSL -o "$bin/osv-scanner" \
+            "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64"
+          echo "${OSV_SCANNER_SHA256}  $bin/osv-scanner" | sha256sum -c -
+          chmod +x "$bin/osv-scanner"
+          echo "$bin" >> "$GITHUB_PATH"
+
+      # osv-scanner exits 0 with no advisories, 1 with some, and 128 when it
+      # finds no package source at all; anything else is a failed scan.
+      - name: Scan dependencies
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          FAIL_ON_HIGH: ${{ inputs.fail-on-high }}
+        run: |
+          set -euo pipefail
+          lockfiles='(^|/)(package-lock\.json|bun\.lockb?|pnpm-lock\.yaml|yarn\.lock|Cargo\.lock|requirements[^/]*\.txt|poetry\.lock|Pipfile\.lock|uv\.lock)$'
+          if [ "$EVENT_NAME" = pull_request ]; then
+            if ! changed="$(git diff --name-only "origin/${BASE_REF}...HEAD")"; then
+              echo "::error::osv-scanner: cannot diff origin/${BASE_REF}...HEAD; nothing was audited."
+              exit 1
+            fi
+            if ! grep -qE "$lockfiles" <<<"$changed"; then
+              echo "::notice::osv-scanner: no lockfile changed in this PR; nothing to audit."
+              exit 0
+            fi
+          fi
+
+          out="$RUNNER_TEMP/osv-results.json"
+          rc=0
+          osv-scanner scan source --recursive --format json --output-file "$out" . > "$RUNNER_TEMP/osv-scanner.log" 2>&1 || rc=$?
+          case "$rc" in
+            0 | 1) ;;
+            128)
+              echo "::notice::osv-scanner: no lockfile or manifest it recognises in this repository; nothing to audit."
+              exit 0
+              ;;
+            *)
+              cat "$RUNNER_TEMP/osv-scanner.log"
+              echo "::error::osv-scanner exited ${rc}; nothing was audited."
+              exit 1
+              ;;
+          esac
+
+          # One row per advisory group: the lockfile (relative to the
+          # checkout), the package, the advisory ids and the highest CVSS.
+          jq -c --arg root "$PWD/" '
+            [.results[]? as $r | $r.packages[]? as $p | $p.groups[]?
+             | { file: ($r.source.path | ltrimstr($root)),
+                 pkg: "\($p.package.name)@\($p.package.version)",
+                 ecosystem: ($p.package.ecosystem // ""),
+                 ids: (.ids | join(", ")),
+                 score: ((.max_severity // "") | tonumber? // null) }]
+            | sort_by(-(.score // 0))' "$out" > "$RUNNER_TEMP/osv-rows.json"
+          total="$(jq length "$RUNNER_TEMP/osv-rows.json")"
+          high="$(jq '[.[] | select((.score // 0) >= 7)] | length' "$RUNNER_TEMP/osv-rows.json")"
+          {
+            echo "## Dependency audit (osv-scanner)"
+            echo ""
+            echo "**Advisories:** ${total} · **CVSS 7.0 or higher:** ${high}"
+            echo ""
+            if [ "$total" -gt 0 ]; then
+              echo "| Lockfile | Package | Advisories | CVSS |"
+              echo "|---|---|---|---|"
+              jq -r '.[] | "| `\(.file)` | `\(.pkg)` (\(.ecosystem)) | \(.ids) | \(.score // "unscored") |"' "$RUNNER_TEMP/osv-rows.json"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          # Escaped like the analysis annotations: a newline in a value would
+          # start a new workflow command.
+          jq -r '
+            def esc: tostring | gsub("%"; "%25") | gsub("\r"; "%0D") | gsub("\n"; "%0A");
+            .[:10][]
+            | "::warning file=\(.file | esc | gsub(","; "%2C"))::osv-scanner: \(.pkg | esc) has \(.ids | esc) (CVSS \(.score // "unscored"))"
+          ' "$RUNNER_TEMP/osv-rows.json"
+          if [ "$FAIL_ON_HIGH" = true ] && [ "$high" -gt 0 ]; then
+            echo "::error::osv-scanner: ${high} advisory group(s) at CVSS 7.0 or higher, and fail-on-high is set."
+            exit 1
+          fi

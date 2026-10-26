@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "ERR_PNPM_AUDIT_NO_LOCKFILE",
+    "message": "No pnpm-lock.yaml found: Cannot audit a project without a lockfile"
+  }
+}

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Regression test for laurigates/.github#65 (upstream
-# ForumViriumHelsinki/.github#115 §1): a Claude analysis run that succeeds but
+# Regression test for laurigates/.github#65 (the upstream org issue's
+# §1): a Claude analysis run that succeeds but
 # returns no structured_output must not fail the job, and every genuine
 # failure must still fail it with the reason.
 #
@@ -98,11 +98,14 @@ for WF in "${workflows[@]}"; do
 
   # 2. The shipped verdict step, extracted rather than retyped. Blank lines
   #    are held back until a non-blank one follows, so the separator before
-  #    the next step does not make otherwise identical bodies differ.
+  #    the next step does not make otherwise identical bodies differ. The
+  #    body ends at the first non-blank line indented less than the block
+  #    scalar, which is the next step, a step comment, or (the verdict being
+  #    the job's last step) the next job.
   awk '
     /^      - name: Classify analysis outcome$/ { inv = 1 }
     inv && /^        run: \|$/                 { inrun = 1; next }
-    inrun && /^      [-#]/                     { inrun = 0; inv = 0 }
+    inrun && !/^          / && !/^[[:space:]]*$/ { inrun = 0; inv = 0 }
     inrun && /^[[:space:]]*$/                  { blank = blank "\n"; next }
     inrun                                      { printf "%s%s\n", blank, $0; blank = "" }
   ' "$WF" | sed 's/^          //' > "$work/verdict.sh"

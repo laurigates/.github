@@ -191,14 +191,26 @@ jobs:
       # Strip the component prefix from the release-please tag to get the semver
       # version, then construct the :next-{version} pre-release image reference.
       # e.g. my-app-v1.2.3 with prefix my-app-v → version=1.2.3, next_image=…:next-1.2.3
+      # The stripped version is also the only input to the image tags below, so
+      # a tag-prefix that does not prefix the tag fails here instead of silently
+      # missing the pre-built image and rebuilding.
       - name: Extract release version from tag
         id: version
+        env:
+          TAG: ${{ github.ref_name }}
+          PREFIX: ${{ inputs.tag-prefix }}
+          IMAGE_NAME: ${{ inputs.image-name }}
         run: |
-          TAG="${{ github.ref_name }}"
-          PREFIX="${{ inputs.tag-prefix }}"
-          VERSION="${TAG#${PREFIX}}"
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
-          echo "next_image=ghcr.io/${{ inputs.image-name }}:next-${VERSION}" >> $GITHUB_OUTPUT
+          case "$TAG" in
+            "$PREFIX"*) ;;
+            *)
+              echo "::error::tag-prefix '${PREFIX}' does not prefix release tag '${TAG}'"
+              exit 1
+              ;;
+          esac
+          VERSION="${TAG#"$PREFIX"}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "next_image=ghcr.io/${IMAGE_NAME}:next-${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Looking for pre-built PR image: next-${VERSION}"
 
       # The release job can start while the release PR's own build is still
@@ -506,14 +518,15 @@ jobs:
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
         with:
           images: ghcr.io/${{ inputs.image-name }}
+          # One derivation path for every tag shape: the `version` step has
+          # already stripped inputs.tag-prefix, so the value is bare semver for
+          # both plain (v1.2.3) and component (my-app-v1.2.3) tags. A
+          # pre-release (1.2.3-rc.1) yields only its full version, without
+          # partial or latest tags.
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            # release-please manifest tag format: {component}-v{version}
-            type=match,pattern=.*-v(\d+\.\d+\.\d+),group=1
-            type=match,pattern=.*-v(\d+\.\d+),group=1
-            type=match,pattern=.*-v(\d+),group=1
+            type=semver,pattern={{version}},value=${{ steps.version.outputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.version.outputs.version }}
+            type=semver,pattern={{major}},value=${{ steps.version.outputs.version }}
 
       # ---- Candidate production ---------------------------------------------
       # Both paths converge on ONE digest, which is scanned and then retagged.
