@@ -122,27 +122,40 @@ jobs:
       - name: Detect failure type
         id: failure-type
         if: steps.claude.outcome == 'failure'
+        # Values reach the script through env:, never as ${{ }} in the body:
+        # an expression is pasted into the text before bash parses it (#78).
+        env:
+          EXEC_FILE: ${{ steps.claude.outputs.execution_file }}
         run: |
-          EXEC_FILE="${{ steps.claude.outputs.execution_file }}"
-          STRUCTURED_OUTPUT='${{ steps.claude.outputs.structured_output }}'
           SUBTYPE="unknown"
           NUM_TURNS="0"
           ERRORS=""
+          # The last `result` message of the SDK transcript. `objects` skips a
+          # stray non-object element instead of aborting the read.
+          RESULT='[.[]? | objects | select(.type == "result")] | last'
           if [[ -f "$EXEC_FILE" ]]; then
-            SUBTYPE=$(jq -r '[.[] | select(.type == "result")] | last | .subtype // "unknown"' "$EXEC_FILE" 2>/dev/null || echo "unknown")
-            NUM_TURNS=$(jq -r '[.[] | select(.type == "result")] | last | .num_turns // 0' "$EXEC_FILE" 2>/dev/null || echo "0")
-            ERRORS=$(jq -r '[.[] | select(.type == "result")] | last | [.errors // [] | .[]] | join("; ")' "$EXEC_FILE" 2>/dev/null || echo "")
-          elif [[ -n "$STRUCTURED_OUTPUT" ]]; then
-            # Fall back to the action's structured_output when the exec file was
-            # never written (e.g. SDK crash after error_max_turns).
-            SUBTYPE=$(jq -r '.subtype // .conclusion // "no-execution-file"' <<<"$STRUCTURED_OUTPUT" 2>/dev/null || echo "no-execution-file")
-            NUM_TURNS=$(jq -r '.num_turns // 0' <<<"$STRUCTURED_OUTPUT" 2>/dev/null || echo "0")
+            SUBTYPE=$(jq -r "$RESULT | .subtype // \"unknown\"" "$EXEC_FILE" 2>/dev/null || echo "unknown")
+            NUM_TURNS=$(jq -r "$RESULT | .num_turns // 0" "$EXEC_FILE" 2>/dev/null || echo "0")
+            # SDK error text the run can influence. A newline in it would write
+            # a second key=value line to GITHUB_OUTPUT (and could set type=), so
+            # CR/LF collapse to a space. It reaches the comment step through
+            # env:, where 128 KiB in one variable fails node's exec (E2BIG,
+            # #61), so it is capped.
+            ERRORS=$(jq -r "$RESULT"' | [.errors // [] | .[]? | tostring] | join("; ")
+              | gsub("[\r\n]+"; " ")
+              | if length > 2000 then .[:2000] + " [truncated]" else . end' "$EXEC_FILE" 2>/dev/null || echo "")
           else
             # Leave ERRORS empty — the follow-up comment links to the workflow
             # logs where the real error is visible, rather than rendering a
             # misleading "Error: Execution file not found".
+            # The action's structured_output is no fallback here: upstream sets
+            # it only on a successful run, so on this path it carries nothing,
+            # and it is the caller's JSON-schema object, not an SDK result.
             SUBTYPE="no-execution-file"
           fi
+          [[ "$SUBTYPE" =~ ^[a-z_-]+$ ]] || SUBTYPE="unknown"
+          [[ "$NUM_TURNS" =~ ^[0-9]+$ ]] || NUM_TURNS="0"
+          [[ "$ERRORS" != *$'\n'* && "$ERRORS" != *$'\r'* ]] || ERRORS=""
 
           {
             echo "subtype=${SUBTYPE}"
@@ -161,16 +174,24 @@ jobs:
       - name: Post continuation comment on failure
         if: steps.claude.outcome == 'failure'
         uses: actions/github-script@v7
+        # The same rule for JavaScript: a `'` in the SDK's error text closed a
+        # string literal in a script run with the job's github-token.
+        env:
+          FAILURE_TYPE: ${{ steps.failure-type.outputs.type }}
+          NUM_TURNS: ${{ steps.failure-type.outputs.num_turns }}
+          ERRORS: ${{ steps.failure-type.outputs.errors }}
+          BRANCH_NAME: ${{ steps.claude.outputs.branch_name }}
+          SESSION_ID: ${{ steps.claude.outputs.session_id }}
         with:
           script: |
             const issueNumber = context.issue?.number || context.payload.issue?.number || context.payload.pull_request?.number;
             if (!issueNumber) return;
 
-            const failureType = '${{ steps.failure-type.outputs.type }}';
-            const numTurns = '${{ steps.failure-type.outputs.num_turns }}';
-            const errors = '${{ steps.failure-type.outputs.errors }}';
-            const branchName = '${{ steps.claude.outputs.branch_name }}';
-            const sessionId = '${{ steps.claude.outputs.session_id }}';
+            const failureType = process.env.FAILURE_TYPE || '';
+            const numTurns = process.env.NUM_TURNS || '0';
+            const errors = process.env.ERRORS || '';
+            const branchName = process.env.BRANCH_NAME || '';
+            const sessionId = process.env.SESSION_ID || '';
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
 
             const lines = [];

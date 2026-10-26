@@ -440,7 +440,7 @@ assert_degraded() {
 }
 DEGRADE_KEYS='total_issues,critical_issues'
 
-EXEC_MODE=unset run_case exec-file-unset "$RECOVER" failure 'Critical' "$DEGRADE_KEYS"
+EXEC_MODE='unset' run_case exec-file-unset "$RECOVER" failure 'Critical' "$DEGRADE_KEYS"
 assert_degraded
 assert_in "$SUMMARY" 'the action exposed no execution file'
 
@@ -579,7 +579,7 @@ assert_not_in "$SUMMARY" 'trigger'
 
 # ------------------------------------------------------------------ report
 if [ "$failures" -eq 0 ]; then
-  printf 'publish-findings: %d assertion(s) passed.\n' "$checks"
+  printf 'PASS: publish-findings (%d assertion(s))\n' "$checks"
 else
   printf 'publish-findings: %d assertion(s) FAILED out of %d.\n' "$failures" "$checks"
   exit 1

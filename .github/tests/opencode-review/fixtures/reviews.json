@@ -1,0 +1,26 @@
+[
+  {
+    "id": 1,
+    "user": { "login": "github-actions[bot]", "type": "Bot" },
+    "state": "COMMENTED",
+    "body": "**OpenCode review** of the whole pull request\n\n<!-- opencode-review:reviewed=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -->"
+  },
+  {
+    "id": 2,
+    "user": { "login": "laurigates", "type": "User" },
+    "state": "COMMENTED",
+    "body": "copied by hand <!-- opencode-review:reviewed=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb -->"
+  },
+  {
+    "id": 3,
+    "user": { "login": "github-actions[bot]", "type": "Bot" },
+    "state": "COMMENTED",
+    "body": "some other workflow's review, no marker"
+  },
+  {
+    "id": 4,
+    "user": { "login": "github-actions[bot]", "type": "Bot" },
+    "state": "COMMENTED",
+    "body": null
+  }
+]
