@@ -1,0 +1,263 @@
+name: Bun CI (Reusable)
+
+# Installs a bun project from its lockfile and runs the repository's own
+# typecheck, test and build commands — the pull-request gate for TypeScript
+# repos. One job, so the install is paid once; no secrets, by design.
+#
+# Two lessons from the first adopting repo (a WXT browser extension), recorded
+# here so each adopting repo does not rediscover them:
+#
+#   1. The build script is not necessarily the type gate. In WXT/esbuild
+#      projects the bundler strips type annotations without checking them, and
+#      plain `tsc --noEmit` can be red on arrival because the framework supplies
+#      ambient types through its own tsconfig (201 errors there, 149 of them
+#      chrome-namespace). So `build-command` defaults to the repo's own
+#      `bun run build`, and `typecheck-command` is opt-in rather than defaulting
+#      to `tsc --noEmit`. Point it at whatever the repo treats as its type gate.
+#
+#   2. A production build may hard-fail without secrets. A PR gate compiles the
+#      code; it does not assert that secrets exist — that belongs in the release
+#      workflow. If the production build throws on missing credentials, build in
+#      development mode instead, e.g. `build-command: bunx wxt build --mode development`.
+#
+# Commands are read from `env:` and run through `eval`, so shell operators work
+# (`bun install --frozen-lockfile && bun run db:generate`). The values come from
+# the caller's own workflow file; no `${{ inputs.* }}` is interpolated into a
+# `run:` body. An empty test/build/typecheck command skips that step.
+#
+# `bun-version` is passed to oven-sh/setup-bun only when set; when empty the
+# action falls back, silently, to `packageManager: bun@…` or `engines.bun` in the
+# repository-root package.json, then to latest. `bun-version-file` is not passed
+# because the action warns on every run when the file lacks both fields. The
+# fallback reads the ROOT package.json even when `working-directory` is set, so
+# subdirectory projects should pin `bun-version` explicitly.
+#
+# setup-bun caches only the bun executable, not dependencies, so
+# `cache-dependencies` adds actions/cache over ~/.bun/install/cache keyed on the
+# project's bun.lock.
+#
+# Coverage: `coverage: true` uploads `<working-directory>/coverage/` as the
+# `coverage` artifact. It does not change the test command — set
+# `test-command` to the script that writes coverage (e.g. `bun run test:coverage`).
+# The artifact path carries the working-directory prefix because `uses:` steps
+# ignore `defaults.run.working-directory`. Codecov upload stays caller-side (it
+# needs a token on private repos). Two calls of this workflow in one run cannot
+# both upload coverage: the artifact name would collide.
+#
+# Concurrency is set at JOB level, where the reusable-workflow docs define it,
+# with a `bun-ci-` prefix so the group never equals the caller's own
+# `${{ github.workflow }}-${{ github.ref }}` group (a called workflow sees the
+# caller's `github.workflow`; equal groups cancel the caller). In-progress runs
+# are cancelled on pull requests only, so a running default-branch job is never
+# cancelled. Pending jobs are a different matter: with the default
+# `queue: single`, a newer job replaces any job already pending in the group, so
+# after three quick pushes to the default branch the first and third run and the
+# second is cancelled. `queue: max` would keep every pending job, but actionlint
+# 1.7.12 rejects the key, so it is not set here.
+#
+# Caller example:
+#
+#   on:
+#     pull_request:
+#       branches: [main]
+#
+#   permissions:
+#     contents: read
+#
+#   jobs:
+#     bun-ci:
+#       uses: laurigates/.github/.github/workflows/reusable-bun-ci.yml@main
+#       with:
+#         test-command: bun run test:coverage
+#         typecheck-command: bun run compile:gate
+#         build-command: bunx wxt build --mode development
+#         coverage: true
+
+on:
+  workflow_call:
+    inputs:
+      install-command:
+        description: >-
+          Dependency install command. Bun does not enable --frozen-lockfile on
+          its own in CI, so the default passes it.
+        required: false
+        type: string
+        default: 'bun install --frozen-lockfile'
+      typecheck-command:
+        description: 'Type-check command, run after install (empty string to skip; opt-in)'
+        required: false
+        type: string
+        default: ''
+      test-command:
+        description: 'Test command (empty string to skip)'
+        required: false
+        type: string
+        default: 'bun run test'
+      build-command:
+        description: 'Build command (empty string to skip)'
+        required: false
+        type: string
+        default: 'bun run build'
+      coverage:
+        description: 'Upload <working-directory>/coverage/ as the `coverage` artifact after the test step'
+        required: false
+        type: boolean
+        default: false
+      bun-version:
+        description: >-
+          Bun version for oven-sh/setup-bun (e.g. `1.3.14`, `latest`). Empty
+          falls back to package.json `packageManager`/`engines.bun` at the
+          repository root, then latest.
+        required: false
+        type: string
+        default: ''
+      node-version:
+        description: 'Node.js version for setup-node (empty string to skip Node setup)'
+        required: false
+        type: string
+        default: ''
+      cache-dependencies:
+        description: 'Cache ~/.bun/install/cache keyed on <working-directory>/bun.lock'
+        required: false
+        type: boolean
+        default: true
+      working-directory:
+        description: 'Directory containing package.json and bun.lock'
+        required: false
+        type: string
+        default: '.'
+      runner:
+        description: 'Runner label'
+        required: false
+        type: string
+        default: 'ubuntu-latest'
+      timeout-minutes:
+        description: 'Job timeout in minutes'
+        required: false
+        type: number
+        default: 15
+
+permissions:
+  contents: read
+
+jobs:
+  bun-ci:
+    name: Install, test, build
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    concurrency:
+      group: bun-ci-${{ github.workflow }}-${{ inputs.working-directory }}-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Set up Bun
+        id: setup-bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ inputs.bun-version }}
+
+      - name: Set up Node
+        if: ${{ inputs.node-version != '' }}
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Cache Bun packages
+        if: ${{ inputs.cache-dependencies }}
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.bun/install/cache
+          key: bun-install-${{ runner.os }}-${{ hashFiles(format('{0}/bun.lock', inputs.working-directory)) }}
+          restore-keys: |
+            bun-install-${{ runner.os }}-
+
+      - name: Install dependencies
+        id: install
+        env:
+          INSTALL_COMMAND: ${{ inputs.install-command }}
+        run: eval "$INSTALL_COMMAND"
+
+      - name: Type check
+        id: typecheck
+        if: ${{ inputs.typecheck-command != '' }}
+        env:
+          TYPECHECK_COMMAND: ${{ inputs.typecheck-command }}
+        run: eval "$TYPECHECK_COMMAND"
+
+      - name: Test
+        id: test
+        if: ${{ inputs.test-command != '' }}
+        env:
+          TEST_COMMAND: ${{ inputs.test-command }}
+        run: eval "$TEST_COMMAND"
+
+      - name: Build
+        id: build
+        if: ${{ inputs.build-command != '' }}
+        env:
+          BUILD_COMMAND: ${{ inputs.build-command }}
+        run: eval "$BUILD_COMMAND"
+
+      - name: Upload coverage
+        id: coverage
+        if: ${{ inputs.coverage }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage
+          # Workspace-relative: `uses:` steps ignore defaults.run.working-directory.
+          path: ${{ inputs.working-directory }}/coverage/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Job summary
+        if: always()
+        # Runs from the workspace root so a missing working-directory cannot
+        # stop the summary from being written.
+        working-directory: ${{ github.workspace }}
+        env:
+          BUN_VERSION: ${{ steps.setup-bun.outputs.bun-version }}
+          WORKING_DIRECTORY: ${{ inputs.working-directory }}
+          INSTALL_COMMAND: ${{ inputs.install-command }}
+          INSTALL_OUTCOME: ${{ steps.install.outcome }}
+          TYPECHECK_COMMAND: ${{ inputs.typecheck-command }}
+          TYPECHECK_OUTCOME: ${{ steps.typecheck.outcome }}
+          TEST_COMMAND: ${{ inputs.test-command }}
+          TEST_OUTCOME: ${{ steps.test.outcome }}
+          BUILD_COMMAND: ${{ inputs.build-command }}
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+          COVERAGE: ${{ inputs.coverage }}
+          COVERAGE_OUTCOME: ${{ steps.coverage.outcome }}
+        run: |
+          # shellcheck disable=SC2016 # backticks below are Markdown, not command substitution
+          row() {
+            # $1 step label, $2 configured command, $3 step outcome
+            if [ -z "$2" ]; then
+              printf '| %s | — | skipped (no command configured) |\n' "$1"
+            else
+              printf '| %s | `%s` | %s |\n' "$1" "${2//|/\\|}" "${3:-not run}"
+            fi
+          }
+          # shellcheck disable=SC2016
+          {
+            echo "## Bun CI"
+            echo "- **Bun**: \`${BUN_VERSION:-not installed}\`"
+            echo "- **Working directory**: \`${WORKING_DIRECTORY}\`"
+            echo
+            echo "| Step | Command | Outcome |"
+            echo "|------|---------|---------|"
+            row "Install" "$INSTALL_COMMAND" "$INSTALL_OUTCOME"
+            row "Type check" "$TYPECHECK_COMMAND" "$TYPECHECK_OUTCOME"
+            row "Test" "$TEST_COMMAND" "$TEST_OUTCOME"
+            row "Build" "$BUILD_COMMAND" "$BUILD_OUTCOME"
+            if [ "$COVERAGE" = "true" ]; then
+              printf '| Coverage artifact | `%s/coverage/` | %s |\n' "$WORKING_DIRECTORY" "${COVERAGE_OUTCOME:-not run}"
+            else
+              printf '| Coverage artifact | — | skipped (coverage: false) |\n'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

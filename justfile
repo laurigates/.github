@@ -88,7 +88,7 @@ upstream-changes days="14":
 leak-check:
     #!/usr/bin/env bash
     set -euo pipefail
-    paths=(.github/workflows .github/actions)
+    paths=(.github/workflows .github/actions .github/tests scripts)
     [[ -f rulesync.jsonc ]] && paths+=(rulesync.jsonc)
     [[ -d .rulesync ]] && paths+=(.rulesync)
     if rg -in 'fvh|forumvirium' "${paths[@]}"; then
@@ -210,6 +210,11 @@ changelog-usage workflow=".github/workflows/reusable-changelog-review.yml":
 [group: "validate"]
 container-release-tags:
     bash .github/tests/container-release-tags/run.sh
+
+# Run reusable-bun-ci.yml's extracted steps against stub bun, and the repo-wide inline-input baseline
+[group: "validate"]
+bun-ci:
+    bash .github/tests/bun-ci/run.sh
 
 # Run reusable-auto-resolve-conflicts.yml's resolve/build/publish steps against git fixtures
 [group: "validate"]

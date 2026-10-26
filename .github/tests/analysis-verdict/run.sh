@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Regression test for laurigates/.github#65 (upstream
-# ForumViriumHelsinki/.github#115 §1): a Claude analysis run that succeeds but
+# Regression test for laurigates/.github#65 (the upstream org issue's
+# §1): a Claude analysis run that succeeds but
 # returns no structured_output must not fail the job, and every genuine
 # failure must still fail it with the reason.
 #
