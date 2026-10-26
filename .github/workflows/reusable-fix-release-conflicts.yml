@@ -55,7 +55,7 @@ jobs:
       - name: Generate GitHub App token
         id: app-token
         if: inputs.app-id != ''
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ inputs.app-id }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
@@ -102,14 +102,14 @@ jobs:
         if: steps.check.outputs.has_conflict == 'true'
         env:
           GH_TOKEN: ${{ inputs.app-id != '' && steps.app-token.outputs.token || secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.check.outputs.pr_number }}
+          BRANCH: ${{ steps.check.outputs.branch }}
+          REPO: ${{ github.repository }}
         run: |
-          PR_NUMBER="${{ steps.check.outputs.pr_number }}"
-          BRANCH="${{ steps.check.outputs.branch }}"
-
           echo "Closing conflicted PR #$PR_NUMBER and deleting branch $BRANCH"
 
           gh pr close "$PR_NUMBER" \
-            --repo "${{ github.repository }}" \
+            --repo "$REPO" \
             --comment "Closing due to merge conflicts. Release-please will recreate this PR automatically on the next trigger." \
             --delete-branch
 
@@ -119,9 +119,11 @@ jobs:
         if: steps.check.outputs.has_conflict == 'true'
         env:
           GH_TOKEN: ${{ inputs.app-id != '' && steps.app-token.outputs.token || secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          RELEASE_WORKFLOW_FILE: ${{ inputs.release-workflow-file }}
+          REPO: ${{ github.repository }}
         run: |
-          echo "Triggering ${{ inputs.release-workflow-file }} to recreate the PR"
-          gh workflow run "${{ inputs.release-workflow-file }}" \
-            --repo "${{ github.repository }}" \
+          echo "Triggering $RELEASE_WORKFLOW_FILE to recreate the PR"
+          gh workflow run "$RELEASE_WORKFLOW_FILE" \
+            --repo "$REPO" \
             --ref main
           echo "Workflow triggered successfully"

@@ -875,7 +875,7 @@ unresolved_case dirty
 
 # The job's PATH was extended (a GITHUB_PATH write) with a directory holding a
 # fake git/jq: the check step must not run them.
-CASE_NAME=path-tamper
+CASE_NAME='path-tamper'
 start_merge path-tamper
 resolve_as "$GOOD"
 mkdir -p "$C/evil"
