@@ -148,11 +148,23 @@ on:
         required: false
         type: string
         default: ''
+      app-id:
+        description: >-
+          GitHub App client ID (or numeric App ID; client ID recommended). When
+          set, the checkout, and so the fix commit's push, uses an App token
+          (via APP_PRIVATE_KEY), and CI runs on the pushed commit. Otherwise
+          PAT_TOKEN, then GITHUB_TOKEN, whose push starts no CI.
+        required: false
+        type: string
+        default: ''
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
       PAT_TOKEN:
-        description: 'PAT for pushing commits (falls back to GITHUB_TOKEN)'
+        description: 'PAT for pushing commits when app-id is empty (falls back to GITHUB_TOKEN)'
+        required: false
+      APP_PRIVATE_KEY:
+        description: 'GitHub App private key. Required when app-id is set.'
         required: false
 
 concurrency:
@@ -182,12 +194,25 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.timeout_minutes }}
     steps:
+      # The agent pushes with the checkout's credential. A GITHUB_TOKEN push
+      # starts no CI: the PR's runs are held, then concluded `failure` with
+      # zero jobs once a later push or the merge supersedes them, so a fix
+      # commit can merge unverified (mcu-tinkering-lab#749). An App token's
+      # push runs CI as usual. The token is scoped to this repository.
+      - name: Generate GitHub App token
+        id: app-token
+        if: inputs.app-id != ''
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ inputs.app-id }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
       - name: Checkout failed branch
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           ref: ${{ inputs.branch }}
           fetch-depth: 0
-          token: ${{ secrets.PAT_TOKEN || github.token }}
+          token: ${{ inputs.app-id != '' && steps.app-token.outputs.token || secrets.PAT_TOKEN || github.token }}
 
       - name: Gather failure context
         id: context
@@ -228,9 +253,15 @@ jobs:
       # neither sees nor chooses the signature.
       #
       # The line it hashes, in order of preference: the first failing
-      # pre-commit hook id; else the first `##[error]` that is not the
-      # runner's generic "Process completed with exit code N"; else the last
-      # exception-shaped line ("...Error: ...") before that exit line.
+      # pre-commit hook id; else, from the first job in the log that failed,
+      # its first `##[error]` that is not the runner's generic "Process
+      # completed with exit code N", else its last exception-shaped line
+      # ("...Error: ...", or uv/cargo's lowercase "error: ...") before that
+      # exit line, else that job's failed step from failed-jobs.txt. Scoping
+      # to the first failed job matters: a summary job that only checks
+      # `needs` results re-fails later with its own `##[error]`, and in
+      # mcu-tinkering-lab's Test Suite that line gave every failure, whatever
+      # the cause, the same signature.
       # `--log-failed` prefixes every line with job, step and timestamp
       # columns, and the step column alone reads "UNKNOWN STEP" or "Set up
       # job" for the same failure, so all three are dropped. Run/job ids,
@@ -249,9 +280,13 @@ jobs:
         run: |
           set -euo pipefail
           log="${CONTEXT_DIR}/failure-logs.txt"
+          # failed-jobs.txt names each failed job's failed step; it is the
+          # fallback for a job whose log shows no specific line.
+          steps_file="${CONTEXT_DIR}/failed-jobs.txt"
+          [ -s "$steps_file" ] || steps_file=/dev/null
           picked=""
           if [ -s "$log" ]; then
-            picked="$(jq -Rrs --arg branch "$BRANCH" '
+            picked="$(jq -Rrs --arg branch "$BRANCH" --rawfile failed_jobs "$steps_file" '
               def msg:
                 sub("^[^\t]*\t[^\t]*\t"; "")
                 | sub("^\\x{FEFF}"; "")
@@ -277,19 +312,51 @@ jobs:
                 | gsub("\\s+"; " ")
                 | sub("^ "; "")
                 | sub(" $"; "");
-              [splits("\n") | msg] as $l
+              # uv and cargo print a lowercase `error:` (cargo `error[E0425]:`).
+              # pip and uv also print `×` lines, but not as the cause: pip
+              # closes a build failure with "× Failed to build installable
+              # wheels", after the line that names why.
+              def exc_shaped:
+                test("(^|[^A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_.]*)?(Error|Exception): ")
+                or test("^error(\\[[A-Za-z0-9]+\\])?: ");
+              # The job column, before msg strips it.
+              def job: if test("\t") then sub("\t.*$"; "") else "" end;
+              # "Job: <name>" then "  - <step>: failure" lines -> {job: step}.
+              def failed_steps:
+                reduce ($failed_jobs | splits("\n")) as $x ({cur: null, m: {}};
+                  if ($x | startswith("Job: ")) then .cur = ($x | ltrimstr("Job: "))
+                  elif .cur != null and .m[.cur] == null and ($x | test("^  - .+: failure$"))
+                  then .m[.cur] = ($x | sub("^  - "; "") | sub(": failure$"; ""))
+                  else . end)
+                | .m;
+              [splits("\n") | {j: job, m: msg}] as $all
+              | ($all | map(.m)) as $l
               | ($l | length) as $n
-              | (first(range($n) | select($l[.] | generic)) // $n) as $end
+              | failed_steps as $steps
               | (first(range($n) | select($l[.] | test("\\.{3,}Failed$"))) // null) as $hook
-              | (first($l[] | select(startswith("##[error]") and (generic | not))) // null) as $err
-              | (last($l[:$end][] | select(test("(^|[^A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_.]*)?(Error|Exception): "))) // null) as $exc
               | if $hook != null then
                   ((($l[$hook + 1] // "") | capture("^- hook id: (?<id>\\S+)").id)
                     // ($l[$hook] | sub("\\s*\\.{3,}Failed$"; "")))
                   | "hook\tpre-commit hook failed: \(norm)"
-                elif $err != null then "error\t\($err | ltrimstr("##[error]") | norm)"
-                elif $exc != null then "exception\t\($exc | norm)"
-                else empty
+                else
+                  # Jobs in log order; the first one that failed decides. A
+                  # summary job that only aggregates `needs` results (its
+                  # "Critical quality checks failed!") comes after the job
+                  # that failed, so it no longer gives every failure of a
+                  # workflow the same signature.
+                  first(
+                    ($all | map(.j) | reduce .[] as $j ([]; if any(.[]; . == $j) then . else . + [$j] end))[] as $j
+                    | [$all[] | select(.j == $j) | .m] as $jl
+                    | select(any($jl[]; generic or startswith("##[error]")))
+                    | (first(range($jl | length) | select($jl[.] | generic)) // ($jl | length)) as $end
+                    | (first($jl[] | select(startswith("##[error]") and (generic | not))) // null) as $err
+                    | (last($jl[:$end][] | select(exc_shaped)) // null) as $exc
+                    | if $err != null then "error\t\($err | ltrimstr("##[error]") | norm)"
+                      elif $exc != null then "exception\t\($exc | norm)"
+                      elif $steps[$j] != null then "step\tfailed step: \("\($j) / \($steps[$j])" | norm)"
+                      else empty
+                      end
+                  ) // empty
                 end
             ' "$log")"
           fi
@@ -559,7 +626,7 @@ jobs:
             4. Push to the branch: `git push origin ${{ inputs.branch }}`
             5. If PR ${{ steps.context.outputs.pr_number }} exists, comment on it:
                ```
-               gh pr comment ${{ steps.context.outputs.pr_number }} --body "Auto-fix applied for CI failure in **${{ inputs.workflow_name }}**. The workflow should re-run automatically."
+               gh pr comment ${{ steps.context.outputs.pr_number }} --body "Auto-fix applied for CI failure in **${{ inputs.workflow_name }}**. ${{ (inputs.app-id != '' || secrets.PAT_TOKEN != '') && 'The workflow should re-run automatically.' || 'This commit was pushed with GITHUB_TOKEN, so CI does not run on it: approve the held runs or push again before merging.' }}"
                ```
 
             ### If NOT auto-fixable:

@@ -19,10 +19,15 @@ on:
         type: string
         default: 'false'
       app-id:
-        description: 'Renovate GitHub App client ID (or numeric App ID; client ID recommended). When set, generates an App token (via APP_PRIVATE_KEY) instead of using GITHUB_TOKEN.'
+        description: 'Renovate GitHub App client ID (or numeric App ID; client ID recommended). When set, generates an App token (via APP_PRIVATE_KEY). Required unless allow-github-token is true.'
         required: false
         type: string
         default: ''
+      allow-github-token:
+        description: 'Run Renovate on GITHUB_TOKEN when app-id is empty. Off by default: that identity cannot open PRs where Actions may not create them, and branches it pushes trigger no CI.'
+        required: false
+        type: boolean
+        default: false
       bot-username:
         description: 'RENOVATE_USERNAME (e.g. <renovate-bot>[bot]). Only applies when app-id is set.'
         required: false
@@ -73,6 +78,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.timeout-minutes }}
     steps:
+      # Without app-id this job used to fall back to GITHUB_TOKEN silently.
+      # In a repo where Actions may not create pull requests (GitHub's
+      # default) that identity cannot open a PR, a branch it pushes triggers
+      # no CI, and it runs as a second Renovate beside an owner-wide App
+      # runner. The run stayed green throughout, so the fallback is refused
+      # unless the caller opts in with allow-github-token.
+      - name: Require an App token
+        if: inputs.app-id == '' && !inputs.allow-github-token
+        run: |
+          echo "::error::app-id is empty, so Renovate would run on GITHUB_TOKEN: it cannot open pull requests where Actions may not create them, and branches it pushes trigger no CI. Pass app-id and APP_PRIVATE_KEY, set allow-github-token: true to accept GITHUB_TOKEN, or remove this caller if an owner-wide Renovate runner already covers the repository."
+          exit 1
+
       - name: Generate GitHub App token
         id: app-token
         if: inputs.app-id != ''

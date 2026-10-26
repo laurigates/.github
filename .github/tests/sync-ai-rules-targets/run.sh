@@ -14,7 +14,10 @@
 #             subsets reach generate verbatim, anything else exits 1 first.
 #   fetch     must pass --path .rulesync. rulesync >= 9 resolves features
 #             against the source repo root, so without it the fetch 404s on
-#             rules/ and returns zero files at exit 0.
+#             rules/ and returns zero files at exit 0. Its step must also bind
+#             GITHUB_TOKEN or GH_TOKEN: unauthenticated, rulesync shares the
+#             hosted runners' 60-requests-an-hour anonymous limit and fails
+#             intermittently with "API rate limit exceeded".
 #
 # The commands are extracted from the shipped workflow text, not retyped here.
 set -euo pipefail
@@ -214,6 +217,27 @@ for path in files:
                     )
                 elif got_p.rstrip("/") != ".rulesync":
                     failures.append(f"{where}: `rulesync fetch` --path {got_p} != .rulesync")
+
+# Every step that runs `rulesync fetch` authenticates. Read with yq per step,
+# because the token is the step's env:, not part of the command line.
+for path in files:
+    # One "step=<token>" line per fetch step, so a step with no token is a
+    # line with an empty value rather than no line at all. The version suffix
+    # is required (tool-pins enforces it), which keeps a step that only
+    # mentions "rulesync fetch" in an error message out of the match.
+    tokens = yq(
+        '[.jobs[].steps[] | select(.run // "" | test("rulesync@\\S+ fetch"))'
+        ' | "step=" + ((.env.GITHUB_TOKEN // .env.GH_TOKEN // "") | tostring)] | join("\\n")',
+        path,
+    )
+    for line in tokens.splitlines():
+        value = line.removeprefix("step=")
+        assertions += 1
+        if value.strip() in ("", "null"):
+            failures.append(
+                f"{path}: a `rulesync fetch` step binds neither GITHUB_TOKEN nor GH_TOKEN in env:; "
+                "unauthenticated fetches hit the shared anonymous API rate limit"
+            )
 
 # Non-vacuous: the extractor must find the shipped sync workflow's commands.
 assertions += 1

@@ -1,0 +1,44 @@
+Build Python Simulation	UNKNOWN STEP	﻿2026-10-15T15:02:15.0875087Z Current runner version: '2.337.0'
+Build Python Simulation	UNKNOWN STEP	2026-10-15T15:02:23.9756926Z Successfully uninstalled pip-26.2.1
+Build Python Simulation	UNKNOWN STEP	2026-10-15T15:02:25.0909415Z Successfully installed pip-26.2.1
+Build Python Simulation	UNKNOWN STEP	2026-10-15T15:02:25.1521436Z Create complete file
+Build Python Simulation	UNKNOWN STEP	2026-10-15T15:02:25.1561236Z Successfully set up CPython (3.15.0)
+Build Python Simulation	UNKNOWN STEP	2026-10-15T15:02:25.1562168Z ##[endgroup]
+Build Python Simulation	UNKNOWN STEP	2026-10-15T15:02:25.1725726Z ##[group]Run pip install uv==0.12.10
+Build Python Simulation	UNKNOWN STEP	2026-10-15T15:02:25.1726103Z ^[[36;1mpip install uv==0.12.10^[[0m
+Build Python Simulation	UNKNOWN STEP	2026-10-15T15:02:25.2016921Z shell: /usr/bin/bash -e {0}
+Build Python Simulation	UNKNOWN STEP	2026-10-15T15:02:25.2017312Z env:
+Build Python Simulation	UNKNOWN STEP	2026-10-15T15:02:25.2017682Z   pythonLocation: /opt/hostedtoolcache/Python/3.15.0/x64
+Build Python Simulation	UNKNOWN STEP	2026-10-15T15:02:25.2018313Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.15.0/x64/lib/pkgconfig
+Build Python Simulation	UNKNOWN STEP	2026-10-15T15:02:25.2018890Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.15.0/x64
+Build Python Simulation	UNKNOWN STEP	2026-10-15T15:02:25.2019423Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.15.0/x64
+Build Python Simulation	UNKNOWN STEP	2026-10-15T15:02:25.2019936Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.15.0/x64
+Build Python Simulation	UNKNOWN STEP	2026-10-15T15:02:25.2020465Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.15.0/x64/lib
+Build Python Simulation	UNKNOWN STEP	2026-10-15T15:02:25.2020905Z ##[endgroup]
+Build Python Simulation	UNKNOWN STEP	2026-10-15T15:02:25.8933257Z Collecting uv==0.12.10
+Build Python Simulation	UNKNOWN STEP	2026-10-15T15:02:25.9390760Z   Downloading uv-0.12.10-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (11 kB)
+Build Python Simulation	UNKNOWN STEP	2026-10-15T15:02:25.9504898Z Downloading uv-0.12.10-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (20.0 MB)
+Build Python Simulation	UNKNOWN STEP	2026-10-15T15:02:26.0792324Z    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 20.0/20.0 MB 180.0 MB/s  0:00:00
+Build Python Simulation	UNKNOWN STEP	2026-10-15T15:02:26.1189715Z Installing collected packages: uv
+Build Python Simulation	UNKNOWN STEP	2026-10-15T15:02:26.3232196Z Successfully installed uv-0.12.10
+Build Python Simulation	UNKNOWN STEP	2026-10-15T15:02:26.3873815Z ##[group]Run uv sync
+Build Python Simulation	UNKNOWN STEP	2026-10-15T15:02:26.3874101Z ^[[36;1muv sync^[[0m
+Build Python Simulation	UNKNOWN STEP	2026-10-15T15:02:26.3937202Z shell: /usr/bin/bash -e {0}
+Build Python Simulation	UNKNOWN STEP	2026-10-15T15:02:26.3937462Z env:
+Build Python Simulation	UNKNOWN STEP	2026-10-15T15:02:26.3937736Z   pythonLocation: /opt/hostedtoolcache/Python/3.15.0/x64
+Build Python Simulation	UNKNOWN STEP	2026-10-15T15:02:26.3938200Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.15.0/x64/lib/pkgconfig
+Build Python Simulation	UNKNOWN STEP	2026-10-15T15:02:26.3938693Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.15.0/x64
+Build Python Simulation	UNKNOWN STEP	2026-10-15T15:02:26.3939133Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.15.0/x64
+Build Python Simulation	UNKNOWN STEP	2026-10-15T15:02:26.3939548Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.15.0/x64
+Build Python Simulation	UNKNOWN STEP	2026-10-15T15:02:26.3939959Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.15.0/x64/lib
+Build Python Simulation	UNKNOWN STEP	2026-10-15T15:02:26.3940307Z ##[endgroup]
+Build Python Simulation	UNKNOWN STEP	2026-10-15T15:02:26.4599207Z Using CPython 3.15.0 interpreter at: /opt/hostedtoolcache/Python/3.15.0/x64/bin/python3
+Build Python Simulation	UNKNOWN STEP	2026-10-15T15:02:26.4599769Z Creating virtual environment at: .venv
+Build Python Simulation	UNKNOWN STEP	2026-10-15T15:02:27.6145664Z Resolved 164 packages in 1.15s
+Build Python Simulation	UNKNOWN STEP	2026-10-15T15:02:27.6146757Z warning: The package `torch==2.14.1` does not have an extra named `cuda`
+Build Python Simulation	UNKNOWN STEP	2026-10-15T15:02:27.6306977Z error: Distribution `torch==2.14.1 @ registry+https://pypi.org/simple` can't be installed because it doesn't have a source distribution or wheel for the current platform
+Build Python Simulation	UNKNOWN STEP	2026-10-15T15:02:27.6308231Z 
+Build Python Simulation	UNKNOWN STEP	2026-10-15T15:02:27.6308965Z hint: You're using CPython 3.15 (`cp315`), but `torch` (v2.14.1) only has wheels with the following Python ABI tags: `cp312`, `cp313`, `cp314`, `cp314t`
+Build Python Simulation	UNKNOWN STEP	2026-10-15T15:02:27.6333447Z ##[error]Process completed with exit code 2.
+Build Python Simulation	UNKNOWN STEP	2026-10-15T15:02:27.6479826Z Post job cleanup.
+Build Python Simulation	UNKNOWN STEP	2026-10-15T15:02:27.7377201Z [command]/usr/bin/git version

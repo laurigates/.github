@@ -43,7 +43,15 @@ jobs:
       # --path .rulesync: rulesync >= 9 resolves features relative to the repo
       # root of the source repo (GET /contents/rules), so the .rulesync/ layout
       # must be addressed explicitly or fetch 404s and returns zero files.
+      #
+      # GITHUB_TOKEN: without a token rulesync calls the GitHub API
+      # anonymously, which allows 60 requests an hour per runner IP, shared
+      # across hosted runners, and fails intermittently with "API rate limit
+      # exceeded". This repo is public, so the caller's read-only token is
+      # enough.
       - name: Fetch rules from .github repo
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: npx rulesync@40.2.0 fetch laurigates/.github --features rules,ignore --conflict overwrite --path .rulesync
 
       # fetch exits 0 even when it fetches nothing, and generate then fails

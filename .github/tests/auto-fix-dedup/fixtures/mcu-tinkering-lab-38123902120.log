@@ -1,0 +1,27 @@
+Build Python Simulation	Install dependencies	﻿2026-10-11T08:11:00.5889337Z ##[group]Run uv sync
+Build Python Simulation	Install dependencies	2026-10-11T08:11:00.5889964Z ^[[36;1muv sync^[[0m
+Build Python Simulation	Install dependencies	2026-10-11T08:11:00.5956643Z shell: /usr/bin/bash -e {0}
+Build Python Simulation	Install dependencies	2026-10-11T08:11:00.5956973Z env:
+Build Python Simulation	Install dependencies	2026-10-11T08:11:00.5957308Z   pythonLocation: /opt/hostedtoolcache/Python/3.11.17/x64
+Build Python Simulation	Install dependencies	2026-10-11T08:11:00.5957820Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.11.17/x64/lib/pkgconfig
+Build Python Simulation	Install dependencies	2026-10-11T08:11:00.5958590Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.17/x64
+Build Python Simulation	Install dependencies	2026-10-11T08:11:00.5959039Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.17/x64
+Build Python Simulation	Install dependencies	2026-10-11T08:11:00.5959481Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.17/x64
+Build Python Simulation	Install dependencies	2026-10-11T08:11:00.5959974Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.11.17/x64/lib
+Build Python Simulation	Install dependencies	2026-10-11T08:11:00.5960352Z ##[endgroup]
+Build Python Simulation	Install dependencies	2026-10-11T08:11:00.6518423Z Using CPython 3.11.17 interpreter at: /opt/hostedtoolcache/Python/3.11.17/x64/bin/python3
+Build Python Simulation	Install dependencies	2026-10-11T08:11:00.6519138Z Creating virtual environment at: .venv
+Build Python Simulation	Install dependencies	2026-10-11T08:11:01.6990546Z   × No solution found when resolving dependencies for split (markers:
+Build Python Simulation	Install dependencies	2026-10-11T08:11:01.6991903Z   │ python_full_version >= '3.14' and sys_platform == 'win32'):
+Build Python Simulation	Install dependencies	2026-10-11T08:11:01.6992892Z   ╰─▶ Because moviepy>=2.0.0,<=2.1.2 depends on pillow>=9.2.0,<11.0 and
+Build Python Simulation	Install dependencies	2026-10-11T08:11:01.6993744Z       moviepy>=2.2.0 depends on pillow>=9.2.0,<12.0, we can conclude that
+Build Python Simulation	Install dependencies	2026-10-11T08:11:01.6994457Z       moviepy>=2.0.0 depends on pillow>=9.2.0,<12.0.
+Build Python Simulation	Install dependencies	2026-10-11T08:11:01.6995157Z       And because genesis-world>=1.4.3 depends on moviepy>=2.0.0 and your
+Build Python Simulation	Install dependencies	2026-10-11T08:11:01.6996159Z       project depends on genesis-world==1.4.3, we can conclude that your
+Build Python Simulation	Install dependencies	2026-10-11T08:11:01.6996961Z       project depends on pillow>=9.2.0,<12.0.
+Build Python Simulation	Install dependencies	2026-10-11T08:11:01.6997635Z       And because your project depends on pillow==12.3.0 and your project
+Build Python Simulation	Install dependencies	2026-10-11T08:11:01.6998854Z       requires esp32-robot-simulation[dev], we can conclude that your
+Build Python Simulation	Install dependencies	2026-10-11T08:11:01.6999831Z       project's requirements are unsatisfiable.
+Build Python Simulation	Install dependencies	2026-10-11T08:11:01.7000315Z 
+Build Python Simulation	Install dependencies	2026-10-11T08:11:01.7001592Z hint: While the active Python version is 3.11, the resolution failed for other Python versions supported by your project. Consider limiting your project's supported Python versions using `requires-python`.
+Build Python Simulation	Install dependencies	2026-10-11T08:11:01.7116050Z ##[error]Process completed with exit code 1.

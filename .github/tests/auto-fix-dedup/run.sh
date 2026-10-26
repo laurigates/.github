@@ -11,8 +11,12 @@
 #
 # The logs in fixtures/ are real `gh run view <id> --log-failed` output. The
 # Homebrew and context-budget logs are whole; the StyLua and mcu-tinkering-lab
-# logs are cut to their header plus the failing region onwards. cases.tsv maps
-# each log to the workflow name and branch of its run and to its failure group.
+# logs are cut to their header plus the failing region onwards (the 38xxx
+# ones keep, per job, its first line, the 40 lines before its first generic
+# exit line and every ##[error] line). A `<log>.failed-jobs.txt` beside a log
+# is the same run's `gh run view <id> --json jobs` summary in the shape
+# `Gather failure context` writes. cases.tsv maps each log to the workflow
+# name and branch of its run and to its failure group.
 #
 # Usage: bash .github/tests/auto-fix-dedup/run.sh [workflow-file]
 set -euo pipefail
@@ -119,6 +123,23 @@ assert_contains "$(step_field "$CLAUDE_STEP" .with.claude_args)" \
   "\${{ steps.existing.outputs.mode != 'create' && '--disallowedTools \"Bash(gh issue create *),Bash(gh issue new *)\"' || '' }}" \
   "Claude step claude_args"
 
+# The fix commit is pushed with the checkout's credential, and a GITHUB_TOKEN
+# push starts no CI (mcu-tinkering-lab#749 merged an unverified fix). App
+# token first, then PAT_TOKEN, then GITHUB_TOKEN; the App token step must run
+# before the checkout that uses it.
+CASE_NAME=push-credential
+CHECKOUT_STEP='Checkout failed branch'
+APP_STEP='Generate GitHub App token'
+assert_eq "$(step_field "$CHECKOUT_STEP" .with.token)" \
+  "\${{ inputs.app-id != '' && steps.app-token.outputs.token || secrets.PAT_TOKEN || github.token }}" "checkout token"
+assert_eq "$(step_field "$APP_STEP" .id)" app-token "'$APP_STEP' id"
+assert_eq "$(step_field "$APP_STEP" .if)" "inputs.app-id != ''" "'$APP_STEP' if:"
+assert_eq "$(yq -r '.on.workflow_call.secrets.APP_PRIVATE_KEY.required' "$WORKFLOW")" false "secret APP_PRIVATE_KEY required"
+p_app="$(pos "$APP_STEP")"; p_checkout="$(pos "$CHECKOUT_STEP")"
+ok
+[ -n "$p_app" ] && [ -n "$p_checkout" ] && [ "$p_app" -lt "$p_checkout" ] \
+  || fail "'$APP_STEP' (${p_app:-missing}) must run before '$CHECKOUT_STEP' (${p_checkout:-missing})"
+
 # Step wiring. A mistyped `steps.<id>.outputs.<key>` is neither a YAML nor an
 # actionlint error; it evaluates to '' at run time. An empty SIGNATURE turns
 # dedup off with every check green, which is the original bug again.
@@ -164,6 +185,7 @@ refs_report="$(yq -o=json '.jobs["auto-fix"].steps' "$WORKFLOW" | jq -r '
       | (first(range($i) | select($s[.].id == $id)) // null) as $d
       | { at: $s[$i].name, ref: "steps.\($id).outputs.\($key)",
           problem: (if $d == null then "no earlier step has id \($id)"
+                    elif (($s[$d].uses // "") | startswith("actions/create-github-app-token@")) and $key == "token" then null
                     elif (($s[$d].run // "") | test("echo \"" + $key + "(=|<<)") | not)
                     then "step \($id) never writes \($key) to GITHUB_OUTPUT"
                     else null end) } ]
@@ -205,6 +227,9 @@ run_sig() { # <log file or ''> <workflow name> <branch>
   rm -rf "$work/run"
   mkdir -p "$work/run/ctx"
   if [ -n "$1" ]; then cp "$1" "$work/run/ctx/failure-logs.txt"; fi
+  if [ -n "$1" ] && [ -f "${1%.log}.failed-jobs.txt" ]; then
+    cp "${1%.log}.failed-jobs.txt" "$work/run/ctx/failed-jobs.txt"
+  fi
   : > "$work/run/output"
   set +e
   GITHUB_OUTPUT="$work/run/output" CONTEXT_DIR="$work/run/ctx" WORKFLOW_NAME="$2" BRANCH="$3" \
@@ -232,6 +257,28 @@ expect_group() {
     mcu-ty)
       EXP_SRC=hook
       EXP_LINE='pre-commit hook failed: ty' ;;
+    # Test Suite's summary job re-fails with "Critical quality checks
+    # failed!" after the job that broke. Picking that line gave these three
+    # unrelated failures one signature (716cd5820e62); the first failing
+    # job now decides, falling back to its failed step.
+    mcu-suite-sync)
+      EXP_SRC=step
+      EXP_LINE='failed step: Code Quality Checks / Sync simulation dev dependencies (for ty pre-commit hook)' ;;
+    mcu-suite-precommit)
+      EXP_SRC=step
+      EXP_LINE='failed step: Code Quality Checks / Run pre-commit hooks' ;;
+    mcu-suite-torch)
+      EXP_SRC=exception
+      # shellcheck disable=SC2016 # the backticks are part of the log line
+      EXP_LINE='error: Distribution `torch==2.14.1 @ registry+https://pypi.org/simple` can'"'"'t be installed because it doesn'"'"'t have a source distribution or wheel for the current platform' ;;
+    # uv's lowercase `error:` matched no pattern, so these had no signature.
+    mcu-build-deps)
+      EXP_SRC=step
+      EXP_LINE='failed step: Build Python Simulation / Install dependencies' ;;
+    mcu-build-torch)
+      EXP_SRC=exception
+      # shellcheck disable=SC2016 # the backticks are part of the log line
+      EXP_LINE='error: Distribution `torch==2.14.1 @ registry+https://pypi.org/simple` can'"'"'t be installed because it doesn'"'"'t have a source distribution or wheel for the current platform' ;;
     *) EXP_SRC='?'; EXP_LINE='?' ;;
   esac
 }
