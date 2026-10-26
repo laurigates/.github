@@ -1,0 +1,148 @@
+name: Merge Method (Reusable)
+
+# Says on every PR whether to "Rebase and merge" or "Squash and merge", so the
+# merge button's last-used default stops deciding. Two outputs:
+#
+#   - a `merge-method` check run on the PR head whose title is the
+#     recommendation ("→ Rebase and merge (3 independent conventional
+#     commits)", "→ Squash and merge (in-PR fixup) · body: 2 lint issues");
+#     its summary carries the rule, the reason and any PR-body lint findings.
+#     Conclusion `success`, or `neutral` when the body has lint findings or the
+#     PR could not be read. Never make it a required check: it advises, and
+#     GitHub cannot tell a check which method the merge will use.
+#   - exactly one `merge:rebase` or `merge:squash` label, applied by this
+#     workflow. A label a human applies instead is an override: the decision
+#     script reads the labeled event's actor, reports OVERRIDE=<label>, and this
+#     workflow then leaves the labels alone. Remove the human label to hand the
+#     choice back. The labels themselves are provisioned by laurigates/gitops
+#     (labels.tf); a repo without them still gets the check run.
+#
+# The decision is git-plugin/scripts/pr-merge-method.py in laurigates/claude-plugins,
+# the same script the git-plugin `gh pr merge` hook runs, fetched at the
+# commit pinned in `plugins-ref`. Its rule table lives in
+# git-plugin/skills/github-pr-title/merge-strategies.md.
+#
+# Label and check-run writes made with GITHUB_TOKEN start no workflow, so the
+# `labeled`/`unlabeled` triggers below fire only on human label changes and the
+# workflow cannot loop on its own label.
+#
+# Fork PRs are skipped: their GITHUB_TOKEN is read-only, so neither write
+# would land.
+#
+# Example caller (.github/workflows/merge-method.yml):
+#
+#   name: Merge method
+#   on:
+#     pull_request:
+#       types: [opened, synchronize, reopened, edited, labeled, unlabeled]
+#   permissions:
+#     checks: write
+#     pull-requests: write
+#     contents: read
+#   jobs:
+#     merge-method:
+#       uses: laurigates/.github/.github/workflows/reusable-merge-method.yml@main
+
+on:
+  workflow_call:
+    inputs:
+      plugins-ref:
+        description: 'laurigates/claude-plugins commit that provides git-plugin/scripts/pr-merge-method.py'
+        required: false
+        type: string
+        # laurigates/claude-plugins#3227 (git-plugin pr-merge-method.py). Bump by hand
+        # when the rule table changes; Renovate does not track a `with: ref:` pin.
+        default: '8dded82e45a5723f823164b031430359ce4ff451'
+
+permissions:
+  checks: write
+  pull-requests: write
+  contents: read
+
+jobs:
+  classify:
+    name: Classify merge method
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    # ubuntu-slim: one stdlib python3 script plus `gh` API calls.
+    runs-on: ubuntu-slim
+    timeout-minutes: 5
+    steps:
+      - name: Fetch the decision script
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          repository: laurigates/claude-plugins
+          ref: ${{ inputs.plugins-ref }}
+          path: .merge-method
+          sparse-checkout: git-plugin/scripts/pr-merge-method.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -uo pipefail
+          python3 .merge-method/git-plugin/scripts/pr-merge-method.py --repo "$REPO" --pr "$PR" >"$RUNNER_TEMP/merge-method.txt"
+          echo "decide exit: $?"
+          cat "$RUNNER_TEMP/merge-method.txt"
+
+      - name: Publish check run and label
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RESULT: ${{ runner.temp }}/merge-method.txt
+        run: |
+          set -euo pipefail
+          get() { sed -n "s/^$1=//p" "$RESULT" | head -n1; }
+          status=$(get STATUS)
+          method=$(get METHOD)
+          override=$(get OVERRIDE)
+
+          if [ "$status" = ERROR ] || { [ "$method" != rebase ] && [ "$method" != squash ]; }; then
+            title="Merge method unknown"
+            conclusion=neutral
+            summary="The decision script could not read this PR: \`$(get REASON)\`. Pick the method by hand; see merge-strategies.md in laurigates/claude-plugins."
+          else
+            title=$(get TITLE)
+            conclusion=success
+            [ "$(get BODY_LINT)" = 0 ] || conclusion=neutral
+            summary="**Rule $(get RULE): \`$(get REASON)\`**. $(get DETAIL)"
+            [ "$override" = none ] || summary+=$'\n\n'"Overridden by the human-applied \`$override\` label."
+            summary+=$'\n\n'"Commits: $(get COMMITS). Squash body: \`$(get SQUASH_BODY)\`."
+            if [ "$(get BODY_LINT)" != 0 ]; then
+              summary+=$'\n\n'"The PR body becomes the squash commit body, and it has lint findings:"$'\n'
+              summary+=$(sed -n 's/^LINT_\([A-Z_]*\)=\(.*\)/- `\1`: \2/p' "$RESULT")
+              summary+=$'\n\n'"Checklists, HTML comments and headings read as noise in \`git log\`; a body older than the newest commit may no longer describe it."
+            fi
+          fi
+
+          jq -nc --arg sha "$HEAD_SHA" --arg title "$title" --arg summary "$summary" --arg conclusion "$conclusion" \
+            '{name: "merge-method", head_sha: $sha, status: "completed", conclusion: $conclusion,
+              output: {title: $title, summary: $summary}}' |
+            gh api -X POST "repos/$REPO/check-runs" --input - --jq '.html_url'
+
+          if [ "$status" = ERROR ]; then
+            echo "::error::pr-merge-method.py failed: $(get REASON)"
+            exit 1
+          fi
+          # A human-applied label is the decision; leave the labels as they are.
+          [ "$override" = none ] || exit 0
+
+          want="merge:$method"
+          other="merge:squash"
+          [ "$method" = rebase ] || other="merge:rebase"
+          current=$(gh api "repos/$REPO/issues/$PR/labels" --jq '.[].name')
+          if grep -qx "$other" <<<"$current"; then
+            gh api -X DELETE "repos/$REPO/issues/$PR/labels/$other" --silent
+          fi
+          if ! grep -qx "$want" <<<"$current"; then
+            if ! gh api "repos/$REPO/labels/$want" --silent 2>/dev/null; then
+              echo "::warning::label $want does not exist in $REPO (provisioned by laurigates/gitops labels.tf); check run posted without it"
+              exit 0
+            fi
+            gh api -X POST "repos/$REPO/issues/$PR/labels" -f "labels[]=$want" --silent
+          fi
