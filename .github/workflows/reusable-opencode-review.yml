@@ -14,7 +14,8 @@ name: OpenCode PR Review (Reusable)
 # posted review touch no reviewable file; and diffs over max-diff-lines (also
 # written to the job summary). A missing OPENCODE_API_KEY, a key OpenCode
 # rejects, and a model id OpenCode does not list fail the job red instead of
-# skipping it green.
+# skipping it green. So does an opencode run still going 3 minutes before
+# timeout-minutes, which is stopped and prints opencode's own error log.
 #
 # The model cannot run commands, fetch URLs, or write anything except
 # .opencode-review/findings.json: OPENCODE_PERMISSION below denies every other
@@ -79,7 +80,7 @@ on:
         type: boolean
         default: true
       timeout-minutes:
-        description: 'Job timeout in minutes'
+        description: 'Job timeout in minutes. The opencode run is stopped 3 minutes earlier (after 1 minute when this is 4 or less) and fails the job with its log'
         required: false
         type: number
         default: 15
@@ -423,6 +424,7 @@ jobs:
         env:
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
           MODEL: ${{ inputs.model }}
+          TIMEOUT_MINUTES: ${{ inputs.timeout-minutes }}
           REPO: ${{ github.repository }}
           RANGE: ${{ steps.diff.outputs.range }}
           PR_TITLE: ${{ github.event.pull_request.title }}
@@ -474,16 +476,42 @@ jobs:
             printf '\nFile to write: %s\n' "$findings"
           } > "$out/prompt.md"
 
+          # The run gets the job timeout less three minutes, so a run that
+          # never finishes fails here with its evidence printed, instead of
+          # being cancelled by the job timeout with an empty log. On a 429
+          # opencode waits out the provider's retry-after (capped at ~24 days)
+          # and emits no event while it does, so stdout alone shows nothing.
+          budget=$(( TIMEOUT_MINUTES > 4 ? TIMEOUT_MINUTES - 3 : 1 ))
+          # Printed on every failure below: the event types opencode emitted,
+          # its own Warn/Error log lines (a provider error carries its status,
+          # retry-after and the whole request body, hence the cut), and any
+          # other stderr, such as a crash's stack trace.
+          evidence() {
+            echo "::group::opencode evidence"
+            echo "Events: $(jq -rs 'group_by(.type) | map("\(.[0].type)=\(length)") | join(" ")' "$out/events.jsonl" 2>/dev/null)"
+            grep -E '^timestamp=[^ ]+ level=(Warn|Error) ' "$out/opencode.log" 2>/dev/null | tail -n 40 | cut -c1-2000 || true
+            grep -v '^timestamp=' "$out/opencode.log" 2>/dev/null | tail -n 40 | cut -c1-2000 || true
+            echo "::endgroup::"
+          }
+
           rc=0
-          opencode run --pure -m "$MODEL" --format json \
+          timeout --kill-after=20s "${budget}m" \
+            opencode run --pure --print-logs -m "$MODEL" --format json \
             -f "$work/diff.patch" -f "$work/pull-request.md" \
-            -- "$(cat "$out/prompt.md")" > "$out/events.jsonl" || rc=$?
+            -- "$(cat "$out/prompt.md")" > "$out/events.jsonl" 2> "$out/opencode.log" || rc=$?
           jq -r 'select(.type == "error") | "opencode error: \(.error.data.message // .error.name // .error)"' "$out/events.jsonl" 2>/dev/null || true
+          if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+            evidence
+            echo "::error title=OpenCode review::opencode run did not finish within ${budget} minutes and was stopped; nothing was reviewed"
+            exit 1
+          fi
           if [ "$rc" -ne 0 ]; then
+            evidence
             echo "::error title=OpenCode review::opencode run exited $rc; nothing was reviewed"
             exit 1
           fi
           if [ ! -s "$findings" ]; then
+            evidence
             echo "::error title=OpenCode review::opencode finished without writing $work/findings.json; nothing was reviewed"
             exit 1
           fi
