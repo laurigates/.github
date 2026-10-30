@@ -173,6 +173,13 @@ for spec in reusable-claude-review.yml:review reusable-claude.yml:claude; do
   mixed="$(files mixed .claude/settings.json .mcp.json src/app.ts)"
   code="$(files code src/app.ts README.md)"
   nested_mcp="$(files nested-mcp .claude/settings.json packages/a/.mcp.json)"
+  # A rename lists the new path in filename and the old one in
+  # previous_filename; the old path leaves the reviewed tree.
+  rename_in="$work/fx-rename-in.json"
+  jq -n '[{filename: ".claude/app.ts", previous_filename: "src/app.ts", status: "renamed"}]' > "$rename_in"
+  rename_within="$work/fx-rename-within.json"
+  jq -n '[{filename: ".claude/new.md", previous_filename: ".claude/old.md", status: "renamed"},
+          {filename: ".mcp.json", status: "modified"}]' > "$rename_within"
 
   # ---- behaviour
   CASE="$short/author-skip"
@@ -201,6 +208,16 @@ for spec in reusable-claude-review.yml:review reusable-claude.yml:claude; do
   CASE="$short/root-anchored-mcp"
   run_gate "$body" laurigates 7 "$nested_mcp"
   expect_run
+
+  # Renaming code into .claude/ removes it from the reviewed tree.
+  CASE="$short/rename-into-skip-paths-run"
+  run_gate "$body" laurigates 7 "$rename_in"
+  expect_run
+
+  # A rename inside .claude/ stays a sync-only change, counted once.
+  CASE="$short/rename-within-skip-paths-skip"
+  run_gate "$body" laurigates 7 "$rename_within"
+  expect_skip "every changed file (2) matches skip_paths"
 
   CASE="$short/other-bot-run"
   run_gate "$body" 'renovate[bot]' 7 "$code"

@@ -199,12 +199,14 @@ jobs:
             echo "run=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          names="$(gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" | jq -rs 'add // [] | .[].filename')"
-          total=0
+          listing="$(gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" | jq -s 'add // []')"
+          total="$(jq 'length' <<< "$listing")"
+          # A rename also takes previous_filename out of the reviewed tree, so the
+          # old path must match skip_paths as well as the new one.
+          names="$(jq -r '.[] | .filename, (.previous_filename // empty)' <<< "$listing")"
           kept=0
           while IFS= read -r f; do
             [ -n "$f" ] || continue
-            total=$((total + 1))
             matched=false
             while IFS= read -r pat; do
               # shellcheck disable=SC2053 # $pat is a pattern on purpose; '*' crosses '/'
@@ -217,7 +219,7 @@ jobs:
           if [ "$total" -gt 0 ] && [ "$total" -lt 3000 ] && [ "$kept" -eq 0 ]; then
             skip "every changed file ($total) matches skip_paths"
           fi
-          echo "$kept of $total changed file(s) fall outside skip_paths."
+          echo "$kept path(s) in $total changed file(s) fall outside skip_paths."
           echo "run=true" >> "$GITHUB_OUTPUT"
 
       - name: Checkout repository
