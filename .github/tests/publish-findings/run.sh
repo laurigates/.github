@@ -536,13 +536,13 @@ awk '
   inrun                                            { print }
 ' "$WORKFLOW" | sed 's/^          //' > "$work/report.sh"
 
-# run_report <name> <unsupported-event> <skipped-for-size> [<refused-actor>] [<unchanged>]
+# run_report <name> <unsupported-event> <skipped-for-size> [<refused-actor>] [<unchanged>] [<refused-author>]
 run_report() {
   CASE_NAME="report/$1"
   rm -rf "$work/run"
   mkdir -p "$work/run"
   set +e
-  TITLE='Test Analysis' UNSUPPORTED_EVENT="$2" SKIPPED_FOR_SIZE="$3" REFUSED_ACTOR="${4:-}" UNCHANGED_SINCE_CLEAN="${5:-}" \
+  TITLE='Test Analysis' UNSUPPORTED_EVENT="$2" SKIPPED_FOR_SIZE="$3" REFUSED_ACTOR="${4:-}" UNCHANGED_SINCE_CLEAN="${5:-}" REFUSED_AUTHOR="${6:-}" \
     NOTHING_SCANNED_REASON='no changed file matched the configured patterns' \
     GITHUB_STEP_SUMMARY="$work/run/summary.md" \
     bash "$work/report.sh" > "$work/run/annotations.txt" 2> "$work/run/stderr.txt"
@@ -574,6 +574,16 @@ assert_rc 0
 assert_lines "$ANNOTATIONS" '^::notice::' 1
 assert_in "$SUMMARY" "the actor 'laurigates-renovate[bot]' is a bot that allowed-bots does not list"
 assert_in "$SUMMARY" 'green because nothing was scanned'
+assert_not_in "$SUMMARY" 'no changed file matched'
+
+# A bot-authored PR whose run a human triggered (a push or reopen on the
+# claude-config-sync App's PR) names the author, not the actor.
+run_report refused-author '' '' '' '' 'laurigates-claude-config-sync[bot]'
+assert_rc 0
+assert_lines "$ANNOTATIONS" '^::notice::' 1
+assert_in "$SUMMARY" "the PR author 'laurigates-claude-config-sync[bot]' is a bot that allowed-bots does not list"
+assert_in "$SUMMARY" 'green because nothing was scanned'
+assert_not_in "$SUMMARY" 'the actor'
 assert_not_in "$SUMMARY" 'no changed file matched'
 
 # An unsupported trigger still wins: the actor step never ran.

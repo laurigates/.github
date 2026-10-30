@@ -128,38 +128,48 @@ jobs:
       # everything up to the analysis, and the shared 'Report that nothing
       # was scanned' step says why. The action itself decides by account
       # type, so a bot whose login lacks the suffix still reaches it.
+      # The PR author gets the same rule: the action checks only the actor,
+      # so a human reopening or pushing to a bot's PR (the claude-config-sync
+      # App's, which touches only .claude/** and .mcp.json) would otherwise
+      # run Claude on it (laurigates/gitops#341).
       - name: Check actor is allowed
         id: actor
         if: steps.event.outputs.supported == 'true'
         env:
           ACTOR: ${{ github.actor }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
           ALLOWED_BOTS: ${{ inputs.allowed-bots }}
         run: |
           set -euo pipefail
           trim() { local s="$1"; s="${s#"${s%%[![:space:]]*}"}"; printf '%s' "${s%"${s##*[![:space:]]}"}"; }
-          actor="$(printf '%s' "${ACTOR:-}" | tr '[:upper:]' '[:lower:]')"
-          name="${actor%\[bot\]}"
-          allowed=false
-          if [ "$name" = "$actor" ]; then
-            allowed=true
-          elif [ "$(trim "${ALLOWED_BOTS:-}")" = '*' ]; then
-            allowed=true
-          else
+          # allowed <login>: true for a login without the [bot] suffix (an
+          # empty one included: no PR author outside a PR event), and for a
+          # bot that allowed-bots lists.
+          allowed() {
+            local login name bot bots
+            login="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+            name="${login%\[bot\]}"
+            if [ "$name" = "$login" ]; then return 0; fi
+            if [ "$(trim "${ALLOWED_BOTS:-}")" = '*' ]; then return 0; fi
             IFS=, read -r -a bots <<<"$(printf '%s' "${ALLOWED_BOTS:-}" | tr '[:upper:]' '[:lower:]')"
             for bot in "${bots[@]}"; do
               bot="$(trim "$bot")"
               bot="${bot%\[bot\]}"
-              if [ -n "$bot" ] && [ "$bot" = "$name" ]; then allowed=true; fi
+              if [ -n "$bot" ] && [ "$bot" = "$name" ]; then return 0; fi
             done
-          fi
-          if [ "$allowed" = true ]; then
-            echo "allowed=true" >> "$GITHUB_OUTPUT"
+            return 1
+          }
+          # A login is [A-Za-z0-9-] plus the suffix; anything else is dropped
+          # before it reaches GITHUB_OUTPUT or a workflow command.
+          shown() { printf '%s' "$1" | tr -cd 'A-Za-z0-9_.[]-'; }
+          if ! allowed "${ACTOR:-}"; then
+            { echo "allowed=false"; echo "refused=$(shown "${ACTOR:-}")"; } >> "$GITHUB_OUTPUT"
+            echo "Actor '$(shown "${ACTOR:-}")' is a bot that allowed-bots does not list; skipping everything up to the analysis."
+          elif ! allowed "${AUTHOR:-}"; then
+            { echo "allowed=false"; echo "refused_author=$(shown "${AUTHOR:-}")"; } >> "$GITHUB_OUTPUT"
+            echo "PR author '$(shown "${AUTHOR:-}")' is a bot that allowed-bots does not list; skipping everything up to the analysis."
           else
-            # A login is [A-Za-z0-9-] plus the suffix; anything else is dropped
-            # before it reaches GITHUB_OUTPUT or a workflow command.
-            shown="$(printf '%s' "${ACTOR:-}" | tr -cd 'A-Za-z0-9_.[]-')"
-            { echo "allowed=false"; echo "refused=${shown}"; } >> "$GITHUB_OUTPUT"
-            echo "Actor '${shown}' is a bot that allowed-bots does not list; skipping everything up to the analysis."
+            echo "allowed=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Checkout repository
@@ -562,6 +572,7 @@ jobs:
           SKIPPED_FOR_SIZE: ${{ steps.changed.outputs.skip }}
           UNSUPPORTED_EVENT: ${{ steps.event.outputs.unsupported }}
           REFUSED_ACTOR: ${{ steps.actor.outputs.refused }}
+          REFUSED_AUTHOR: ${{ steps.actor.outputs.refused_author }}
           UNCHANGED_SINCE_CLEAN: ${{ steps.changed.outputs.unchanged }}
           NOTHING_SCANNED_REASON: 'no changed file matched the configured patterns'
         run: |
@@ -570,6 +581,8 @@ jobs:
             REASON="this workflow does not support the '$UNSUPPORTED_EVENT' trigger (anthropics/claude-code-action rejects it); call it from pull_request"
           elif [ -n "${REFUSED_ACTOR:-}" ]; then
             REASON="the actor '$REFUSED_ACTOR' is a bot that allowed-bots does not list, and anthropics/claude-code-action refuses it"
+          elif [ -n "${REFUSED_AUTHOR:-}" ]; then
+            REASON="the PR author '$REFUSED_AUTHOR' is a bot that allowed-bots does not list, so its PR is not analysed whoever triggered the run"
           elif [ "${SKIPPED_FOR_SIZE:-false}" = "true" ]; then
             REASON="the PR diff exceeded max-diff-lines, so the diff-size gate skipped the analysis"
           elif [ "${UNCHANGED_SINCE_CLEAN:-}" = "true" ]; then
