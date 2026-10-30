@@ -173,8 +173,12 @@ jobs:
               echo "::notice::PR #$number: its head $head is a protected branch; skipping (never pushed to)"
               continue
             fi
+            # chore/claude-config-sync is the claude-config-sync App's branch
+            # (laurigates/gitops#341). Its PR only touches Claude config and the
+            # reconciler recreates it from main on its next run, so resolving it
+            # with Claude would spend quota on a PR that is cheaper to rebuild.
             case "$head" in
-              chore/update-version-tracking-*|dependabot/*|renovate/*|release-please--branches--*)
+              chore/update-version-tracking-*|chore/claude-config-sync|dependabot/*|renovate/*|release-please--branches--*)
                 echo "::notice::PR #$number is a stale automated PR (branch: $head) — closing instead of resolving"
                 if gh pr comment "$number" --repo "$REPO" \
                      --body "Closing this stale automated PR due to merge conflicts. It will be recreated automatically on the next run." &&

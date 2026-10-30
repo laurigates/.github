@@ -2,6 +2,8 @@ name: Claude Code (Reusable)
 
 # Enables @claude mentions in issues, PRs, and review comments.
 # Claude uses CLAUDE.md files in the calling repo for project context.
+# On a PR it skips green when the PR author is in skip_authors or every
+# changed file matches skip_paths (Claude config, by default).
 
 on:
   workflow_call:
@@ -61,6 +63,28 @@ on:
         required: false
         type: string
         default: ''
+      skip_authors:
+        description: >-
+          PR authors whose pull requests Claude does not run on, comma- or
+          newline-separated, compared case-insensitively with the [bot] suffix
+          included. Checked against the PR author, not the actor, so a human
+          reopening or pushing to such a PR does not start a run. The default
+          is the claude-config-sync App, whose PRs touch only Claude config
+          (laurigates/gitops#341). '' disables the check
+        required: false
+        type: string
+        default: 'laurigates-claude-config-sync[bot]'
+      skip_paths:
+        description: >-
+          Bash patterns, comma- or newline-separated, for files that never
+          need Claude; '*' (and so '**') matches across '/'. A PR whose every
+          changed file matches one is skipped. Setting this replaces the
+          default list; '' disables the check
+        required: false
+        type: string
+        default: |
+          .claude/**
+          .mcp.json
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
@@ -89,13 +113,97 @@ jobs:
     runs-on: ${{ inputs.runner }}
     timeout-minutes: ${{ inputs.timeout_minutes }}
     steps:
+      # On a PR (a comment on one, or a review), skips green, before checkout
+      # and before Claude, when the PR author is in skip_authors or every
+      # changed file matches skip_paths. PR is empty for a plain issue, which
+      # is never skipped. The run: body is identical in
+      # reusable-claude-review.yml; the claude-cost-guard test runs both.
+      - name: Check PR author and changed paths
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number || (github.event.issue.pull_request && github.event.issue.number) || '' }}
+          AUTHOR: ${{ github.event.pull_request.user.login || github.event.issue.user.login }}
+          SKIP_AUTHORS: ${{ inputs.skip_authors }}
+          SKIP_PATHS: ${{ inputs.skip_paths }}
+        run: |
+          set -euo pipefail
+          skip() {
+            echo "::notice title=Claude skipped::$1"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+          # Not a pull request (an @claude on a plain issue): nothing here applies.
+          if [ -z "${PR:-}" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! [[ "$PR" =~ ^[0-9]+$ ]]; then
+            echo "::error title=Claude::the event carries no usable PR number"
+            exit 1
+          fi
+          # entries <input>: one entry per line from a comma- or newline-separated
+          # input, trimmed, with blank entries and '#' comments dropped.
+          entries() {
+            local e
+            while IFS= read -r e; do
+              e="${e#"${e%%[![:space:]]*}"}"
+              e="${e%"${e##*[![:space:]]}"}"
+              case "$e" in '' | '#'*) continue ;; esac
+              printf '%s\n' "$e"
+            done < <(printf '%s\n' "$1" | tr ',' '\n')
+          }
+          lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
+          # The author, not the actor: a human reopening or pushing to the sync PR
+          # is the actor, and the PR is still the App's. A login is [A-Za-z0-9-]
+          # plus the [bot] suffix; anything else is dropped before it reaches a
+          # workflow command.
+          author="$(printf '%s' "${AUTHOR:-}" | tr -cd 'A-Za-z0-9_.[]-')"
+          if [ -n "$author" ]; then
+            while IFS= read -r who; do
+              if [ "$(lower "$who")" = "$(lower "$author")" ]; then
+                skip "the PR author '$author' is listed in skip_authors"
+              fi
+            done < <(entries "${SKIP_AUTHORS:-}")
+          fi
+
+          patterns="$(entries "${SKIP_PATHS:-}")"
+          if [ -z "$patterns" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          names="$(gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" | jq -rs 'add // [] | .[].filename')"
+          total=0
+          kept=0
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            total=$((total + 1))
+            matched=false
+            while IFS= read -r pat; do
+              # shellcheck disable=SC2053 # $pat is a pattern on purpose; '*' crosses '/'
+              if [[ "$f" == $pat ]]; then matched=true; break; fi
+            done <<< "$patterns"
+            [ "$matched" = true ] || kept=$((kept + 1))
+          done <<< "$names"
+          # The files API lists at most 3000 files, so a list that long cannot prove
+          # that every file matched. An empty list proves nothing either.
+          if [ "$total" -gt 0 ] && [ "$total" -lt 3000 ] && [ "$kept" -eq 0 ]; then
+            skip "every changed file ($total) matches skip_paths"
+          fi
+          echo "$kept of $total changed file(s) fall outside skip_paths."
+          echo "run=true" >> "$GITHUB_OUTPUT"
+
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+        if: steps.gate.outputs.run == 'true'
 
       - name: Run Claude Code
         id: claude
+        if: steps.gate.outputs.run == 'true'
         continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
