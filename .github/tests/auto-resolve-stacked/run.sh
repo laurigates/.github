@@ -122,7 +122,7 @@ check_order() { # <job> <step>...
 }
 check_order resolve "Checkout PR branch" "$DETECT_STEP" "$PRIOR_STEP" "$MERGE_STEP" "$CLAUDE_STEP" "$CHECK_STEP" "Upload resolution report"
 check_order build "Download resolution report" "$READ_STEP" "Checkout PR head" "$BUILD_STEP" "Upload build result"
-check_order publish "Get PR details" "Download resolution report" "Download build result" "$READ_STEP" "$STACKED_STEP" "$PUBLISH_STEP"
+check_order publish "Generate GitHub App token" "Get PR details" "Download resolution report" "Download build result" "$READ_STEP" "$STACKED_STEP" "$PUBLISH_STEP"
 
 # ------------------------------------------------------------------ contract
 CASE_NAME=contract
@@ -168,6 +168,10 @@ jobs_with() { # <needle>: jobs whose definition mentions it
   yq -o=json '.jobs' "$WORKFLOW" | jq -r --arg n "$1" 'to_entries[] | select(.value | tojson | contains($n)) | .key' | paste -sd, -
 }
 assert_eq "$(jobs_with RELEASE_PLEASE_TOKEN)" publish "jobs that reference the push credential"
+# The App token is a push credential too: minted and read in publish only.
+for needle in APP_PRIVATE_KEY create-github-app-token steps.app-token inputs.app-id; do
+  assert_eq "$(jobs_with "$needle")" publish "jobs that reference $needle"
+done
 assert_eq "$(jobs_with 'bash -c \"$BUILD_COMMAND\"')" build "jobs that run build-command"
 assert_eq "$(yq -o=json '.jobs.build' "$WORKFLOW" | jq -r 'tojson | test("secrets\\.|github\\.token")')" false "build job references no secret or token"
 assert_eq "$(yq -o=json -I=0 '.jobs.resolve.permissions' "$WORKFLOW")" '{"contents":"read","pull-requests":"read","issues":"read"}' "resolve permissions"
@@ -186,10 +190,17 @@ done
 
 # Wiring of the values the steps trust.
 while IFS='|' read -r job step key want; do
-  assert_eq "$(step_field "$job" "$step" ".env.$key")" "$want" "$job/'$step' env $key"
+  case "$key" in if) path=.if ;; with.*) path=".with[\"${key#with.}\"]" ;; *) path=".env.$key" ;; esac
+  assert_eq "$(step_field "$job" "$step" "$path")" "$want" "$job/'$step' $path"
 done <<'WIRING'
-publish|Validate and push resolution|HAS_PAT|${{ secrets.RELEASE_PLEASE_TOKEN != '' }}
-publish|Validate and push resolution|PUSH_TOKEN|${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+publish|Validate and push resolution|PUSH_CREDENTIAL|${{ inputs.app-id != '' && 'app-token' || secrets.RELEASE_PLEASE_TOKEN != '' && 'RELEASE_PLEASE_TOKEN' || 'GITHUB_TOKEN' }}
+publish|Validate and push resolution|PUSH_TOKEN|${{ inputs.app-id != '' && steps.app-token.outputs.token || secrets.RELEASE_PLEASE_TOKEN || github.token }}
+publish|Generate GitHub App token|if|inputs.app-id != ''
+publish|Generate GitHub App token|with.client-id|${{ inputs.app-id }}
+publish|Generate GitHub App token|with.private-key|${{ secrets.APP_PRIVATE_KEY }}
+find-conflicts|Find conflicting PRs|SKIP_RELEASE_PLEASE|${{ inputs.skip-release-please }}
+resolve|Resolve conflicts with Claude|MODEL|${{ inputs.model }}
+resolve|Resolve conflicts with Claude|EFFORT|${{ inputs.effort }}
 publish|Validate and push resolution|BUILD_COMMAND|${{ inputs.build-command }}
 publish|Validate and push resolution|HEAD_BRANCH|${{ steps.pr.outputs.head_branch }}
 publish|Validate and push resolution|CROSS_REPO|${{ steps.pr.outputs.cross_repo }}
@@ -209,6 +220,16 @@ build|Build resolution|BUILD_COMMAND|${{ inputs.build-command }}
 WIRING
 assert_eq "$(yq -r '.on.workflow_call.inputs["build-command"].default' "$WORKFLOW")" "" "input build-command default"
 assert_eq "$(yq -r '.on.workflow_call.inputs["build-command"].required' "$WORKFLOW")" "false" "input build-command required"
+while IFS='|' read -r input field want; do
+  assert_eq "$(yq -r ".on.workflow_call.inputs[\"$input\"].$field" "$WORKFLOW")" "$want" "input $input $field"
+done <<'INPUTS'
+app-id|default|
+model|default|claude-opus-5-5
+effort|default|medium
+skip-release-please|type|boolean
+skip-release-please|default|false
+INPUTS
+assert_eq "$(yq -r '.on.workflow_call.secrets.APP_PRIVATE_KEY.required' "$WORKFLOW")" false "secret APP_PRIVATE_KEY required"
 
 # Gates: neither the merge nor the agent runs for a stacked PR; the gates
 # chain on explicit 'false' values the detection and lookup steps write.
@@ -250,6 +271,7 @@ for job in find-conflicts resolve build publish; do
             problem: (if $d == null then "no earlier step has id \($id)"
                       elif (($s[$d].run // "") | test("echo \"" + $key + "(=|<<)")) then null
                       elif $s[$d].name == "Read resolution report" and ($check | test("--arg " + $key + " ")) then null
+                      elif (($s[$d].uses // "") | startswith("actions/create-github-app-token@")) and $key == "token" then null
                       else "step \($id) never writes \($key) to GITHUB_OUTPUT" end) } ]
     | .[] | if .problem == null then "resolved|\(.at)|\(.ref)" else "unresolved|\(.at): \(.ref): \(.problem)" end')"
   while IFS= read -r line; do
@@ -430,7 +452,7 @@ run_detect() {
 }
 
 # ------------------------------------------------------------ find-conflicts
-CASE_NAME=find
+CASE_NAME='find'
 new_case find
 cat > "$STUB_DIR/prs.json" <<'JSON'
 [{"number": 7, "mergeable": "CONFLICTING", "headRefName": "feature", "isCrossRepository": false},
@@ -438,32 +460,41 @@ cat > "$STUB_DIR/prs.json" <<'JSON'
  {"number": 9, "mergeable": "CONFLICTING", "headRefName": "feature", "isCrossRepository": true},
  {"number": 10, "mergeable": "MERGEABLE", "headRefName": "other", "isCrossRepository": false},
  {"number": 11, "mergeable": "CONFLICTING", "headRefName": "main", "isCrossRepository": false},
- {"number": 12, "mergeable": "CONFLICTING", "headRefName": "release/1.x", "isCrossRepository": false}]
+ {"number": 12, "mergeable": "CONFLICTING", "headRefName": "release/1.x", "isCrossRepository": false},
+ {"number": 13, "mergeable": "CONFLICTING", "headRefName": "release-please--branches--main", "isCrossRepository": false}]
 JSON
 echo 'release/1.x' > "$STUB_DIR/protected"
-run_in "$C/pws" find GH_TOKEN=x PR_INPUT=
+run_in "$C/pws" find GH_TOKEN=x PR_INPUT= SKIP_RELEASE_PLEASE=false
 assert_eq "$RC" 0 "find exit ($(stderr_tail))"
 assert_eq "$(outv matrix)" '{"include":[{"pr_number":"7"}]}' "matrix (fork, stale, default-branch and protected-branch PRs left out)"
 assert_contains "$(cat "$C/stdout")" "::notice::PR #11" "notice for a PR whose head is the default branch"
 assert_contains "$(cat "$C/stdout")" "::notice::PR #12" "notice for a PR whose head is a protected branch"
 assert_eq "$(outv has_conflicts)" true "has_conflicts"
-assert_eq "$(cat "$STUB_DIR/closed.log" 2>/dev/null)" 8 "stale automated PR closed"
-assert_eq "$(comments)" 1 "stale close comment"
+assert_eq "$(paste -sd, - < "$STUB_DIR/closed.log" 2>/dev/null)" 8,13 "stale automated PRs closed (release-please included when not skipped)"
+assert_eq "$(comments)" 2 "stale close comments"
 : > "$STUB_DIR/closed.log"
-run_in "$C/pws" find GH_TOKEN=x PR_INPUT=9
+# skip-release-please: the release-please PR never reaches the loop, so it is
+# neither closed nor resolved; the other stale PR is still closed.
+run_in "$C/pws" find GH_TOKEN=x PR_INPUT= SKIP_RELEASE_PLEASE=true
+assert_eq "$RC" 0 "find exit, skip-release-please ($(stderr_tail))"
+assert_eq "$(outv matrix)" '{"include":[{"pr_number":"7"}]}' "matrix with skip-release-please"
+assert_eq "$(paste -sd, - < "$STUB_DIR/closed.log" 2>/dev/null)" 8 "closed with skip-release-please (release-please PR left alone)"
+assert_lacks "$(cat "$C/stdout")" "PR #13" "release-please PR not mentioned with skip-release-please"
+: > "$STUB_DIR/closed.log"
+run_in "$C/pws" find GH_TOKEN=x PR_INPUT=9 SKIP_RELEASE_PLEASE=false
 assert_eq "$(outv has_conflicts)" false "an explicit fork PR is not resolved"
-run_in "$C/pws" find GH_TOKEN=x 'PR_INPUT=7; touch PWNED'
+run_in "$C/pws" find GH_TOKEN=x 'PR_INPUT=7; touch PWNED' SKIP_RELEASE_PLEASE=false
 ok; [ "$RC" -ne 0 ] || fail "a non-numeric pr_number must fail"
 ok; if [ -e "$C/pws/PWNED" ]; then fail "pr_number was executed"; fi
 # A protection lookup that fails (403/404) skips the PR, never includes it.
 touch "$STUB_DIR/branches-error"
-run_in "$C/pws" find GH_TOKEN=x PR_INPUT=7
+run_in "$C/pws" find GH_TOKEN=x PR_INPUT=7 SKIP_RELEASE_PLEASE=false
 assert_eq "$RC" 0 "find exit, protection lookup failing ($(stderr_tail))"
 assert_eq "$(outv has_conflicts)" false "a PR whose branch protection cannot be read is not resolved"
 rm -f "$STUB_DIR/branches-error"
 # No default branch, no decision: the job fails instead of resolving blind.
 touch "$STUB_DIR/repo-error"
-run_in "$C/pws" find GH_TOKEN=x PR_INPUT=7
+run_in "$C/pws" find GH_TOKEN=x PR_INPUT=7 SKIP_RELEASE_PLEASE=false
 ok; [ "$RC" -ne 0 ] || fail "find must fail when the default branch cannot be read"
 assert_lacks "$(outv has_conflicts)" true "has_conflicts when the default branch cannot be read"
 rm -f "$STUB_DIR/repo-error"
@@ -542,7 +573,7 @@ assert_eq "$(comments)" 1 "comments after a second run (marker dedup)"
 run_in "$C/pws" stacked "${stacked_env[@]}" BASE_SHA=1111111111111111111111111111111111111111
 assert_eq "$RC" 0 "stacked comment exit, new base ($(stderr_tail))"
 assert_eq "$(comments)" 1 "comments after the base moved (marker keyed on the head only)"
-run_in "$C/pws" publish GH_TOKEN=x PUSH_TOKEN=x HAS_PAT=true BUILD_COMMAND= HEAD_BRANCH=p2 BASE_BRANCH=main \
+run_in "$C/pws" publish GH_TOKEN=x PUSH_TOKEN=x PUSH_CREDENTIAL=RELEASE_PLEASE_TOKEN BUILD_COMMAND= HEAD_BRANCH=p2 BASE_BRANCH=main \
   CROSS_REPO=false RUNNER_TEMP="$C/pub" GITHUB_SERVER_URL="file://$C" "OUTCOME=$R_OUTCOME" REASON= \
   "PRE_HEAD=$R_PRE_HEAD" "BASE_SHA=$R_BASE_SHA" MERGE=
 assert_eq "$RC" 0 "publish exit on the stacked path ($(stderr_tail))"
@@ -684,7 +715,7 @@ CASE_NAME=claude-prompt
 fixture_conflict prompt
 hostile='Fix `touch PWNED-bt` $(touch PWNED-cs) & ${HOME} @@BASE_BRANCH@@ \1'
 run_body claude CLAUDE_CODE_OAUTH_TOKEN=x "PR_TITLE=$hostile" HEAD_BRANCH=feature BASE_BRANCH=main \
-  CONFLICTED_FILES=x.c "BUILD_COMMAND=cc -fsyntax-only x.c"
+  CONFLICTED_FILES=x.c "BUILD_COMMAND=cc -fsyntax-only x.c" MODEL=claude-opus-5-5 EFFORT=medium
 assert_eq "$RC" 0 "Claude step exit ($(stderr_tail))"
 prompt="$(cat "$STUB_DIR/npx.prompt" 2>/dev/null || true)"
 assert_contains "$prompt" "PR #7: \"$hostile\"" "prompt carries the title verbatim"
@@ -697,12 +728,21 @@ args="$(cat "$STUB_DIR/npx.args" 2>/dev/null || true)"
 assert_lacks "$args" "git push" "CLI --allowedTools"
 assert_lacks "$args" "Bash(gh" "CLI --allowedTools"
 assert_contains "$args" "Bash(git commit *)" "CLI --allowedTools"
+flag_value() { awk -v f="$1" 'p { print; p = 0 } $0 == f { p = 1 }' "$STUB_DIR/npx.args" 2>/dev/null || true; }
+assert_eq "$(flag_value --model)" claude-opus-5-5 "CLI --model"
+assert_eq "$(flag_value --effort)" medium "CLI --effort"
 # The agent's only extra directory is one of its own: RUNNER_TEMP also holds
 # the runner's file-command files (GITHUB_ENV, GITHUB_PATH, GITHUB_OUTPUT).
 add_dirs="$(awk 'p { print; p = 0 } $0 == "--add-dir" { p = 1 }' "$STUB_DIR/npx.args" 2>/dev/null || true)"
 assert_eq "$add_dirs" "$C/tmp/auto-resolve-agent" "the agent's --add-dir"
 ok; [ -d "$C/tmp/auto-resolve-agent" ] && [ -z "$(ls -A "$C/tmp/auto-resolve-agent")" ] ||
   fail "the agent's directory exists and holds nothing (no prompt, no template)"
+# effort: '' omits the flag entirely rather than passing an empty value.
+run_body claude CLAUDE_CODE_OAUTH_TOKEN=x PR_TITLE=t HEAD_BRANCH=feature BASE_BRANCH=main \
+  CONFLICTED_FILES=x.c BUILD_COMMAND= MODEL=sonnet EFFORT=
+assert_eq "$RC" 0 "Claude step exit, empty effort ($(stderr_tail))"
+assert_eq "$(flag_value --model)" sonnet "CLI --model (caller-chosen)"
+assert_lacks "$(cat "$STUB_DIR/npx.args" 2>/dev/null)" "--effort" "CLI args with effort ''"
 
 # ------------------------------------------- check, build and publish
 # Every case: detect, the shipped merge step, the agent's action (simulated),
@@ -755,7 +795,7 @@ not_pushed() {
 unresolved_case() { # <reason>: check reports it, publish comments once and pushes nothing
   assert_eq "$CHECK_RC" 0 "check exit ($(stderr_tail))"
   assert_eq "$(outv outcome "$C/check.out")" unresolved "check outcome"
-  run_publish HAS_PAT=true BUILD_COMMAND=
+  run_publish PUSH_CREDENTIAL=RELEASE_PLEASE_TOKEN BUILD_COMMAND=
   assert_eq "$R_REASON" "$1" "report reason"
   ok; [ "$RC" -ne 0 ] || fail "publish must fail for '$1'"
   not_pushed
@@ -783,13 +823,13 @@ mkdir -p "$C/tmp/auto-resolve-agent"
 echo 'x.c: both sides set s_cfg; needs a product decision.' > "$C/tmp/auto-resolve-agent/abort.md"
 check_after_agent
 assert_eq "$(outv outcome "$C/check.out")" unresolved "check outcome"
-run_publish HAS_PAT=true BUILD_COMMAND=
+run_publish PUSH_CREDENTIAL=RELEASE_PLEASE_TOKEN BUILD_COMMAND=
 assert_eq "$RC" 0 "abort exit ($(stderr_tail))"
 not_pushed
 assert_eq "$(comments)" 1 "abort comments"
 assert_contains "$(cat "$STUB_DIR/comment.1" 2>/dev/null)" "needs a product decision" "abort comment carries the agent's reason"
 assert_contains "$(cat "$STUB_DIR/comment.1" 2>/dev/null)" "<!-- auto-resolve-conflicts:unresolved head=$PRE_HEAD base=$BASE_SHA" "abort comment marker"
-run_publish HAS_PAT=true BUILD_COMMAND=
+run_publish PUSH_CREDENTIAL=RELEASE_PLEASE_TOKEN BUILD_COMMAND=
 assert_eq "$(comments)" 1 "abort comments after a second run (marker dedup)"
 CASE_NAME=prior
 run_body prior GH_TOKEN=x EVENT_NAME=push "PRE_HEAD=$PRE_HEAD" "BASE_SHA=$BASE_SHA"
@@ -811,7 +851,7 @@ start_merge agent-failure
 check_after_agent AGENT_OUTCOME=failure
 assert_eq "$CHECK_RC" 0 "check exit ($(stderr_tail))"
 assert_eq "$(outv outcome "$C/check.out")" agent-error "check outcome"
-run_publish HAS_PAT=true BUILD_COMMAND=
+run_publish PUSH_CREDENTIAL=RELEASE_PLEASE_TOKEN BUILD_COMMAND=
 ok; [ "$RC" -ne 0 ] || fail "an agent failure must fail the job"
 not_pushed
 assert_eq "$(comments)" 0 "comments for an agent failure"
@@ -835,7 +875,7 @@ unresolved_case dirty
 
 # The job's PATH was extended (a GITHUB_PATH write) with a directory holding a
 # fake git/jq: the check step must not run them.
-CASE_NAME=path-tamper
+CASE_NAME='path-tamper'
 start_merge path-tamper
 resolve_as "$GOOD"
 mkdir -p "$C/evil"
@@ -846,7 +886,7 @@ done
 check_after_agent "PATH=$C/evil:$work/bin:$PATH"
 assert_eq "$CHECK_RC" 0 "check exit ($(stderr_tail))"
 assert_eq "$(outv outcome "$C/check.out")" resolved "check outcome"
-ok; if ls "$C"/EVIL-RAN-* >/dev/null 2>&1; then fail "the check step ran a tool from an injected PATH entry: $(ls "$C" | grep EVIL-RAN | tr '\n' ' ')"; fi
+ok; if ls "$C"/EVIL-RAN-* >/dev/null 2>&1; then fail "the check step ran a tool from an injected PATH entry: $(cd "$C" && echo EVIL-RAN-*)"; fi
 
 # The incident: both copies kept, the build catches the redefinition.
 CASE_NAME=incident
@@ -857,14 +897,14 @@ assert_eq "$(outv outcome "$C/check.out")" resolved "check outcome (structurally
 run_build "$BUILD"
 ok; [ "$RC" -ne 0 ] || fail "a failing build-command must fail the build job"
 assert_eq "$(jq -r .passed "$C/pub/auto-resolve-build/build.json" 2>/dev/null)" false "build result"
-run_publish HAS_PAT=true "BUILD_COMMAND=$BUILD"
+run_publish PUSH_CREDENTIAL=RELEASE_PLEASE_TOKEN "BUILD_COMMAND=$BUILD"
 ok; [ "$RC" -ne 0 ] || fail "a failed build must fail publish"
 not_pushed
 assert_eq "$(comments)" 1 "build-failure comments"
 c1="$(cat "$STUB_DIR/comment.1" 2>/dev/null || true)"
 assert_contains "$c1" "<!-- auto-resolve-conflicts:unresolved head=$PRE_HEAD base=$BASE_SHA reason=build-failed" "build-failure marker"
 assert_contains "$c1" "redefinition" "build-failure comment carries the compiler output"
-run_publish HAS_PAT=true "BUILD_COMMAND=$BUILD"
+run_publish PUSH_CREDENTIAL=RELEASE_PLEASE_TOKEN "BUILD_COMMAND=$BUILD"
 assert_eq "$(comments)" 1 "build-failure comments after a second run (marker dedup)"
 
 # build-command set but the build job never produced a result: no push.
@@ -872,7 +912,7 @@ CASE_NAME=no-build-result
 start_merge no-build-result
 resolve_as "$GOOD"
 check_after_agent
-run_publish HAS_PAT=true "BUILD_COMMAND=$BUILD"
+run_publish PUSH_CREDENTIAL=RELEASE_PLEASE_TOKEN "BUILD_COMMAND=$BUILD"
 ok; [ "$RC" -ne 0 ] || fail "a missing build result must fail publish"
 not_pushed
 assert_eq "$(comments)" 0 "comments without a build result"
@@ -894,7 +934,7 @@ done
 # $C/trap/octo/fixture.git (and the assertion below would see it).
 git init -q --bare "$C/trap/octo/fixture.git"
 g config --local "url.file://$C/trap/.pushInsteadOf" "file://$C/"
-run_publish HAS_PAT=true "BUILD_COMMAND=$BUILD"
+run_publish PUSH_CREDENTIAL=RELEASE_PLEASE_TOKEN "BUILD_COMMAND=$BUILD"
 assert_eq "$RC" 0 "publish exit ($(stderr_tail))"
 assert_eq "$(pushes)" 1 "pushes"
 assert_contains "$(cat "$STUB_DIR/push.log")" "$R_MERGE:refs/heads/feature" "push refspec"
@@ -914,7 +954,7 @@ resolve_as "$GOOD"
 check_after_agent
 moved=$(git --git-dir="$ORIGIN" commit-tree -p "$PRE_HEAD" -m moved "$PRE_HEAD^{tree}")
 git --git-dir="$ORIGIN" update-ref refs/heads/feature "$moved"
-run_publish HAS_PAT=true BUILD_COMMAND=
+run_publish PUSH_CREDENTIAL=RELEASE_PLEASE_TOKEN BUILD_COMMAND=
 assert_eq "$RC" 0 "publish exit ($(stderr_tail))"
 assert_eq "$(pushes)" 0 "pushes"
 assert_eq "$(remote_head feature)" "$moved" "origin/feature keeps the new commit"
@@ -934,7 +974,7 @@ jq -n --arg p "$PRE_HEAD" --arg b "$BASE_SHA" --arg m "$M" \
   '{pr: "7", outcome: "resolved", reason: "", pre_head: $p, base_sha: $b, merge: $m, equivalent: "", last_equivalent: "", ancestors: "", signal: ""}' \
   > "$C/tmp/auto-resolve-report/report.json"
 : > "$C/tmp/auto-resolve-report/detail.txt"
-run_publish HAS_PAT=true BUILD_COMMAND=
+run_publish PUSH_CREDENTIAL=RELEASE_PLEASE_TOKEN BUILD_COMMAND=
 assert_eq "$R_OUTCOME" resolved "forged report passes the reader (well-formed)"
 ok; [ "$RC" -ne 0 ] || fail "a merge whose first parent ($Z) is not the PR head must be refused"
 not_pushed
@@ -944,12 +984,12 @@ CASE_NAME=cross-repo
 start_merge cross-repo
 resolve_as "$GOOD"
 check_after_agent
-run_publish HAS_PAT=true BUILD_COMMAND= CROSS_REPO=true
+run_publish PUSH_CREDENTIAL=RELEASE_PLEASE_TOKEN BUILD_COMMAND= CROSS_REPO=true
 ok; [ "$RC" -ne 0 ] || fail "a cross-repository PR must not be pushed"
 not_pushed
 
 # The report reader rejects a malformed or foreign report.
-CASE_NAME=report-reader
+CASE_NAME='report-reader'
 R="$C/tmp/auto-resolve-report/report.json"
 cp "$R" "$C/report.good"
 run_read
@@ -980,7 +1020,7 @@ for guard in default protected lookup-error repo-error; do
     lookup-error) touch "$STUB_DIR/branches-error" ;;
     repo-error) touch "$STUB_DIR/repo-error" ;;
   esac
-  run_publish HAS_PAT=true BUILD_COMMAND=
+  run_publish PUSH_CREDENTIAL=RELEASE_PLEASE_TOKEN BUILD_COMMAND=
   ok; [ "$RC" -ne 0 ] || fail "publish must fail rather than push to a $guard head"
   not_pushed
   assert_eq "$(comments)" 0 "comments"
@@ -991,7 +1031,7 @@ CASE_NAME=no-pat
 start_merge no-pat
 resolve_as "$GOOD"
 check_after_agent
-run_publish HAS_PAT=false BUILD_COMMAND=
+run_publish PUSH_CREDENTIAL=GITHUB_TOKEN BUILD_COMMAND=
 assert_eq "$RC" 0 "publish exit ($(stderr_tail))"
 assert_eq "$(pushes)" 1 "pushes"
 assert_contains "$(cat "$C/stdout")" "::warning" "GITHUB_TOKEN push warning"
@@ -999,6 +1039,28 @@ c1="$(cat "$STUB_DIR/comment.1" 2>/dev/null || true)"
 assert_contains "$c1" "GITHUB_TOKEN" "comment names the credential"
 assert_contains "$c1" "no CI" "comment says CI did not run"
 assert_contains "$c1" "Nothing compiled" "comment says nothing built it"
+
+# App-token push: CI runs on the head, as with the PAT, so no warning.
+CASE_NAME=app-token
+start_merge app-token
+resolve_as "$GOOD"
+check_after_agent
+run_publish PUSH_CREDENTIAL=app-token BUILD_COMMAND=
+assert_eq "$RC" 0 "publish exit ($(stderr_tail))"
+assert_eq "$(pushes)" 1 "pushes"
+assert_lacks "$(cat "$C/stdout")" "::warning" "no CI warning for an App-token push"
+c1="$(cat "$STUB_DIR/comment.1" 2>/dev/null || true)"
+assert_contains "$c1" "GitHub App token" "comment names the credential"
+assert_contains "$c1" "CI runs on this head" "comment says CI runs"
+
+# An unrecognised credential label errs towards "no CI ran".
+CASE_NAME=unknown-credential
+start_merge unknown-credential
+resolve_as "$GOOD"
+check_after_agent
+run_publish PUSH_CREDENTIAL= BUILD_COMMAND=
+assert_eq "$RC" 0 "publish exit ($(stderr_tail))"
+assert_contains "$(cat "$STUB_DIR/comment.1" 2>/dev/null)" "no CI" "comment for an unknown credential label"
 
 echo
 if [ "$failures" -gt 0 ]; then

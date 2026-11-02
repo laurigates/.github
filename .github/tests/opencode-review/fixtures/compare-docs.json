@@ -1,0 +1,7 @@
+{
+  "status": "ahead",
+  "files": [
+    { "filename": "README.md", "status": "modified", "additions": 1, "deletions": 0, "changes": 1, "patch": "@@ -1 +1,2 @@\n # example\n+tweak" },
+    { "filename": "lib/from_main.py", "status": "added", "additions": 1, "deletions": 0, "changes": 1, "patch": "@@ -0,0 +1 @@\n+x = 1" }
+  ]
+}

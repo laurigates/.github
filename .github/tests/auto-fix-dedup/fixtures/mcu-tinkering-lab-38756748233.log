@@ -1,0 +1,89 @@
+5:02:38.4914770Z    | |     ___   __| | ___  ___ _____   __
+Python Simulation Tests	UNKNOWN STEP	2026-10-15T15:02:38.4915258Z    | |    / _ \ / _` |/ _ \/ __/ _ \ \ / /
+Code Quality Checks	UNKNOWN STEP	﻿2026-10-15T15:02:24.0189733Z Current runner version: '2.337.0'
+Code Quality Checks	UNKNOWN STEP	2026-10-15T15:02:55.7184392Z ##[end-action id=__extractions_setup-just.__extractions_setup-crate;outcome=success;conclusion=success;duration_ms=1006]
+Code Quality Checks	UNKNOWN STEP	2026-10-15T15:02:55.7812268Z ##[group]Run actions/cache@v5.1.0
+Code Quality Checks	UNKNOWN STEP	2026-10-15T15:02:55.7812569Z with:
+Code Quality Checks	UNKNOWN STEP	2026-10-15T15:02:55.7812779Z   path: ~/.cache/pre-commit
+Code Quality Checks	UNKNOWN STEP	2026-10-15T15:02:55.7813207Z   key: pre-commit-ffda20d65692c47ea337ec411964f3706f4ee3209b64e346c0b77b3e6f331346
+Code Quality Checks	UNKNOWN STEP	2026-10-15T15:02:55.7813677Z   enableCrossOsArchive: false
+Code Quality Checks	UNKNOWN STEP	2026-10-15T15:02:55.7813962Z   fail-on-cache-miss: false
+Code Quality Checks	UNKNOWN STEP	2026-10-15T15:02:55.7814203Z   lookup-only: false
+Code Quality Checks	UNKNOWN STEP	2026-10-15T15:02:55.7814422Z   save-always: false
+Code Quality Checks	UNKNOWN STEP	2026-10-15T15:02:55.7814626Z env:
+Code Quality Checks	UNKNOWN STEP	2026-10-15T15:02:55.7814882Z   pythonLocation: /opt/hostedtoolcache/Python/3.15.0/x64
+Code Quality Checks	UNKNOWN STEP	2026-10-15T15:02:55.7815316Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.15.0/x64/lib/pkgconfig
+Code Quality Checks	UNKNOWN STEP	2026-10-15T15:02:55.7815743Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.15.0/x64
+Code Quality Checks	UNKNOWN STEP	2026-10-15T15:02:55.7816122Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.15.0/x64
+Code Quality Checks	UNKNOWN STEP	2026-10-15T15:02:55.7816505Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.15.0/x64
+Code Quality Checks	UNKNOWN STEP	2026-10-15T15:02:55.7816933Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.15.0/x64/lib
+Code Quality Checks	UNKNOWN STEP	2026-10-15T15:02:55.7817339Z   UV_PYTHON_INSTALL_DIR: /home/runner/work/_temp/uv-python-dir
+Code Quality Checks	UNKNOWN STEP	2026-10-15T15:02:55.7817719Z   UV_CACHE_DIR: /home/runner/work/_temp/setup-uv-cache
+Code Quality Checks	UNKNOWN STEP	2026-10-15T15:02:55.7818026Z ##[endgroup]
+Code Quality Checks	UNKNOWN STEP	2026-10-15T15:02:56.0252594Z Cache not found for input keys: pre-commit-ffda20d65692c47ea337ec411964f3706f4ee3209b64e346c0b77b3e6f331346
+Code Quality Checks	UNKNOWN STEP	2026-10-15T15:02:56.0364353Z ##[group]Run uv sync --extra dev
+Code Quality Checks	UNKNOWN STEP	2026-10-15T15:02:56.0364701Z ^[[36;1muv sync --extra dev^[[0m
+Code Quality Checks	UNKNOWN STEP	2026-10-15T15:02:56.0428582Z shell: /usr/bin/bash -e {0}
+Code Quality Checks	UNKNOWN STEP	2026-10-15T15:02:56.0428850Z env:
+Code Quality Checks	UNKNOWN STEP	2026-10-15T15:02:56.0429132Z   pythonLocation: /opt/hostedtoolcache/Python/3.15.0/x64
+Code Quality Checks	UNKNOWN STEP	2026-10-15T15:02:56.0429899Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.15.0/x64/lib/pkgconfig
+Code Quality Checks	UNKNOWN STEP	2026-10-15T15:02:56.0430367Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.15.0/x64
+Code Quality Checks	UNKNOWN STEP	2026-10-15T15:02:56.0430774Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.15.0/x64
+Code Quality Checks	UNKNOWN STEP	2026-10-15T15:02:56.0431179Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.15.0/x64
+Code Quality Checks	UNKNOWN STEP	2026-10-15T15:02:56.0431589Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.15.0/x64/lib
+Code Quality Checks	UNKNOWN STEP	2026-10-15T15:02:56.0432014Z   UV_PYTHON_INSTALL_DIR: /home/runner/work/_temp/uv-python-dir
+Code Quality Checks	UNKNOWN STEP	2026-10-15T15:02:56.0432438Z   UV_CACHE_DIR: /home/runner/work/_temp/setup-uv-cache
+Code Quality Checks	UNKNOWN STEP	2026-10-15T15:02:56.0432766Z ##[endgroup]
+Code Quality Checks	UNKNOWN STEP	2026-10-15T15:02:56.1085311Z Using CPython 3.15.0 interpreter at: /opt/hostedtoolcache/Python/3.15.0/x64/bin/python3
+Code Quality Checks	UNKNOWN STEP	2026-10-15T15:02:56.1085881Z Creating virtual environment at: .venv
+Code Quality Checks	UNKNOWN STEP	2026-10-15T15:02:57.3993091Z Resolved 164 packages in 1.28s
+Code Quality Checks	UNKNOWN STEP	2026-10-15T15:02:57.3993747Z warning: The package `torch==2.14.1` does not have an extra named `cuda`
+Code Quality Checks	UNKNOWN STEP	2026-10-15T15:02:57.4172695Z error: Distribution `torch==2.14.1 @ registry+https://pypi.org/simple` can't be installed because it doesn't have a source distribution or wheel for the current platform
+Code Quality Checks	UNKNOWN STEP	2026-10-15T15:02:57.4173829Z 
+Code Quality Checks	UNKNOWN STEP	2026-10-15T15:02:57.4174600Z hint: You're using CPython 3.15 (`cp315`), but `torch` (v2.14.1) only has wheels with the following Python ABI tags: `cp312`, `cp313`, `cp314`, `cp314t`
+Code Quality Checks	UNKNOWN STEP	2026-10-15T15:02:57.4205324Z ##[error]Process completed with exit code 2.
+Code Quality Checks	UNKNOWN STEP	2026-10-15T15:02:57.4747998Z Post job cleanup.
+Code Quality Checks	UNKNOWN STEP	2026-10-15T15:02:57.5653213Z [command]/usr/bin/git version
+Test Summary	UNKNOWN STEP	﻿2026-10-15T15:05:06.4910463Z Current runner version: '2.337.0'
+Test Summary	UNKNOWN STEP	2026-10-15T15:05:06.4946626Z ##[endgroup]
+Test Summary	UNKNOWN STEP	2026-10-15T15:05:06.4947182Z ##[group]Runner Image
+Test Summary	UNKNOWN STEP	2026-10-15T15:05:06.4947902Z Image: ubuntu-24.04
+Test Summary	UNKNOWN STEP	2026-10-15T15:05:06.4948486Z Version: 20261012.334.1
+Test Summary	UNKNOWN STEP	2026-10-15T15:05:06.4949810Z Included Software: https://github.com/actions/runner-images/blob/ubuntu24/20261012.334/images/ubuntu/Ubuntu2404-Readme.md
+Test Summary	UNKNOWN STEP	2026-10-15T15:05:06.4951604Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20261012.334
+Test Summary	UNKNOWN STEP	2026-10-15T15:05:06.4952680Z ##[endgroup]
+Test Summary	UNKNOWN STEP	2026-10-15T15:05:06.4953793Z ##[group]GITHUB_TOKEN Permissions
+Test Summary	UNKNOWN STEP	2026-10-15T15:05:06.4956384Z Contents: read
+Test Summary	UNKNOWN STEP	2026-10-15T15:05:06.4957046Z Metadata: read
+Test Summary	UNKNOWN STEP	2026-10-15T15:05:06.4957686Z ##[endgroup]
+Test Summary	UNKNOWN STEP	2026-10-15T15:05:06.4959807Z Secret source: Actions
+Test Summary	UNKNOWN STEP	2026-10-15T15:05:06.4960900Z Cache mode: write
+Test Summary	UNKNOWN STEP	2026-10-15T15:05:06.4962397Z Prepare workflow directory
+Test Summary	UNKNOWN STEP	2026-10-15T15:05:06.5316653Z Prepare all required actions
+Test Summary	UNKNOWN STEP	2026-10-15T15:05:06.5422274Z Complete job name: Test Summary
+Test Summary	UNKNOWN STEP	2026-10-15T15:05:06.6243230Z ##[group]Run echo "## Test Results Summary" >> $GITHUB_STEP_SUMMARY
+Test Summary	UNKNOWN STEP	2026-10-15T15:05:06.6244329Z ^[[36;1mecho "## Test Results Summary" >> $GITHUB_STEP_SUMMARY^[[0m
+Test Summary	UNKNOWN STEP	2026-10-15T15:05:06.6245254Z ^[[36;1mecho "" >> $GITHUB_STEP_SUMMARY^[[0m
+Test Summary	UNKNOWN STEP	2026-10-15T15:05:06.6246241Z ^[[36;1mecho "- Code Quality: failure" >> $GITHUB_STEP_SUMMARY^[[0m
+Test Summary	UNKNOWN STEP	2026-10-15T15:05:06.6247281Z ^[[36;1mecho "- Python Simulation Tests: failure" >> $GITHUB_STEP_SUMMARY^[[0m
+Test Summary	UNKNOWN STEP	2026-10-15T15:05:06.6248329Z ^[[36;1mecho "- Live Probe Offline Tests: success" >> $GITHUB_STEP_SUMMARY^[[0m
+Test Summary	UNKNOWN STEP	2026-10-15T15:05:06.6318290Z ^[[36;1mecho "- C/C++ Linting: success" >> $GITHUB_STEP_SUMMARY^[[0m
+Test Summary	UNKNOWN STEP	2026-10-15T15:05:06.6319322Z ^[[36;1mecho "- Format Check: success" >> $GITHUB_STEP_SUMMARY^[[0m
+Test Summary	UNKNOWN STEP	2026-10-15T15:05:06.6320039Z ^[[36;1m^[[0m
+Test Summary	UNKNOWN STEP	2026-10-15T15:05:06.6320540Z ^[[36;1m# Fail only on actual failures, not skips^[[0m
+Test Summary	UNKNOWN STEP	2026-10-15T15:05:06.6321545Z ^[[36;1mfor result in \^[[0m
+Test Summary	UNKNOWN STEP	2026-10-15T15:05:06.6322098Z ^[[36;1m  "failure" \^[[0m
+Test Summary	UNKNOWN STEP	2026-10-15T15:05:06.6322656Z ^[[36;1m  "success" \^[[0m
+Test Summary	UNKNOWN STEP	2026-10-15T15:05:06.6323223Z ^[[36;1m  "success"; do^[[0m
+Test Summary	UNKNOWN STEP	2026-10-15T15:05:06.6323776Z ^[[36;1m  if [ "$result" = "failure" ]; then^[[0m
+Test Summary	UNKNOWN STEP	2026-10-15T15:05:06.6324476Z ^[[36;1m    echo "::error::Critical quality checks failed!"^[[0m
+Test Summary	UNKNOWN STEP	2026-10-15T15:05:06.6325135Z ^[[36;1m    exit 1^[[0m
+Test Summary	UNKNOWN STEP	2026-10-15T15:05:06.6325580Z ^[[36;1m  fi^[[0m
+Test Summary	UNKNOWN STEP	2026-10-15T15:05:06.6326025Z ^[[36;1mdone^[[0m
+Test Summary	UNKNOWN STEP	2026-10-15T15:05:06.6326461Z ^[[36;1m^[[0m
+Test Summary	UNKNOWN STEP	2026-10-15T15:05:06.6326964Z ^[[36;1mecho "::notice::All test checks completed!"^[[0m
+Test Summary	UNKNOWN STEP	2026-10-15T15:05:06.7283225Z shell: /usr/bin/bash -e {0}
+Test Summary	UNKNOWN STEP	2026-10-15T15:05:06.7284610Z ##[endgroup]
+Test Summary	UNKNOWN STEP	2026-10-15T15:05:06.7605631Z ##[error]Critical quality checks failed!
+Test Summary	UNKNOWN STEP	2026-10-15T15:05:06.7621675Z ##[error]Process completed with exit code 1.
+Test Summary	UNKNOWN STEP	2026-10-15T15:05:06.7790336Z Cleaning up orphan processes

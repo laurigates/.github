@@ -1,0 +1,44 @@
+Build Python Simulation	UNKNOWN STEP	﻿2026-10-11T07:39:21.7858480Z Current runner version: '2.337.0'
+Build Python Simulation	UNKNOWN STEP	2026-10-11T07:39:23.9406642Z env:
+Build Python Simulation	UNKNOWN STEP	2026-10-11T07:39:23.9407950Z   pythonLocation: /opt/hostedtoolcache/Python/3.11.17/x64
+Build Python Simulation	UNKNOWN STEP	2026-10-11T07:39:23.9410215Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.11.17/x64/lib/pkgconfig
+Build Python Simulation	UNKNOWN STEP	2026-10-11T07:39:23.9412269Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.17/x64
+Build Python Simulation	UNKNOWN STEP	2026-10-11T07:39:23.9414095Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.17/x64
+Build Python Simulation	UNKNOWN STEP	2026-10-11T07:39:23.9415952Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.17/x64
+Build Python Simulation	UNKNOWN STEP	2026-10-11T07:39:23.9417821Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.11.17/x64/lib
+Build Python Simulation	UNKNOWN STEP	2026-10-11T07:39:23.9419415Z ##[endgroup]
+Build Python Simulation	UNKNOWN STEP	2026-10-11T07:39:26.5644563Z Collecting uv==0.12.10
+Build Python Simulation	UNKNOWN STEP	2026-10-11T07:39:26.6295430Z   Downloading uv-0.12.10-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (11 kB)
+Build Python Simulation	UNKNOWN STEP	2026-10-11T07:39:26.6449141Z Downloading uv-0.12.10-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (20.0 MB)
+Build Python Simulation	UNKNOWN STEP	2026-10-11T07:39:27.0769444Z    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 20.0/20.0 MB 49.1 MB/s  0:00:00
+Build Python Simulation	UNKNOWN STEP	2026-10-11T07:39:27.2081819Z Installing collected packages: uv
+Build Python Simulation	UNKNOWN STEP	2026-10-11T07:39:27.4181162Z Successfully installed uv-0.12.10
+Build Python Simulation	UNKNOWN STEP	2026-10-11T07:39:27.6270765Z ##[group]Run uv sync
+Build Python Simulation	UNKNOWN STEP	2026-10-11T07:39:27.6271128Z ^[[36;1muv sync^[[0m
+Build Python Simulation	UNKNOWN STEP	2026-10-11T07:39:27.6337726Z shell: /usr/bin/bash -e {0}
+Build Python Simulation	UNKNOWN STEP	2026-10-11T07:39:27.6337984Z env:
+Build Python Simulation	UNKNOWN STEP	2026-10-11T07:39:27.6338259Z   pythonLocation: /opt/hostedtoolcache/Python/3.11.17/x64
+Build Python Simulation	UNKNOWN STEP	2026-10-11T07:39:27.6338723Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.11.17/x64/lib/pkgconfig
+Build Python Simulation	UNKNOWN STEP	2026-10-11T07:39:27.6339182Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.17/x64
+Build Python Simulation	UNKNOWN STEP	2026-10-11T07:39:27.6339575Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.17/x64
+Build Python Simulation	UNKNOWN STEP	2026-10-11T07:39:27.6340309Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.17/x64
+Build Python Simulation	UNKNOWN STEP	2026-10-11T07:39:27.6340748Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.11.17/x64/lib
+Build Python Simulation	UNKNOWN STEP	2026-10-11T07:39:27.6341079Z ##[endgroup]
+Build Python Simulation	UNKNOWN STEP	2026-10-11T07:39:27.6913440Z Using CPython 3.11.17 interpreter at: /opt/hostedtoolcache/Python/3.11.17/x64/bin/python3
+Build Python Simulation	UNKNOWN STEP	2026-10-11T07:39:28.7244145Z Creating virtual environment at: .venv
+Build Python Simulation	UNKNOWN STEP	2026-10-11T07:39:28.7245537Z   × No solution found when resolving dependencies for split (markers:
+Build Python Simulation	UNKNOWN STEP	2026-10-11T07:39:28.7246590Z   │ python_full_version >= '3.14' and sys_platform == 'win32'):
+Build Python Simulation	UNKNOWN STEP	2026-10-11T07:39:28.7247835Z   ╰─▶ Because moviepy>=2.0.0,<=2.1.2 depends on pillow>=9.2.0,<11.0 and
+Build Python Simulation	UNKNOWN STEP	2026-10-11T07:39:28.7248739Z       moviepy>=2.2.0 depends on pillow>=9.2.0,<12.0, we can conclude that
+Build Python Simulation	UNKNOWN STEP	2026-10-11T07:39:28.7249554Z       moviepy>=2.0.0 depends on pillow>=9.2.0,<12.0.
+Build Python Simulation	UNKNOWN STEP	2026-10-11T07:39:28.7250634Z       And because genesis-world>=1.4.3 depends on moviepy>=2.0.0 and your
+Build Python Simulation	UNKNOWN STEP	2026-10-11T07:39:28.7251580Z       project depends on genesis-world==1.4.3, we can conclude that your
+Build Python Simulation	UNKNOWN STEP	2026-10-11T07:39:28.7252345Z       project depends on pillow>=9.2.0,<12.0.
+Build Python Simulation	UNKNOWN STEP	2026-10-11T07:39:28.7253064Z       And because your project depends on pillow==12.3.0 and your project
+Build Python Simulation	UNKNOWN STEP	2026-10-11T07:39:28.7253926Z       requires esp32-robot-simulation[dev], we can conclude that your
+Build Python Simulation	UNKNOWN STEP	2026-10-11T07:39:28.7254767Z       project's requirements are unsatisfiable.
+Build Python Simulation	UNKNOWN STEP	2026-10-11T07:39:28.7255229Z 
+Build Python Simulation	UNKNOWN STEP	2026-10-11T07:39:28.7256498Z hint: While the active Python version is 3.11, the resolution failed for other Python versions supported by your project. Consider limiting your project's supported Python versions using `requires-python`.
+Build Python Simulation	UNKNOWN STEP	2026-10-11T07:39:28.7373842Z ##[error]Process completed with exit code 1.
+Build Python Simulation	UNKNOWN STEP	2026-10-11T07:39:28.7526729Z Post job cleanup.
+Build Python Simulation	UNKNOWN STEP	2026-10-11T07:39:28.8361365Z [command]/usr/bin/git version

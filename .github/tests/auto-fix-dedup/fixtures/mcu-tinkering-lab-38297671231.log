@@ -1,0 +1,88 @@
+27:33.8467592Z +			(type solid)
+Code Quality Checks	UNKNOWN STEP	2026-10-12T19:27:33.8467673Z +		)
+Code Quality Checks	UNKNOWN STEP	2026-10-12T19:27:33.8524409Z +			(xyz 0 0 0)
+Code Quality Checks	UNKNOWN STEP	2026-10-12T19:27:33.8524482Z +		)
+Code Quality Checks	UNKNOWN STEP	2026-10-12T19:27:33.8524682Z +	)
+Code Quality Checks	UNKNOWN STEP	2026-10-12T19:27:33.8524905Z +	(model "${AMZPATH}/3dmodels/AMz3D.3dshapes/Seeed Studio XIAO RP2040 v26.step"
+Code Quality Checks	UNKNOWN STEP	2026-10-12T19:27:33.8524984Z +		(hide yes)
+Code Quality Checks	UNKNOWN STEP	2026-10-12T19:27:33.8525065Z +		(offset
+Code Quality Checks	UNKNOWN STEP	2026-10-12T19:27:33.8525147Z +			(xyz 0 0 0)
+Code Quality Checks	UNKNOWN STEP	2026-10-12T19:27:33.8525224Z +		)
+Code Quality Checks	UNKNOWN STEP	2026-10-12T19:27:33.8525305Z +		(scale
+Code Quality Checks	UNKNOWN STEP	2026-10-12T19:27:33.8525387Z +			(xyz 1 1 1)
+Code Quality Checks	UNKNOWN STEP	2026-10-12T19:27:33.8525468Z +		)
+Code Quality Checks	UNKNOWN STEP	2026-10-12T19:27:33.8525544Z +		(rotate
+Code Quality Checks	UNKNOWN STEP	2026-10-12T19:27:33.8525626Z +			(xyz 0 0 90)
+Code Quality Checks	UNKNOWN STEP	2026-10-12T19:27:33.8525707Z +		)
+Code Quality Checks	UNKNOWN STEP	2026-10-12T19:27:33.8525780Z +	)
+Code Quality Checks	UNKNOWN STEP	2026-10-12T19:27:33.8525995Z +	(model "${AMZPATH}/3dmodels/AMz3D.3dshapes/Seeed Studio XIAO-ESP32-C3.step"
+Code Quality Checks	UNKNOWN STEP	2026-10-12T19:27:33.8526086Z +		(hide yes)
+Code Quality Checks	UNKNOWN STEP	2026-10-12T19:27:33.8526163Z +		(offset
+Code Quality Checks	UNKNOWN STEP	2026-10-12T19:27:33.8526256Z +			(xyz -1.7018 -6.096 0)
+Code Quality Checks	UNKNOWN STEP	2026-10-12T19:27:33.8526338Z +		)
+Code Quality Checks	UNKNOWN STEP	2026-10-12T19:27:33.8526419Z +		(scale
+Code Quality Checks	UNKNOWN STEP	2026-10-12T19:27:33.8526497Z +			(xyz 1 1 1)
+Code Quality Checks	UNKNOWN STEP	2026-10-12T19:27:33.8526576Z +		)
+Code Quality Checks	UNKNOWN STEP	2026-10-12T19:27:33.8526656Z +		(rotate
+Code Quality Checks	UNKNOWN STEP	2026-10-12T19:27:33.8526737Z +			(xyz -90 0 0)
+Code Quality Checks	UNKNOWN STEP	2026-10-12T19:27:33.8526820Z +		)
+Code Quality Checks	UNKNOWN STEP	2026-10-12T19:27:33.8526899Z +	)
+Code Quality Checks	UNKNOWN STEP	2026-10-12T19:27:33.8527071Z +	(model "${AMZPATH}/3dmodels/AMz3D.3dshapes/XIAO-ESP32S3 v2.step"
+Code Quality Checks	UNKNOWN STEP	2026-10-12T19:27:33.8527154Z +		(hide yes)
+Code Quality Checks	UNKNOWN STEP	2026-10-12T19:27:33.8527236Z +		(offset
+Code Quality Checks	UNKNOWN STEP	2026-10-12T19:27:33.8527325Z +			(xyz -1.778 -6.1722 0)
+Code Quality Checks	UNKNOWN STEP	2026-10-12T19:27:33.8527402Z +		)
+Code Quality Checks	UNKNOWN STEP	2026-10-12T19:27:33.8527482Z +		(scale
+Code Quality Checks	UNKNOWN STEP	2026-10-12T19:27:33.8527564Z +			(xyz 1 1 1)
+Code Quality Checks	UNKNOWN STEP	2026-10-12T19:27:33.8527636Z +		)
+Code Quality Checks	UNKNOWN STEP	2026-10-12T19:27:33.8527714Z +		(rotate
+Code Quality Checks	UNKNOWN STEP	2026-10-12T19:27:33.8527797Z +			(xyz -90 0 0)
+Code Quality Checks	UNKNOWN STEP	2026-10-12T19:27:33.8527869Z +		)
+Code Quality Checks	UNKNOWN STEP	2026-10-12T19:27:33.8527949Z +	)
+Code Quality Checks	UNKNOWN STEP	2026-10-12T19:27:33.8528030Z +)
+Code Quality Checks	UNKNOWN STEP	2026-10-12T19:27:33.8539023Z ##[error]Process completed with exit code 1.
+Code Quality Checks	UNKNOWN STEP	2026-10-12T19:27:33.8664813Z Post job cleanup.
+Code Quality Checks	UNKNOWN STEP	2026-10-12T19:27:33.9541772Z [command]/usr/bin/git version
+Test Summary	UNKNOWN STEP	﻿2026-10-12T19:27:38.6629530Z Current runner version: '2.337.0'
+Test Summary	UNKNOWN STEP	2026-10-12T19:27:38.6666968Z ##[endgroup]
+Test Summary	UNKNOWN STEP	2026-10-12T19:27:38.6667573Z ##[group]Runner Image
+Test Summary	UNKNOWN STEP	2026-10-12T19:27:38.6668369Z Image: ubuntu-24.04
+Test Summary	UNKNOWN STEP	2026-10-12T19:27:38.6668938Z Version: 20261004.327.1
+Test Summary	UNKNOWN STEP	2026-10-12T19:27:38.6670286Z Included Software: https://github.com/actions/runner-images/blob/ubuntu24/20261004.327/images/ubuntu/Ubuntu2404-Readme.md
+Test Summary	UNKNOWN STEP	2026-10-12T19:27:38.6671915Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20261004.327
+Test Summary	UNKNOWN STEP	2026-10-12T19:27:38.6672897Z ##[endgroup]
+Test Summary	UNKNOWN STEP	2026-10-12T19:27:38.6674675Z ##[group]GITHUB_TOKEN Permissions
+Test Summary	UNKNOWN STEP	2026-10-12T19:27:38.6677888Z Contents: read
+Test Summary	UNKNOWN STEP	2026-10-12T19:27:38.6678856Z Metadata: read
+Test Summary	UNKNOWN STEP	2026-10-12T19:27:38.6679521Z ##[endgroup]
+Test Summary	UNKNOWN STEP	2026-10-12T19:27:38.6681655Z Secret source: Actions
+Test Summary	UNKNOWN STEP	2026-10-12T19:27:38.6682639Z Cache mode: write
+Test Summary	UNKNOWN STEP	2026-10-12T19:27:38.6683628Z Prepare workflow directory
+Test Summary	UNKNOWN STEP	2026-10-12T19:27:38.7011049Z Prepare all required actions
+Test Summary	UNKNOWN STEP	2026-10-12T19:27:38.7114370Z Complete job name: Test Summary
+Test Summary	UNKNOWN STEP	2026-10-12T19:27:38.7938995Z ##[group]Run echo "## Test Results Summary" >> $GITHUB_STEP_SUMMARY
+Test Summary	UNKNOWN STEP	2026-10-12T19:27:38.7940147Z ^[[36;1mecho "## Test Results Summary" >> $GITHUB_STEP_SUMMARY^[[0m
+Test Summary	UNKNOWN STEP	2026-10-12T19:27:38.7940965Z ^[[36;1mecho "" >> $GITHUB_STEP_SUMMARY^[[0m
+Test Summary	UNKNOWN STEP	2026-10-12T19:27:38.7942019Z ^[[36;1mecho "- Code Quality: failure" >> $GITHUB_STEP_SUMMARY^[[0m
+Test Summary	UNKNOWN STEP	2026-10-12T19:27:38.7942983Z ^[[36;1mecho "- Python Simulation Tests: skipped" >> $GITHUB_STEP_SUMMARY^[[0m
+Test Summary	UNKNOWN STEP	2026-10-12T19:27:38.7944039Z ^[[36;1mecho "- Live Probe Offline Tests: skipped" >> $GITHUB_STEP_SUMMARY^[[0m
+Test Summary	UNKNOWN STEP	2026-10-12T19:27:38.7945017Z ^[[36;1mecho "- C/C++ Linting: skipped" >> $GITHUB_STEP_SUMMARY^[[0m
+Test Summary	UNKNOWN STEP	2026-10-12T19:27:38.7945876Z ^[[36;1mecho "- Format Check: skipped" >> $GITHUB_STEP_SUMMARY^[[0m
+Test Summary	UNKNOWN STEP	2026-10-12T19:27:38.7946718Z ^[[36;1m^[[0m
+Test Summary	UNKNOWN STEP	2026-10-12T19:27:38.7947328Z ^[[36;1m# Fail only on actual failures, not skips^[[0m
+Test Summary	UNKNOWN STEP	2026-10-12T19:27:38.7948268Z ^[[36;1mfor result in \^[[0m
+Test Summary	UNKNOWN STEP	2026-10-12T19:27:38.7948888Z ^[[36;1m  "failure" \^[[0m
+Test Summary	UNKNOWN STEP	2026-10-12T19:27:38.7949638Z ^[[36;1m  "skipped" \^[[0m
+Test Summary	UNKNOWN STEP	2026-10-12T19:27:38.7950226Z ^[[36;1m  "skipped"; do^[[0m
+Test Summary	UNKNOWN STEP	2026-10-12T19:27:38.7950869Z ^[[36;1m  if [ "$result" = "failure" ]; then^[[0m
+Test Summary	UNKNOWN STEP	2026-10-12T19:27:38.7951654Z ^[[36;1m    echo "::error::Critical quality checks failed!"^[[0m
+Test Summary	UNKNOWN STEP	2026-10-12T19:27:38.7952364Z ^[[36;1m    exit 1^[[0m
+Test Summary	UNKNOWN STEP	2026-10-12T19:27:38.7952940Z ^[[36;1m  fi^[[0m
+Test Summary	UNKNOWN STEP	2026-10-12T19:27:38.7953496Z ^[[36;1mdone^[[0m
+Test Summary	UNKNOWN STEP	2026-10-12T19:27:38.7953994Z ^[[36;1m^[[0m
+Test Summary	UNKNOWN STEP	2026-10-12T19:27:38.7954701Z ^[[36;1mecho "::notice::All test checks completed!"^[[0m
+Test Summary	UNKNOWN STEP	2026-10-12T19:27:38.8950909Z shell: /usr/bin/bash -e {0}
+Test Summary	UNKNOWN STEP	2026-10-12T19:27:38.8951852Z ##[endgroup]
+Test Summary	UNKNOWN STEP	2026-10-12T19:27:38.9221137Z ##[error]Critical quality checks failed!
+Test Summary	UNKNOWN STEP	2026-10-12T19:27:38.9245688Z ##[error]Process completed with exit code 1.
+Test Summary	UNKNOWN STEP	2026-10-12T19:27:38.9440559Z Cleaning up orphan processes

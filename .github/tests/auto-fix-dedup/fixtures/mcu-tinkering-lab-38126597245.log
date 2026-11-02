@@ -1,0 +1,54 @@
+Code Quality Checks	Sync simulation dev dependencies (for ty pre-commit hook)	﻿2026-10-11T08:57:10.7316306Z ##[group]Run uv sync --extra dev
+Code Quality Checks	Sync simulation dev dependencies (for ty pre-commit hook)	2026-10-11T08:57:10.7316643Z ^[[36;1muv sync --extra dev^[[0m
+Code Quality Checks	Sync simulation dev dependencies (for ty pre-commit hook)	2026-10-11T08:57:10.7386307Z shell: /usr/bin/bash -e {0}
+Code Quality Checks	Sync simulation dev dependencies (for ty pre-commit hook)	2026-10-11T08:57:10.7386579Z env:
+Code Quality Checks	Sync simulation dev dependencies (for ty pre-commit hook)	2026-10-11T08:57:10.7386869Z   pythonLocation: /opt/hostedtoolcache/Python/3.11.17/x64
+Code Quality Checks	Sync simulation dev dependencies (for ty pre-commit hook)	2026-10-11T08:57:10.7387331Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.11.17/x64/lib/pkgconfig
+Code Quality Checks	Sync simulation dev dependencies (for ty pre-commit hook)	2026-10-11T08:57:10.7387768Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.17/x64
+Code Quality Checks	Sync simulation dev dependencies (for ty pre-commit hook)	2026-10-11T08:57:10.7388166Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.17/x64
+Code Quality Checks	Sync simulation dev dependencies (for ty pre-commit hook)	2026-10-11T08:57:10.7388580Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.17/x64
+Code Quality Checks	Sync simulation dev dependencies (for ty pre-commit hook)	2026-10-11T08:57:10.7388966Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.11.17/x64/lib
+Code Quality Checks	Sync simulation dev dependencies (for ty pre-commit hook)	2026-10-11T08:57:10.7389380Z   UV_PYTHON_INSTALL_DIR: /home/runner/work/_temp/uv-python-dir
+Code Quality Checks	Sync simulation dev dependencies (for ty pre-commit hook)	2026-10-11T08:57:10.7389755Z   UV_CACHE_DIR: /home/runner/work/_temp/setup-uv-cache
+Code Quality Checks	Sync simulation dev dependencies (for ty pre-commit hook)	2026-10-11T08:57:10.7390077Z ##[endgroup]
+Code Quality Checks	Sync simulation dev dependencies (for ty pre-commit hook)	2026-10-11T08:57:10.7986098Z Using CPython 3.11.17 interpreter at: /opt/hostedtoolcache/Python/3.11.17/x64/bin/python3
+Code Quality Checks	Sync simulation dev dependencies (for ty pre-commit hook)	2026-10-11T08:57:10.7986963Z Creating virtual environment at: .venv
+Code Quality Checks	Sync simulation dev dependencies (for ty pre-commit hook)	2026-10-11T08:57:12.0369168Z   × No solution found when resolving dependencies for split (markers:
+Code Quality Checks	Sync simulation dev dependencies (for ty pre-commit hook)	2026-10-11T08:57:12.0370193Z   │ python_full_version >= '3.14' and sys_platform == 'win32'):
+Code Quality Checks	Sync simulation dev dependencies (for ty pre-commit hook)	2026-10-11T08:57:12.0371023Z   ╰─▶ Because moviepy>=2.0.0,<=2.1.2 depends on pillow>=9.2.0,<11.0 and
+Code Quality Checks	Sync simulation dev dependencies (for ty pre-commit hook)	2026-10-11T08:57:12.0372002Z       moviepy>=2.2.0 depends on pillow>=9.2.0,<12.0, we can conclude that
+Code Quality Checks	Sync simulation dev dependencies (for ty pre-commit hook)	2026-10-11T08:57:12.0372637Z       moviepy>=2.0.0 depends on pillow>=9.2.0,<12.0.
+Code Quality Checks	Sync simulation dev dependencies (for ty pre-commit hook)	2026-10-11T08:57:12.0373323Z       And because genesis-world>=1.4.3 depends on moviepy>=2.0.0 and your
+Code Quality Checks	Sync simulation dev dependencies (for ty pre-commit hook)	2026-10-11T08:57:12.0374084Z       project depends on genesis-world==1.4.3, we can conclude that your
+Code Quality Checks	Sync simulation dev dependencies (for ty pre-commit hook)	2026-10-11T08:57:12.0374702Z       project depends on pillow>=9.2.0,<12.0.
+Code Quality Checks	Sync simulation dev dependencies (for ty pre-commit hook)	2026-10-11T08:57:12.0375296Z       And because your project depends on pillow==12.3.0 and your project
+Code Quality Checks	Sync simulation dev dependencies (for ty pre-commit hook)	2026-10-11T08:57:12.0376048Z       requires esp32-robot-simulation[dev], we can conclude that your
+Code Quality Checks	Sync simulation dev dependencies (for ty pre-commit hook)	2026-10-11T08:57:12.0376679Z       project's requirements are unsatisfiable.
+Code Quality Checks	Sync simulation dev dependencies (for ty pre-commit hook)	2026-10-11T08:57:12.0377012Z 
+Code Quality Checks	Sync simulation dev dependencies (for ty pre-commit hook)	2026-10-11T08:57:12.0378045Z hint: While the active Python version is 3.11, the resolution failed for other Python versions supported by your project. Consider limiting your project's supported Python versions using `requires-python`.
+Code Quality Checks	Sync simulation dev dependencies (for ty pre-commit hook)	2026-10-11T08:57:12.0511170Z ##[error]Process completed with exit code 1.
+Test Summary	Check test results	﻿2026-10-11T08:57:17.3799938Z ##[group]Run echo "## Test Results Summary" >> $GITHUB_STEP_SUMMARY
+Test Summary	Check test results	2026-10-11T08:57:17.3800932Z ^[[36;1mecho "## Test Results Summary" >> $GITHUB_STEP_SUMMARY^[[0m
+Test Summary	Check test results	2026-10-11T08:57:17.3801713Z ^[[36;1mecho "" >> $GITHUB_STEP_SUMMARY^[[0m
+Test Summary	Check test results	2026-10-11T08:57:17.3802557Z ^[[36;1mecho "- Code Quality: failure" >> $GITHUB_STEP_SUMMARY^[[0m
+Test Summary	Check test results	2026-10-11T08:57:17.3803495Z ^[[36;1mecho "- Python Simulation Tests: skipped" >> $GITHUB_STEP_SUMMARY^[[0m
+Test Summary	Check test results	2026-10-11T08:57:17.3804389Z ^[[36;1mecho "- Live Probe Offline Tests: skipped" >> $GITHUB_STEP_SUMMARY^[[0m
+Test Summary	Check test results	2026-10-11T08:57:17.3805211Z ^[[36;1mecho "- C/C++ Linting: skipped" >> $GITHUB_STEP_SUMMARY^[[0m
+Test Summary	Check test results	2026-10-11T08:57:17.3806070Z ^[[36;1mecho "- Format Check: skipped" >> $GITHUB_STEP_SUMMARY^[[0m
+Test Summary	Check test results	2026-10-11T08:57:17.3806757Z ^[[36;1m^[[0m
+Test Summary	Check test results	2026-10-11T08:57:17.3807300Z ^[[36;1m# Fail only on actual failures, not skips^[[0m
+Test Summary	Check test results	2026-10-11T08:57:17.3808123Z ^[[36;1mfor result in \^[[0m
+Test Summary	Check test results	2026-10-11T08:57:17.3808830Z ^[[36;1m  "failure" \^[[0m
+Test Summary	Check test results	2026-10-11T08:57:17.3809386Z ^[[36;1m  "skipped" \^[[0m
+Test Summary	Check test results	2026-10-11T08:57:17.3810006Z ^[[36;1m  "skipped"; do^[[0m
+Test Summary	Check test results	2026-10-11T08:57:17.3810583Z ^[[36;1m  if [ "$result" = "failure" ]; then^[[0m
+Test Summary	Check test results	2026-10-11T08:57:17.3811271Z ^[[36;1m    echo "::error::Critical quality checks failed!"^[[0m
+Test Summary	Check test results	2026-10-11T08:57:17.3811921Z ^[[36;1m    exit 1^[[0m
+Test Summary	Check test results	2026-10-11T08:57:17.3812466Z ^[[36;1m  fi^[[0m
+Test Summary	Check test results	2026-10-11T08:57:17.3812942Z ^[[36;1mdone^[[0m
+Test Summary	Check test results	2026-10-11T08:57:17.3813405Z ^[[36;1m^[[0m
+Test Summary	Check test results	2026-10-11T08:57:17.3813920Z ^[[36;1mecho "::notice::All test checks completed!"^[[0m
+Test Summary	Check test results	2026-10-11T08:57:17.4549681Z shell: /usr/bin/bash -e {0}
+Test Summary	Check test results	2026-10-11T08:57:17.4551466Z ##[endgroup]
+Test Summary	Check test results	2026-10-11T08:57:17.4881193Z ##[error]Critical quality checks failed!
+Test Summary	Check test results	2026-10-11T08:57:17.4906393Z ##[error]Process completed with exit code 1.

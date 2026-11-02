@@ -11,3 +11,9 @@ stylua	Smoke Test CI	fix/portable-sed-in-place	dotfiles-35728723228.log
 context-budget	Smoke Test CI	main	dotfiles-35567648890.log
 mcu-ty	Test Suite	docs/robocar-unified-motor-wiring-card	mcu-tinkering-lab-34255529383.log
 mcu-ty	Test Suite	fix/positional-channel-coupling	mcu-tinkering-lab-34317998849.log
+mcu-suite-sync	Test Suite	ci/idf-5.5-and-melody-python	mcu-tinkering-lab-38126597245.log
+mcu-suite-precommit	Test Suite	feat/balancebot-carrier-pcb	mcu-tinkering-lab-38297671231.log
+mcu-suite-torch	Test Suite	renovate/all-minor-patch	mcu-tinkering-lab-38756748233.log
+mcu-build-deps	Build Python Simulation	main	mcu-tinkering-lab-38122093088.log
+mcu-build-deps	Build Python Simulation	renovate/all-minor-patch	mcu-tinkering-lab-38123902120.log
+mcu-build-torch	Build Python Simulation	renovate/all-minor-patch	mcu-tinkering-lab-38756747689.log

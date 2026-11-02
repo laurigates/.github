@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "pal": {
+      "command": "pal-mcp-server"
+    }
+  }
+}

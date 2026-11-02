@@ -5,6 +5,7 @@ set positional-arguments
 
 # Must equal ACTIONLINT_VERSION in .github/workflows/lint.yml (tool-pins checks it).
 actionlint_version := "1.7.12"
+shellcheck_version := "0.11.0"
 
 # Show available recipes
 default:
@@ -88,7 +89,7 @@ upstream-changes days="14":
 leak-check:
     #!/usr/bin/env bash
     set -euo pipefail
-    paths=(.github/workflows .github/actions)
+    paths=(.github/workflows .github/actions .github/tests scripts)
     [[ -f rulesync.jsonc ]] && paths+=(rulesync.jsonc)
     [[ -d .rulesync ]] && paths+=(.rulesync)
     if rg -in 'fvh|forumvirium' "${paths[@]}"; then
@@ -102,7 +103,7 @@ leak-check:
 # Validation
 ####################
 
-# Validate workflows: YAML syntax + actionlint (shellcheck pass-through off)
+# Validate workflows (YAML syntax + actionlint, shellcheck pass-through off) and shellcheck the tracked scripts
 [group: "validate"]
 lint:
     #!/usr/bin/env bash
@@ -140,6 +141,19 @@ lint:
     # expressions, action inputs, and workflow structure.
     "${al[@]}" -shellcheck= -oneline .github/workflows/*.yml
     echo "actionlint: clean"
+    # The tracked scripts and tests get shellcheck at warning severity; the
+    # SC2016 notes (deliberate single quotes around jq/awk/yq programs) stay
+    # out of the gate. lint.yml's shellcheck step runs the same command.
+    if command -v mise >/dev/null 2>&1; then
+        sc=(mise exec "aqua:koalaman/shellcheck@{{ shellcheck_version }}" -- shellcheck)
+    elif command -v shellcheck >/dev/null 2>&1; then
+        sc=(shellcheck)
+    else
+        echo "shellcheck not found: install mise or shellcheck {{ shellcheck_version }}" >&2
+        exit 1
+    fi
+    git ls-files -z '*.sh' | xargs -0 "${sc[@]}" -S warning
+    echo "shellcheck: clean"
 
 # Generate the rules in a scratch repo with the pinned rulesync (lint.yml's step, extracted); never at the root
 [group: "validate"]
@@ -205,6 +219,16 @@ changelog-publish workflow=".github/workflows/reusable-changelog-review.yml":
 [group: "validate"]
 changelog-usage workflow=".github/workflows/reusable-changelog-review.yml":
     bash .github/tests/changelog-review-usage/run.sh "{{workflow}}"
+
+# Check reusable-container-release.yml derives every image tag from the stripped version
+[group: "validate"]
+container-release-tags:
+    bash .github/tests/container-release-tags/run.sh
+
+# Run reusable-bun-ci.yml's extracted steps against stub bun, and the repo-wide inline-input baseline
+[group: "validate"]
+bun-ci:
+    bash .github/tests/bun-ci/run.sh
 
 # Run reusable-auto-resolve-conflicts.yml's resolve/build/publish steps against git fixtures
 [group: "validate"]

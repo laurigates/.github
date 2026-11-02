@@ -1,0 +1,29 @@
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "big-pickle",
+      "object": "model",
+      "created": 1792909252,
+      "owned_by": "opencode"
+    },
+    {
+      "id": "deepseek-v4.1-flash-free",
+      "object": "model",
+      "created": 1792909252,
+      "owned_by": "opencode"
+    },
+    {
+      "id": "glm-5.3-flash-free",
+      "object": "model",
+      "created": 1792909252,
+      "owned_by": "opencode"
+    },
+    {
+      "id": "glm-5.3",
+      "object": "model",
+      "created": 1792909252,
+      "owned_by": "opencode"
+    }
+  ]
+}

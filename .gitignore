@@ -1,0 +1,9 @@
+# Scratch output from local test and lint runs
+tmp/
+.ruff_cache/
+
+# Claude Code runtime state (managed by /configure:gitignore)
+.claude/worktrees/
+/worktrees/
+.claude/scheduled_tasks.lock
+.claude/settings.local.json

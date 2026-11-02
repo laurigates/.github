@@ -1,0 +1,93 @@
+{
+  "results": [
+    {
+      "source": {
+        "path": "@ROOT@/package-lock.json",
+        "type": "lockfile"
+      },
+      "packages": [
+        {
+          "package": {
+            "name": "lodash",
+            "version": "4.17.20",
+            "ecosystem": "npm"
+          },
+          "vulnerabilities": [
+            {
+              "id": "GHSA-29mw-wpgm-hmr9",
+              "summary": "Regular Expression Denial of Service (ReDoS) in lodash"
+            },
+            {
+              "id": "GHSA-35jh-r3h4-6jhm",
+              "summary": "Command Injection in lodash"
+            },
+            {
+              "id": "GHSA-f23m-r3pf-42rh",
+              "summary": "lodash vulnerable to Prototype Pollution via array path bypass in `_.unset` and `_.omit`"
+            },
+            {
+              "id": "GHSA-r5fr-rjxr-66jc",
+              "summary": "lodash vulnerable to Code Injection via `_.template` imports key names"
+            },
+            {
+              "id": "GHSA-xxjr-mmjv-4gpg",
+              "summary": "Lodash has Prototype Pollution Vulnerability in `_.unset` and `_.omit` functions"
+            }
+          ],
+          "groups": [
+            {
+              "ids": [
+                "GHSA-29mw-wpgm-hmr9"
+              ],
+              "aliases": [
+                "CVE-2020-28500",
+                "GHSA-29mw-wpgm-hmr9"
+              ],
+              "max_severity": "5.3"
+            },
+            {
+              "ids": [
+                "GHSA-35jh-r3h4-6jhm"
+              ],
+              "aliases": [
+                "CVE-2021-23337",
+                "GHSA-35jh-r3h4-6jhm"
+              ],
+              "max_severity": "7.2"
+            },
+            {
+              "ids": [
+                "GHSA-f23m-r3pf-42rh"
+              ],
+              "aliases": [
+                "CVE-2026-2950",
+                "GHSA-f23m-r3pf-42rh"
+              ],
+              "max_severity": "6.5"
+            },
+            {
+              "ids": [
+                "GHSA-r5fr-rjxr-66jc"
+              ],
+              "aliases": [
+                "CVE-2026-4800",
+                "GHSA-r5fr-rjxr-66jc"
+              ],
+              "max_severity": "8.1"
+            },
+            {
+              "ids": [
+                "GHSA-xxjr-mmjv-4gpg"
+              ],
+              "aliases": [
+                "CVE-2025-13465",
+                "GHSA-xxjr-mmjv-4gpg"
+              ],
+              "max_severity": "6.9"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
