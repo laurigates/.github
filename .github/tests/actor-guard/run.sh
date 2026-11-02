@@ -11,6 +11,9 @@
 # action's own rule is known: a login ending in [bot] is a bot, names compare
 # lowercase with surrounding spaces and the [bot] suffix dropped, and '*'
 # admits every bot (claude-code-action src/github/validation/actor.ts).
+# The PR author passes the same rule, because the action checks only the
+# actor: a human reopening or pushing to a bot's PR (the claude-config-sync
+# App's, laurigates/gitops#341) must not run Claude on it.
 #
 # Usage: bash .github/tests/actor-guard/run.sh
 set -euo pipefail
@@ -58,15 +61,15 @@ if [ "${#workflows[@]}" -eq 0 ]; then
   exit 1
 fi
 
-# run_actor <actor> <allowed-bots>: run the extracted body; sets OUT.
+# run_actor <actor> <allowed-bots> [<pr author>]: run the extracted body; sets OUT.
 run_actor() {
-  CASE="$WF_SHORT/actor=$1/allowed=$2"
+  CASE="$WF_SHORT/actor=$1/allowed=$2/author=${3:-}"
   rm -rf "$work/run"
   mkdir -p "$work/run"
   OUT="$work/run/output"
   : > "$OUT"
   set +e
-  ACTOR="$1" ALLOWED_BOTS="$2" GITHUB_OUTPUT="$OUT" bash "$work/actor.sh" > "$work/run/out.txt" 2> "$work/run/err.txt"
+  ACTOR="$1" ALLOWED_BOTS="$2" AUTHOR="${3:-}" GITHUB_OUTPUT="$OUT" bash "$work/actor.sh" > "$work/run/out.txt" 2> "$work/run/err.txt"
   RC=$?
   set -e
 }
@@ -78,6 +81,15 @@ expect() { # <allowed true|false> [<refused value>]
   else
     ok; if grep -q '^refused=' "$OUT"; then fail "allowed actor also wrote refused="; fi
   fi
+  ok; if grep -q '^refused_author=' "$OUT"; then fail "the actor decided the case, yet refused_author= was written"; fi
+  ok; if grep -q '^::' "$work/run/out.txt"; then fail "the step printed a workflow command; the shared report owns the notice"; fi
+}
+
+expect_author() { # <refused author>: the actor passed, the PR author did not
+  ok; [ "$RC" = 0 ] || fail "exit $RC: $(head -c 200 "$work/run/err.txt")"
+  ok; grep -qx "allowed=false" "$OUT" || fail "expected allowed=false, got: $(tr '\n' ' ' < "$OUT")"
+  ok; grep -qxF "refused_author=$1" "$OUT" || fail "expected refused_author=$1, got: $(tr '\n' ' ' < "$OUT")"
+  ok; if grep -q '^refused=' "$OUT"; then fail "a refused author also wrote refused= (the report would blame the actor)"; fi
   ok; if grep -q '^::' "$work/run/out.txt"; then fail "the step printed a workflow command; the shared report owns the notice"; fi
 }
 
@@ -104,6 +116,10 @@ for WF in "${workflows[@]}"; do
   # shellcheck disable=SC2016
   yq -e '[.jobs.*.steps[] | select(.id == "actor")] | .[0].env.ALLOWED_BOTS == "${{ inputs.allowed-bots }}"' "$WF" >/dev/null 2>&1 \
     || fail "the actor step must bind ALLOWED_BOTS to inputs.allowed-bots via env:"
+  ok
+  # shellcheck disable=SC2016
+  yq -e '[.jobs.*.steps[] | select(.id == "actor")] | .[0].env.AUTHOR == "${{ github.event.pull_request.user.login }}"' "$WF" >/dev/null 2>&1 \
+    || fail "the actor step must bind AUTHOR to github.event.pull_request.user.login via env:"
   # The analysis step's allowed_bots is the same input the gate reads.
   ok
   # shellcheck disable=SC2016
@@ -119,6 +135,10 @@ for WF in "${workflows[@]}"; do
   # shellcheck disable=SC2016
   yq -e '[.jobs.*.steps[] | select(.name == "Report that nothing was scanned")] | .[0].env.REFUSED_ACTOR == "${{ steps.actor.outputs.refused }}"' "$WF" >/dev/null 2>&1 \
     || fail "'Report that nothing was scanned' does not bind REFUSED_ACTOR to steps.actor.outputs.refused"
+  ok
+  # shellcheck disable=SC2016
+  yq -e '[.jobs.*.steps[] | select(.name == "Report that nothing was scanned")] | .[0].env.REFUSED_AUTHOR == "${{ steps.actor.outputs.refused_author }}"' "$WF" >/dev/null 2>&1 \
+    || fail "'Report that nothing was scanned' does not bind REFUSED_AUTHOR to steps.actor.outputs.refused_author"
 
   yq '[.jobs.*.steps[] | select(.id == "actor")] | .[0].run' "$WF" > "$work/actor.sh"
   ok
@@ -146,6 +166,23 @@ for WF in "${workflows[@]}"; do
   # Refused output is filtered to login characters.
   # shellcheck disable=SC2016 # a literal $( in the login, not an expansion
   run_actor 'evil$(id)[bot]' '';                             expect false 'evilid[bot]'
+
+  # The PR author, under the same rule. An empty author (no PR in the
+  # event) and a human author pass.
+  SYNC='laurigates-claude-config-sync[bot]'
+  DEFAULT='claude[bot],claude,github-actions[bot]'
+  run_actor laurigates "$DEFAULT" "$SYNC";                   expect_author "$SYNC"
+  run_actor laurigates '' 'Laurigates-Claude-Config-Sync[bot]'; expect_author 'Laurigates-Claude-Config-Sync[bot]'
+  run_actor 'github-actions[bot]' "$DEFAULT" "$SYNC";        expect_author "$SYNC"
+  run_actor laurigates "$DEFAULT" laurigates;                expect true
+  run_actor laurigates "$DEFAULT" '';                        expect true
+  run_actor laurigates "$DEFAULT" 'github-actions[bot]';     expect true
+  run_actor laurigates "$DEFAULT,laurigates-claude-config-sync" "$SYNC"; expect true
+  run_actor laurigates '*' "$SYNC";                          expect true
+  # A refused actor is named first; the report then blames the actor.
+  run_actor 'renovate[bot]' "$DEFAULT" "$SYNC";              expect false 'renovate[bot]'
+  # shellcheck disable=SC2016 # a literal $( in the login, not an expansion
+  run_actor laurigates '' 'evil$(id)[bot]';                  expect_author 'evilid[bot]'
 done
 
 if [ "$failures" -ne 0 ]; then

@@ -106,14 +106,32 @@ case "$1 ${2:-}" in
     printf '%s\n' "$@" > "$STUB_DIR/opencode-run-args"
     env > "$STUB_DIR/opencode-run-env"
     if [ -n "${OC_WRITE:-}" ]; then mkdir -p .opencode-review && printf '%s' "$OC_WRITE" > .opencode-review/findings.json; fi
+    # --print-logs lines, shaped like opencode 1.19.4's formatter output.
+    echo 'timestamp=2026-10-29T14:54:18.000Z level=Info run=r1 message=stream providerID=opencode' >&2
+    [ -n "${OC_LOG:-}" ] && printf 'timestamp=2026-10-29T14:54:19.000Z level=Error run=r1 message="stream error" error=%s\n' "$OC_LOG" >&2
+    [ -n "${OC_CRASH:-}" ] && printf '%s\n    at loop (run.ts:791)\n' "$OC_CRASH" >&2
+    echo '{"type":"step_start","part":{}}'
+    # A provider retry-after wait: no event, no exit.
+    [ -n "${OC_HANG:-}" ] && sleep 30
     echo '{"type":"step_finish","part":{"tokens":{"input":1200,"output":80}}}'
     [ -n "${OC_ERROR:-}" ] && echo "{\"type\":\"error\",\"error\":{\"name\":\"ProviderModelNotFoundError\",\"data\":{\"message\":\"$OC_ERROR\"}}}"
     exit "${OC_RC:-0}" ;;
   *) echo "STUB-OPENCODE unexpected call: $*" >&2; exit 97 ;;
 esac
 STUB
-chmod +x "$bin/gh" "$bin/curl" "$bin/opencode"
-for s in gh curl opencode; do
+# Records the duration the step asked for, then runs the real timeout with 2s
+# so the hang case is stopped by timeout itself without a minute-long test.
+real_timeout="$(command -v timeout || true)"
+[ -n "$real_timeout" ] || { echo "FATAL: GNU timeout is required" >&2; exit 1; }
+cat > "$bin/timeout" <<STUB
+#!/usr/bin/env bash
+printf 'STUB-TIMEOUT %s\n' "\$*" >> "\$STUB_DIR/timeout.log"
+[ "\$1" = --kill-after=20s ] || { echo "STUB-TIMEOUT unexpected options: \$*" >&2; exit 98; }
+shift 2
+exec "$real_timeout" --kill-after=1s 2s "\$@"
+STUB
+chmod +x "$bin/gh" "$bin/curl" "$bin/opencode" "$bin/timeout"
+for s in gh curl opencode timeout; do
   CASE="stub/$s"; ok
   [ "$(PATH="$bin:$PATH" command -v "$s")" = "$bin/$s" ] || fail "the $s stub is not first on PATH"
 done
@@ -357,8 +375,8 @@ review_step() {
   local title body
   title="$(jq -r .pull_request.title "$FIX/event-opened.json")"; body="$(jq -r .pull_request.body "$FIX/event-opened.json")"
   CWD="$checkout" TEMP_DIR="$work/rtemp" run_step review OPENCODE_API_KEY=test-key MODEL=opencode/glm-5.3-flash-free \
-    REPO=laurigates/example RANGE="the whole pull request" PR_TITLE="$title" PR_BODY="$body" \
-    OC_WRITE="${WRITE:-}" OC_RC="${ORC:-0}" OC_ERROR="${OERR:-}"
+    TIMEOUT_MINUTES="${TMIN:-15}" REPO=laurigates/example RANGE="the whole pull request" PR_TITLE="$title" PR_BODY="$body" \
+    OC_WRITE="${WRITE:-}" OC_RC="${ORC:-0}" OC_ERROR="${OERR:-}" OC_HANG="${HANG:-}" OC_LOG="${OLOG:-}" OC_CRASH="${CRASH:-}"
 }
 CASE=review/writes-findings; WRITE='{"summary":"ok","findings":[]}' review_step; rc 0
 has "$run/stub/opencode.log" "STUB-OPENCODE run" "opencode stub ran"
@@ -378,6 +396,31 @@ CASE=review/planted-file-removed; PLANT='{"summary":"planted by the PR","finding
 ok; [ ! -e "$work/rtemp/opencode-review/findings.json" ] || fail "a findings file the checkout carried was published"
 CASE=review/opencode-fails; ORC=1 OERR='Model not found: opencode/glm-5.3-flash-free' WRITE='{"summary":"x","findings":[]}' review_step; rc 1
 error "opencode run exited 1"; has "$run/stdout" "opencode error: Model not found" "provider error printed"
+has "$run/stdout" "::group::opencode evidence" "evidence on a failed run"
+
+# A run that never finishes is stopped below the job timeout and fails with
+# the provider error from opencode's log, not cancelled with an empty log.
+CASE=review/hangs
+OLOG='{"statusCode":429,"responseHeaders":{"retry-after":"3600"},"responseBody":"FreeUsageLimitError"}' HANG=1 review_step; rc 1
+error "opencode run did not finish within 12 minutes and was stopped"
+has "$run/stub/timeout.log" "STUB-TIMEOUT --kill-after=20s 12m opencode run" "run wrapped in timeout"
+has "$run/stdout" "Events: step_start=1" "event types printed"
+has "$run/stdout" 'level=Error run=r1 message="stream error"' "opencode Error line printed"
+has "$run/stdout" '"retry-after":"3600"' "retry-after printed"
+hasnt "$run/stdout" "level=Info" "Info log lines"
+hasnt "$run/stdout" "Tokens:" "a token summary for a stopped run"
+CASE=review/budget-floor; TMIN=4 WRITE='{"summary":"ok","findings":[]}' review_step; rc 0
+has "$run/stub/timeout.log" " 1m opencode run" "budget floor"
+CASE=review/budget-5; TMIN=5 WRITE='{"summary":"ok","findings":[]}' review_step; rc 0
+has "$run/stub/timeout.log" " 2m opencode run" "budget below a 5-minute job"
+CASE=review/print-logs; WRITE='{"summary":"ok","findings":[]}' review_step; rc 0
+has "$run/stub/opencode-run-args" "--print-logs" "opencode run argument"
+hasnt "$run/stdout" "opencode evidence" "evidence on a passing run"
+CASE=review/crash-stderr; ORC=1 CRASH='TypeError: undefined is not an object' review_step; rc 1
+has "$run/stdout" "TypeError: undefined is not an object" "a crash's stderr printed"
+has "$run/stdout" "at loop (run.ts:791)" "a crash's stack printed"
+CASE=review/long-log-line-cut; OLOG="$(printf 'x%.0s' $(seq 3000))" WRITE='' review_step; rc 1
+ok; [ "$(grep -E 'level=Error' "$run/stdout" | awk '{ print length }' | sort -n | tail -n 1)" -le 2000 ] || fail "an Error log line longer than 2000 characters was printed"
 
 # ------------------------------------------------------------------ publish
 pub="$work/ptemp/opencode-review"
