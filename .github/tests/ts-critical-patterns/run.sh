@@ -55,6 +55,12 @@ if grep -Fq '## Critical Issues' <<<"$PROMPT"; then fail "prompt still lists the
 ok
 grep -Fq 'must not report or count them' <<<"$PROMPT" || fail "prompt does not tell Claude to leave the deterministic patterns alone"
 ok
+# The prompt must name every position the scan matches, and keep Claude on
+# the explicit-any forms outside them.
+grep -Fq 'after `:`, `<`, `,`, `|`, `&`, `=`, `[` or `as`' <<<"$PROMPT" || fail "prompt does not list the scan's any positions"
+ok
+grep -Fq 'Any other explicit `any` the list above does not cover' <<<"$PROMPT" || fail "prompt does not keep Claude on other explicit any forms"
+ok
 
 # ---- fixture repository -----------------------------------------------------
 TMP="$(mktemp -d)"
@@ -84,6 +90,14 @@ if (a !== b && !c) {}
 foo(arr!)
 const e = m!['k'];
 // note: any value works
+const r: Record<string, any> = {};
+type T = any;
+let w: string | any;
+let z: A & any;
+const mp = new Map<string, any>();
+function f<T = any>(...a: any[]): [any, string] {}
+const msg = "Done!)"; const s2 = 'x as any'; const s3 = `y: any`;
+const ok2 = { anything: 1 }; let manyx: many;
 TS
 printf '// @ts-nocheck\n/* @ts-expect-error */\nlet ok = 1;\n' > "$R/src/nocheck.tsx"
 printf 'let q: any;\n' > "$R/src/100%.ts"
@@ -124,12 +138,15 @@ has "$S" '::warning file=src/nocheck.tsx,line=2,title=Bare @ts-expect-error::`@t
 has "$S" '::warning file=src/100%25.ts,line=1,title=Explicit any::Explicit `any` disables type checking for this value. Use a concrete type or `unknown`.' "percent escaped"
 has "$S" '::warning file=src/new%0Aline.ts,line=1,title=Non-null assertion::Non-null assertion `!` skips the null check. Guard the value or narrow its type.' "newline escaped"
 has "$S" '::warning file=src/a%2Cb%3Ac.ts,line=1,title=Explicit any::Explicit `any` disables type checking for this value. Use a concrete type or `unknown`.' "comma and colon escaped"
-for l in 4 7 9 12; do hasnt "$S" "file=src/any.ts,line=$l," "negative on line $l"; done
+for l in 4 7 9 12 19 20; do hasnt "$S" "file=src/any.ts,line=$l," "negative on line $l"; done
 hasnt "$S" "nocheck.tsx,line=3," "plain line"
 hasnt "$S" "gone.ts" "deleted file"
 hasnt "$S" "link.ts" "symlink"
 hasnt "$S" "skip.js" "non-matching extension"
-eq "$(grep -c '^::warning ' "$S")" 13 "warning count"
+for l in 13 14 15 16 17 18; do
+  has "$S" "::warning file=src/any.ts,line=$l,title=Explicit any::Explicit \`any\` disables type checking for this value. Use a concrete type or \`unknown\`." "widened any on line $l"
+done
+eq "$(grep -c '^::warning ' "$S")" 19 "warning count"
 hasnt "$S" "::notice::" "no cap notice under the limit"
 # Every stdout line is one workflow command: an unescaped newline in a path
 # would split one into two.
@@ -137,8 +154,8 @@ eq "$(grep -vc '^::' "$S" || true)" 0 "every stdout line is a workflow command"
 
 O="$TMP/run/out"
 eq "$(cut -d= -f1 "$O" | sort | tr '\n' ' ')" "any_count critical_count hits " "output keys"
-has "$O" "any_count=5" "any_count"
-has "$O" "critical_count=13" "critical_count"
+has "$O" "any_count=11" "any_count"
+has "$O" "critical_count=19" "critical_count"
 has "$O" "hits=true" "hits"
 grep -Fq '| `src/any.ts` | 1 | Explicit any |' "$TMP/run/summary" || fail "summary row"
 ok
@@ -148,8 +165,8 @@ ok
 # Default cap: 10 annotations, the rest named in a notice.
 run ''
 eq "$(grep -c '^::warning ' "$TMP/run/stdout")" 10 "default annotation cap"
-has "$TMP/run/stdout" "::notice::TypeScript critical patterns: 3 further hit(s) appear in the job summary only." "cap notice"
-eq "$(grep -c '^| `' "$TMP/run/summary")" 13 "summary lists every hit"
+has "$TMP/run/stdout" "::notice::TypeScript critical patterns: 9 further hit(s) appear in the job summary only." "cap notice"
+eq "$(grep -c '^| `' "$TMP/run/summary")" 19 "summary lists every hit"
 
 # No matching file: zero counts, no annotation, success.
 git -C "$R" update-ref refs/remotes/origin/main HEAD
@@ -166,5 +183,22 @@ if ( cd "$R" && EVENT_NAME=pull_request BASE_REF=main FILE_PATTERNS='**/*.ts' GI
   fail "step passed with a missing base ref"
 fi
 ok
+
+# workflow_dispatch/schedule on a one-commit repository: no HEAD~1, so a
+# notice and zero counts, green, like the `changed` step.
+R1="$TMP/one"
+git -C "$TMP" init -q -b main one
+git -C "$R1" config user.email t@example.invalid
+git -C "$R1" config user.name t
+printf 'const a: any = 1;\n' > "$R1/a.ts"
+git -C "$R1" add -A
+git -C "$R1" commit -qm only
+( cd "$R1" && EVENT_NAME=workflow_dispatch BASE_REF='' FILE_PATTERNS='**/*.ts' GIT_GLOB_PATHSPECS=1 \
+    RUNNER_TEMP="$TMP" GITHUB_OUTPUT="$TMP/one-out" GITHUB_STEP_SUMMARY="$TMP/one-sum" bash "$TMP/step.sh" > "$TMP/one-stdout" 2>&1 ) \
+  || { cat "$TMP/one-stdout" >&2; fail "step failed on a repository with one commit"; }
+ok
+has "$TMP/one-stdout" "::notice::TypeScript critical patterns: HEAD has no parent commit; nothing to scan." "no-parent notice"
+has "$TMP/one-out" "any_count=0" "no-parent any_count"
+has "$TMP/one-out" "hits=false" "no-parent hits"
 
 echo "PASS: ts-critical-patterns ($N assertion(s))"

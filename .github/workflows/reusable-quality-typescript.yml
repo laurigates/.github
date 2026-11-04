@@ -287,8 +287,8 @@ jobs:
       # It is not gated on the diff-size skip either; it costs a grep.
       # `-z` because git C-quotes a path with a newline or non-ASCII byte in
       # the plain listing. Advisory, like the rest of this workflow: a hit
-      # is a warning annotation and never fails the job; an unreadable
-      # range does. Line contents never reach the log, only the location.
+      # is a warning annotation and never fails the job; an unreadable PR
+      # diff range does. Line contents never reach the log, only locations.
       - name: TypeScript critical patterns
         id: tscritical
         if: steps.event.outputs.supported == 'true' && steps.actor.outputs.allowed == 'true'
@@ -312,6 +312,15 @@ jobs:
           LIST="$RUNNER_TEMP/tscritical-files"
           HITS="$RUNNER_TEMP/tscritical-hits"
           : > "$HITS"
+          # workflow_dispatch or schedule on a repository with one commit has
+          # no HEAD~1. The `changed` step scans nothing there and stays
+          # green; do the same rather than fail every later step. A pull
+          # request whose base cannot be read still fails below.
+          if [ "$EVENT_NAME" != "pull_request" ] && ! git rev-parse -q --verify 'HEAD~1^{commit}' >/dev/null; then
+            echo "::notice::$TITLE: HEAD has no parent commit; nothing to scan."
+            printf 'any_count=0\ncritical_count=0\nhits=false\n' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           set -f
           # Unquoted on purpose: space-separated pathspecs, unglobbed.
           # shellcheck disable=SC2086
@@ -322,19 +331,28 @@ jobs:
           set +f
 
           # Prints `<kind>\t<line>` per hit. Comment-only lines are skipped
-          # for `any` and `!`, where prose ("returns: any value") would match.
+          # for `any` and `!`, where prose ("returns: any value") would match,
+          # and both run on the line with its string literals emptied
+          # ("Done!)", 'as any'). `any` counts after `:`, `<`, `,`, `|`, `&`,
+          # `=`, `[` or `as`, which covers annotations, generic arguments
+          # (`Record<string, any>`, `Map<K, any>`), unions, intersections,
+          # aliases (`type T = any`), defaults and tuples. The prompt lists
+          # these same positions; keep the two in step.
           scan() {
             awk '
               BEGIN { w = "[A-Za-z0-9_$]" }
               {
                 comment = ($0 ~ /^[[:space:]]*(\/\/|\/\*|\*)/)
-                if (!comment && ($0 ~ /:[[:space:]]*any([^A-Za-z0-9_$]|$)/ \
-                    || $0 ~ /(^|[^A-Za-z0-9_$])as[[:space:]]+any([^A-Za-z0-9_$]|$)/ \
-                    || index($0, "<any>") > 0)) print "any\t" NR
+                s = $0
+                gsub(/"([^"\\]|\\.)*"/, "\"\"", s)
+                gsub(/\047([^\047\\]|\\.)*\047/, "\047\047", s)
+                gsub(/`([^`\\]|\\.)*`/, "``", s)
+                if (!comment && (s ~ /[:<,|&=[][[:space:]]*any([^A-Za-z0-9_$]|$)/ \
+                    || s ~ /(^|[^A-Za-z0-9_$])as[[:space:]]+any([^A-Za-z0-9_$]|$)/)) print "any\t" NR
                 if (index($0, "@ts-ignore") > 0) print "ignore\t" NR
                 if ($0 ~ /@ts-expect-error[[:space:]]*(\*\/[[:space:]]*)?$/) print "expect\t" NR
                 if (index($0, "@ts-nocheck") > 0) print "nocheck\t" NR
-                if (!comment && $0 ~ (w "!(\\.|\\[|\\))")) print "nonnull\t" NR
+                if (!comment && s ~ (w "!(\\.|\\[|\\))")) print "nonnull\t" NR
               }'
           }
           # Workflow-command escaping: % CR LF everywhere, plus , and : in
@@ -422,7 +440,13 @@ jobs:
             ${{ steps.changed.outputs.files }}
             ${{ steps.changed.outputs.truncated == 'true' && 'NOTE: the analyzed file list was truncated — say so in the description of your first finding.' || '' }}
 
-            The workflow's deterministic step already reports explicit `any` (`: any`, `as any`, `<any>`, so `any[]` and `Array<any>` annotations too), `@ts-ignore`, `@ts-expect-error` without explanation, `@ts-nocheck`, and plain non-null assertions (`x!.`, `x![`, `x!)`); you must not report or count them, and any_count is always 0.
+            The workflow's deterministic step already reports these, on lines that are not comment-only and outside string literals; you must not report or count them:
+            - the type `any` written directly after `:`, `<`, `,`, `|`, `&`, `=`, `[` or `as` (e.g. `x: any`, `any[]`, `Array<any>`, `Record<string, any>`, `string | any`, `type T = any`, `<T = any>`, `[any, string]`, `as any`)
+            - `@ts-ignore`, `@ts-expect-error` without explanation, `@ts-nocheck`
+            - plain non-null assertions: an identifier character followed by `!.`, `![` or `!)`
+
+            ## Critical Severity Issues
+            - Any other explicit `any` the list above does not cover, e.g. `any` after `(` or on a line split before it. Count each in any_count.
 
             ## High Severity Issues
             - Non-null assertions in forms the deterministic step does not match, e.g. `getUser()!.name`, `items[0]!.id`
@@ -453,7 +477,7 @@ jobs:
             Report everything through the structured output fields -- that is
             the only channel that reaches a human:
 
-            - any_count: always 0 (the deterministic step counts explicit any)
+            - any_count: explicit any you reported (only forms the deterministic step does not match)
             - total_issues: all issues found
             - findings: one entry per issue, most severe first, each with
               file, line, severity, category, description and remediation.
