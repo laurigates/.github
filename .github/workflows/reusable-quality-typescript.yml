@@ -19,10 +19,10 @@ on:
         type: number
         default: 50
       model:
-        description: 'Claude model to use'
+        description: "Claude model to use. Haiku 5.5 matched Opus 5.5 on every seeded High/Critical finding the shell step leaves to Claude (issue #83); set 'claude-opus-5-5' to restore the previous default"
         required: false
         type: string
-        default: 'claude-opus-5-5'
+        default: 'claude-haiku-5-5'
       effort:
         description: "Claude effort level, passed as --effort. Set to '' to omit the flag"
         required: false
