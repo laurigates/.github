@@ -5,7 +5,9 @@
 # `Check for lockfile changes` computed has_lockfiles and nothing read it.
 # The analysis step was gated on the audit output alone, which is never empty
 # (every audit branch writes its output, error text included), so Claude ran
-# on every PR. The list also lacked bun.lock and uv.lock.
+# on every PR. The list also lacked bun.lock and uv.lock, and pyproject.toml
+# (#113): the pip audit reads pyproject.toml when there is no requirements.txt,
+# yet a PR changing only pyproject.toml set has_lockfiles=false and skipped it.
 #
 # Checks the analysis step's if: with yq, then EXTRACTS the shipped step body
 # and runs it on scratch repositories as a pull_request against main.
@@ -89,6 +91,8 @@ run_case npm true package-lock.json
 run_case bun-text true bun.lock
 run_case uv true uv.lock
 run_case nested-cargo true crates/x/Cargo.lock
+run_case pyproject true pyproject.toml
+run_case nested-pyproject true pkg/pyproject.toml
 
 # ------------------------------------------------- audit output and count
 # The analysis also needs a vulnerability count above 0 from 'Count audit

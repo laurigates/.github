@@ -177,7 +177,7 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
           MAX_DIFF_LINES: ${{ inputs.max-diff-lines }}
         run: |
-          LOCKFILES="package-lock.json bun.lock bun.lockb pnpm-lock.yaml yarn.lock Cargo.lock requirements.txt poetry.lock Pipfile.lock uv.lock"
+          LOCKFILES="package-lock.json bun.lock bun.lockb pnpm-lock.yaml yarn.lock Cargo.lock requirements.txt poetry.lock Pipfile.lock uv.lock pyproject.toml"
           CHANGED=""
 
           if [ "$EVENT_NAME" = "pull_request" ]; then
@@ -800,7 +800,7 @@ jobs:
           FAIL_ON_HIGH: ${{ inputs.fail-on-high }}
         run: |
           set -euo pipefail
-          lockfiles='(^|/)(package-lock\.json|bun\.lockb?|pnpm-lock\.yaml|yarn\.lock|Cargo\.lock|requirements[^/]*\.txt|poetry\.lock|Pipfile\.lock|uv\.lock)$'
+          lockfiles='(^|/)(package-lock\.json|bun\.lockb?|pnpm-lock\.yaml|yarn\.lock|Cargo\.lock|requirements[^/]*\.txt|poetry\.lock|Pipfile\.lock|uv\.lock|pyproject\.toml)$'
           if [ "$EVENT_NAME" = pull_request ]; then
             if ! changed="$(git diff --name-only "origin/${BASE_REF}...HEAD")"; then
               echo "::error::osv-scanner: cannot diff origin/${BASE_REF}...HEAD; nothing was audited."

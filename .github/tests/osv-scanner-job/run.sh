@@ -4,7 +4,9 @@
 # EXTRACTS the job's shipped `Scan dependencies` body with yq and runs it in
 # scratch repositories against a stub osv-scanner, so the lockfile gate, the
 # exit-code handling, the rendering and the fail-on-high gate are exercised
-# without network access. fixtures/lodash-4.17.20.json is real
+# without network access. pyproject.toml counts as a dependency manifest in
+# the PR gate (#113): a PR changing only it took the 'no lockfile changed'
+# notice and was never scanned. fixtures/lodash-4.17.20.json is real
 # `osv-scanner scan source --format json` output (2.7.0) for a lockfile
 # pinning lodash 4.17.20, cut to the fields the step reads; @ROOT@ stands for
 # the scanned directory, which osv-scanner reports as an absolute path.
@@ -113,6 +115,7 @@ run_scan() {
 rc_is()  { ok; [ "$RC" = "$1" ] || fail "expected exit $1, got $RC: $(head -c 400 <<<"$OUT")"; }
 called() { ok; [ "$CALLED" = "$1" ] || fail "expected $1 osv-scanner call(s), got $CALLED"; }
 has()    { ok; grep -qF -- "$1" <<<"$2" || fail "expected '$1' in: $(head -c 400 <<<"$2")"; }
+lacks()  { ok; if grep -qF -- "$1" <<<"$2"; then fail "unexpected '$1' in: $(head -c 400 <<<"$2")"; fi; }
 count()  { ok; local n; n="$(grep -c -- "$1" <<<"$2" || true)"; [ "$n" = "$3" ] || fail "expected $3 line(s) matching '$1', got $n"; }
 
 new_repo() { # <dir> <path changed in the PR>
@@ -128,11 +131,17 @@ new_repo() { # <dir> <path changed in the PR>
 }
 new_repo "$work/lock" package-lock.json
 new_repo "$work/nolock" src/app.ts
+new_repo "$work/pyproject" pyproject.toml
 
 CASE=pr-without-lockfile
 run_scan "$work/nolock" pull_request 1 "$FIXTURE" false
 rc_is 0; called 0
 has '::notice::osv-scanner: no lockfile changed in this PR' "$OUT"
+
+CASE=pr-pyproject-only
+run_scan "$work/pyproject" pull_request 1 "$FIXTURE" false
+rc_is 0; called 1
+lacks 'no lockfile changed in this PR' "$OUT"
 
 CASE=push-without-lockfile-change
 run_scan "$work/nolock" push 0 "$EMPTY" false
