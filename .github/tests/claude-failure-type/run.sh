@@ -162,7 +162,7 @@ run_detect() { # <exec file path or ''>
   RC=$?
   set -e
   OUT_LINES="$(wc -l < "$work/run/output" | tr -d ' ')"
-  OUT_KEYS="$(sed -n 's/^\([A-Za-z_][A-Za-z0-9_-]*\)\(=\|<<\).*/\1/p' "$work/run/output" | sort | tr '\n' ' ')"
+  OUT_KEYS="$(sed -nE 's/^([A-Za-z_][A-Za-z0-9_-]*)(=|<<).*/\1/p' "$work/run/output" | sort | tr '\n' ' ')"
   SUBTYPE="$(sed -n 's/^subtype=//p' "$work/run/output")"
   NUM_TURNS="$(sed -n 's/^num_turns=//p' "$work/run/output")"
   ERRORS="$(sed -n 's/^errors=//p' "$work/run/output")"
