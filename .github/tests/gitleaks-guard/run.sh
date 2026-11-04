@@ -149,7 +149,7 @@ run_scan() {
     if [ -s "${ENVF:-/dev/null}" ]; then
       while IFS='=' read -r k v; do export "$k=$v"; done < "$ENVF"
     fi
-    env EVENT_NAME="$event" BASE_REF=main BEFORE='' AFTER="$(git rev-parse HEAD)" "$@" \
+    env EVENT_NAME="$event" BASE_REF=main DEFAULT_BRANCH=main BEFORE='' AFTER="$(git rev-parse HEAD)" "$@" \
       RUNNER_TEMP="$work/rt/s" GITHUB_STEP_SUMMARY="$work/rt/s/summary.md" bash "$work/scan.sh"
   ) > "$work/rt/s/out" 2>&1 || RC=$?
   OUT="$(cat "$work/rt/s/out")"
@@ -257,10 +257,51 @@ run_job "$work/s4" push BEFORE="$before"
 rc_is 1
 has "Scanned 2 commit(s): ${before}.." "$SUMMARY"
 
+# A push that creates a branch has an all-zero before. The key sits in the
+# earlier of the two commits beyond origin/main, so scanning only the last
+# commit would pass it (issue #111).
 CASE=scan/push-new-branch
 run_job "$work/s4" push BEFORE=0000000000000000000000000000000000000000
+rc_is 1
+has 'Scanned 2 commit(s): origin/main..' "$SUMMARY"
+has '::error file=a.env,line=1::gitleaks: aws-access-token' "$OUT"
+
+# A force-push: before is a commit that is not an ancestor of the new head.
+CASE=scan/force-push
+new_repo "$work/s6"
+git -C "$work/s6" switch -q -c side
+commit_file "$work/s6" side.txt 'rewritten away'
+replaced="$(git -C "$work/s6" rev-parse HEAD)"
+git -C "$work/s6" switch -q main
+commit_file "$work/s6" a.env "k = \"$(fresh_key)\""
+commit_file "$work/s6" b.txt 'clean'
+run_job "$work/s6" push BEFORE="$replaced"
+rc_is 1
+has 'Scanned 2 commit(s): origin/main..' "$SUMMARY"
+has '::error file=a.env,line=1::gitleaks: aws-access-token' "$OUT"
+
+# schedule on the default branch: no commits outside origin/main, so the
+# last commit is scanned and the summary says the earlier ones were not.
+CASE=scan/schedule-on-default
+new_repo "$work/s7"
+commit_file "$work/s7" b.txt 'clean'
+git -C "$work/s7" update-ref refs/remotes/origin/main HEAD
+run_job "$work/s7" schedule
 rc_is 0
-has 'Scanned 1 commit(s): the last commit.' "$SUMMARY"
+has 'Scanned 1 commit(s): the last commit' "$SUMMARY"
+has 'earlier commits were not scanned' "$SUMMARY"
+has '::notice::gitleaks: scanned the last commit' "$OUT"
+has 'earlier commits were not scanned' "$OUT"
+lacks 'nothing to scan' "$OUT"
+
+# An unresolvable default branch falls back to the last commit, with the
+# same notice, rather than crashing under set -e.
+CASE=scan/push-missing-default
+run_job "$work/s4" push BEFORE=0000000000000000000000000000000000000000 DEFAULT_BRANCH=no-such-branch
+rc_is 0
+has 'Scanned 1 commit(s): the last commit' "$SUMMARY"
+has 'origin/no-such-branch does not resolve' "$SUMMARY"
+has 'earlier commits were not scanned' "$OUT"
 
 CASE=scan/config-from-canary
 # The scan loads the config the check exported: an allowlisted path is not
