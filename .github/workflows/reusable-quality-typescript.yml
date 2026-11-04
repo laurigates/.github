@@ -68,7 +68,7 @@ on:
         default: true
     outputs:
       any-count:
-        description: 'Number of any types found'
+        description: 'Lines with an explicit any, from the deterministic TypeScript critical patterns step'
         value: ${{ jobs.analyze.outputs.any }}
       issues-found:
         description: 'Total type safety issues'
@@ -87,7 +87,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.timeout-minutes }}
     outputs:
-      any: ${{ steps.publish.outputs.count_any_count }}
+      any: ${{ steps.tscritical.outputs.any_count }}
       total: ${{ steps.publish.outputs.count_total_issues }}
     steps:
       # anthropics/claude-code-action v1 throws `Unsupported event type` for
@@ -275,6 +275,121 @@ jobs:
           echo "$FILES" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
+      # The grep-able Critical tier, reported by the shell instead of Claude
+      # (laurigates/.github#83): explicit `any`, `@ts-ignore`, a bare
+      # `@ts-expect-error`, `@ts-nocheck`, and the non-null assertions a
+      # regex can tell from `!==` and logical not (`x!.`, `x![`, `x!)`).
+      # The prompt tells Claude not to report or count these.
+      # It lists the PR's files itself rather than reading
+      # steps.changed.outputs.files: that list is narrowed on a push after a
+      # clean scan and capped at file-limit, and a hit in an unchanged file
+      # must still be reported on every head, since Claude no longer sees it.
+      # It is not gated on the diff-size skip either; it costs a grep.
+      # `-z` because git C-quotes a path with a newline or non-ASCII byte in
+      # the plain listing. Advisory, like the rest of this workflow: a hit
+      # is a warning annotation and never fails the job; an unreadable
+      # range does. Line contents never reach the log, only the location.
+      - name: TypeScript critical patterns
+        id: tscritical
+        if: steps.event.outputs.supported == 'true' && steps.actor.outputs.allowed == 'true'
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          FILE_PATTERNS: ${{ inputs.file-patterns }}
+          GIT_GLOB_PATHSPECS: '1'
+        run: |
+          set -euo pipefail
+          TITLE='TypeScript critical patterns'
+          # GitHub shows at most 10 warning annotations per step; the job
+          # summary carries every hit.
+          LIMIT="${ANNOTATION_LIMIT:-10}"
+          SUMMARY_ROWS_MAX=500
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            RANGE="origin/$BASE_REF...HEAD"
+          else
+            RANGE="HEAD~1"
+          fi
+          LIST="$RUNNER_TEMP/tscritical-files"
+          HITS="$RUNNER_TEMP/tscritical-hits"
+          : > "$HITS"
+          set -f
+          # Unquoted on purpose: space-separated pathspecs, unglobbed.
+          # shellcheck disable=SC2086
+          if ! git diff -z --name-only "$RANGE" -- $FILE_PATTERNS > "$LIST"; then
+            echo "::error::$TITLE: could not list the changed files in $RANGE"
+            exit 1
+          fi
+          set +f
+
+          # Prints `<kind>\t<line>` per hit. Comment-only lines are skipped
+          # for `any` and `!`, where prose ("returns: any value") would match.
+          scan() {
+            awk '
+              BEGIN { w = "[A-Za-z0-9_$]" }
+              {
+                comment = ($0 ~ /^[[:space:]]*(\/\/|\/\*|\*)/)
+                if (!comment && ($0 ~ /:[[:space:]]*any([^A-Za-z0-9_$]|$)/ \
+                    || $0 ~ /(^|[^A-Za-z0-9_$])as[[:space:]]+any([^A-Za-z0-9_$]|$)/ \
+                    || index($0, "<any>") > 0)) print "any\t" NR
+                if (index($0, "@ts-ignore") > 0) print "ignore\t" NR
+                if ($0 ~ /@ts-expect-error[[:space:]]*(\*\/[[:space:]]*)?$/) print "expect\t" NR
+                if (index($0, "@ts-nocheck") > 0) print "nocheck\t" NR
+                if (!comment && $0 ~ (w "!(\\.|\\[|\\))")) print "nonnull\t" NR
+              }'
+          }
+          # Workflow-command escaping: % CR LF everywhere, plus , and : in
+          # a property value (actions/toolkit escapeProperty).
+          esc_data() { local s="$1"; s="${s//%/%25}"; s="${s//$'\r'/%0D}"; printf '%s' "${s//$'\n'/%0A}"; }
+          esc_prop() { local s; s="$(esc_data "$1")"; s="${s//,/%2C}"; printf '%s' "${s//:/%3A}"; }
+          # A markdown table cell: no newline, no pipe, no backtick.
+          cell() { local s="$1"; s="${s//$'\r'/ }"; s="${s//$'\n'/ }"; s="${s//|/\\|}"; printf '%s' "${s//\`/\'}"; }
+
+          ANY=0; TOTAL=0
+          ROWS="$RUNNER_TEMP/tscritical-rows"
+          : > "$ROWS"
+          while IFS= read -r -d '' f; do
+            # Deleted in the PR, or a symlink that could point outside the
+            # checkout: nothing to scan.
+            if [ ! -f "$f" ] || [ -L "$f" ]; then continue; fi
+            # stdin, not an argument: awk treats `a=b` operands as assignments.
+            while IFS=$'\t' read -r kind line; do
+              case "$kind" in
+                any) t='Explicit any'; m='Explicit `any` disables type checking for this value. Use a concrete type or `unknown`.'; ANY=$((ANY + 1)) ;;
+                ignore) t='@ts-ignore'; m='`@ts-ignore` suppresses every error on the next line. Fix the error, or use `@ts-expect-error -- <reason>`.' ;;
+                expect) t='Bare @ts-expect-error'; m='`@ts-expect-error` has no explanation. Add the reason after the directive.' ;;
+                nocheck) t='@ts-nocheck'; m='`@ts-nocheck` turns off type checking for the whole file. Remove it and fix the errors.' ;;
+                nonnull) t='Non-null assertion'; m='Non-null assertion `!` skips the null check. Guard the value or narrow its type.' ;;
+                *) echo "::error::$TITLE: internal error, unknown kind '$kind'"; exit 1 ;;
+              esac
+              TOTAL=$((TOTAL + 1))
+              if [ "$TOTAL" -le "$LIMIT" ]; then
+                echo "::warning file=$(esc_prop "$f"),line=$line,title=$(esc_prop "$t")::$(esc_data "$m")"
+              fi
+              if [ "$TOTAL" -le "$SUMMARY_ROWS_MAX" ]; then
+                printf '| `%s` | %s | %s |\n' "$(cell "$f")" "$line" "$t" >> "$ROWS"
+              fi
+            done < <(scan < "$f")
+          done < "$LIST"
+
+          if [ "$TOTAL" -gt "$LIMIT" ]; then
+            echo "::notice::$TITLE: $((TOTAL - LIMIT)) further hit(s) appear in the job summary only."
+          fi
+          if [ "$TOTAL" -gt 0 ]; then
+            {
+              printf '## %s\n\n' "$TITLE"
+              printf '**Explicit any:** %s · **Total hits:** %s\n\n' "$ANY" "$TOTAL"
+              printf '| File | Line | Pattern |\n|---|---|---|\n'
+              cat "$ROWS"
+              if [ "$TOTAL" -gt "$SUMMARY_ROWS_MAX" ]; then
+                printf '\n_%s further hit(s) omitted._\n' "$((TOTAL - SUMMARY_ROWS_MAX))"
+              fi
+              printf '\n'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          HAS=false
+          if [ "$TOTAL" -gt 0 ]; then HAS=true; fi
+          printf 'any_count=%s\ncritical_count=%s\nhits=%s\n' "$ANY" "$TOTAL" "$HAS" >> "$GITHUB_OUTPUT"
+
       - name: Diff-size skip notice
         if: steps.event.outputs.supported == 'true' && steps.changed.outputs.skip == 'true' && steps.actor.outputs.allowed == 'true'
         run: |
@@ -307,13 +422,10 @@ jobs:
             ${{ steps.changed.outputs.files }}
             ${{ steps.changed.outputs.truncated == 'true' && 'NOTE: the analyzed file list was truncated — say so in the description of your first finding.' || '' }}
 
-            ## Critical Issues (Block Merge in Strict Mode)
-            - Explicit `any` usage: `const data: any`, `as any`, function params typed as any
-            - `@ts-ignore` / `@ts-expect-error` without explanation comment
-            - `@ts-nocheck` in files
+            The workflow's deterministic step already reports explicit `any` (`: any`, `as any`, `<any>`, so `any[]` and `Array<any>` annotations too), `@ts-ignore`, `@ts-expect-error` without explanation, `@ts-nocheck`, and plain non-null assertions (`x!.`, `x![`, `x!)`); you must not report or count them, and any_count is always 0.
 
             ## High Severity Issues
-            - Non-null assertions: `user!.name` without guard
+            - Non-null assertions in forms the deterministic step does not match, e.g. `getUser()!.name`, `items[0]!.id`
             - Unsafe type assertions: `value as SomeType` without runtime validation
             - Implicit `any`: untyped function parameters, callback params
 
@@ -341,7 +453,7 @@ jobs:
             Report everything through the structured output fields -- that is
             the only channel that reaches a human:
 
-            - any_count: explicit any usages only
+            - any_count: always 0 (the deterministic step counts explicit any)
             - total_issues: all issues found
             - findings: one entry per issue, most severe first, each with
               file, line, severity, category, description and remediation.
