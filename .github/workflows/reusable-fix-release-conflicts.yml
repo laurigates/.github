@@ -16,6 +16,11 @@ name: Fix Release-Please Conflicts (Reusable)
 #   schedule:
 #     - cron: "*/30 * * * *"
 #   workflow_dispatch: {}
+#
+# The token used (App token or RELEASE_PLEASE_TOKEN) needs Actions: write as
+# well as Contents and Pull requests write: the permissions: block below scopes
+# GITHUB_TOKEN only, and without it the job closes the PR, deletes the branch,
+# then fails on the `gh workflow run` dispatch (issue #114).
 
 on:
   workflow_call:
@@ -26,13 +31,13 @@ on:
         type: string
         default: 'release-please.yml'
       app-id:
-        description: 'GitHub App client ID (or numeric App ID; client ID recommended). When set, uses an App token (via APP_PRIVATE_KEY) instead of RELEASE_PLEASE_TOKEN.'
+        description: 'GitHub App client ID (or numeric App ID; client ID recommended). When set, uses an App token (via APP_PRIVATE_KEY) instead of RELEASE_PLEASE_TOKEN. The App installation must grant Contents: write, Pull requests: write and Actions: write; Actions: write is needed for the `gh workflow run` dispatch, and the permissions: block below does not grant it to an App token.'
         required: false
         type: string
         default: ''
     secrets:
       RELEASE_PLEASE_TOKEN:
-        description: 'PAT with contents:write and pull-requests:write scopes (falls back to GITHUB_TOKEN)'
+        description: 'PAT with contents:write, pull-requests:write and actions:write (actions:write dispatches release-please; falls back to GITHUB_TOKEN)'
         required: false
       APP_PRIVATE_KEY:
         description: 'GitHub App private key. Required when app-id is set.'
