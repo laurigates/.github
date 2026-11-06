@@ -1,0 +1,55 @@
+name: Squash commit message check
+description: >-
+  Rebuild a pull request's squash commit message the way GitHub builds it
+  (title, PR number, description hard-wrapped at 72 columns) and parse it with
+  the conventional-commit parser release-please uses. release-please drops a
+  commit that parser throws on, so a feat/fix PR merges green and cuts no
+  release. Applies to repos with squash_merge_commit_message = PR_BODY.
+
+inputs:
+  title:
+    description: The PR title as it will be merged (read it from the API, not the event payload, if a title fixer ran).
+    required: true
+  body:
+    description: The PR description.
+    required: false
+    default: ''
+  number:
+    description: The PR number, which GitHub appends to the squash subject as " (#N)".
+    required: true
+  mode:
+    description: '"warn" annotates a parse error; "error" also fails the step.'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # Installs only the parser, into a directory of its own, so npm never sees
+    # a caller's package.json. check.mjs is copied next to it because Node
+    # resolves an ES module import from the importing file's directory.
+    - name: Install release-please's commit parser
+      shell: bash
+      env:
+        # The version googleapis/release-please-action bundles: v4.4.1 resolves
+        # release-please 17.3.0, which depends on @conventional-commits/parser
+        # 0.4.1. Bump this together with the release-please-action pin in
+        # .github/workflows/reusable-release-please.yml; the
+        # squash-message-check test fails when the two disagree.
+        PARSER_VERSION: '0.4.1'
+      run: |
+        set -euo pipefail
+        dir="$RUNNER_TEMP/squash-message-check"
+        mkdir -p "$dir"
+        cp "$GITHUB_ACTION_PATH/check.mjs" "$dir/"
+        npm install --prefix "$dir" --no-save --no-package-lock --ignore-scripts --no-audit --no-fund "@conventional-commits/parser@${PARSER_VERSION}"
+
+    # PR text reaches the script through env, never through ${{ }} in the
+    # script, so a title or description cannot inject shell.
+    - name: Parse the squash commit message
+      shell: bash
+      env:
+        PR_TITLE: ${{ inputs.title }}
+        PR_BODY: ${{ inputs.body }}
+        PR_NUMBER: ${{ inputs.number }}
+        MODE: ${{ inputs.mode }}
+      run: node "$RUNNER_TEMP/squash-message-check/check.mjs"
