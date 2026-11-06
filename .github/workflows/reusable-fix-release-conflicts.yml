@@ -16,6 +16,11 @@ name: Fix Release-Please Conflicts (Reusable)
 #   schedule:
 #     - cron: "*/30 * * * *"
 #   workflow_dispatch: {}
+#
+# The token used (App token or RELEASE_PLEASE_TOKEN) needs Actions: write as
+# well as Contents and Pull requests write: the permissions: block below scopes
+# GITHUB_TOKEN only, and without it the job closes the PR, deletes the branch,
+# then fails on the `gh workflow run` dispatch (issue #114).
 
 on:
   workflow_call:
@@ -26,13 +31,13 @@ on:
         type: string
         default: 'release-please.yml'
       app-id:
-        description: 'GitHub App client ID (or numeric App ID; client ID recommended). When set, uses an App token (via APP_PRIVATE_KEY) instead of RELEASE_PLEASE_TOKEN.'
+        description: 'GitHub App client ID (or numeric App ID; client ID recommended). When set, uses an App token (via APP_PRIVATE_KEY) instead of RELEASE_PLEASE_TOKEN. The App installation must grant Contents: write, Pull requests: write and Actions: write; Actions: write is needed for the `gh workflow run` dispatch, and the permissions: block below does not grant it to an App token.'
         required: false
         type: string
         default: ''
     secrets:
       RELEASE_PLEASE_TOKEN:
-        description: 'PAT with contents:write and pull-requests:write scopes (falls back to GITHUB_TOKEN)'
+        description: 'PAT with contents:write, pull-requests:write and actions:write (actions:write dispatches release-please; falls back to GITHUB_TOKEN)'
         required: false
       APP_PRIVATE_KEY:
         description: 'GitHub App private key. Required when app-id is set.'
@@ -68,25 +73,47 @@ jobs:
         id: check
         env:
           GH_TOKEN: ${{ inputs.app-id != '' && steps.app-token.outputs.token || secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          # A push to main makes GitHub recompute the PR's mergeability, and the
+          # field reads UNKNOWN until it has. Re-read up to MAX_POLLS times,
+          # POLL_SLEEP seconds apart, before classifying.
+          MAX_POLLS: '6'
+          POLL_SLEEP: '10'
         run: |
-          # Find open release-please PRs
-          PR_JSON=$(gh pr list \
-            --repo "${{ github.repository }}" \
-            --head "release-please--branches--main" \
-            --state open \
-            --json number,mergeable,headRefName \
-            --limit 1 \
-            -q '.[0] // empty')
+          for v in MAX_POLLS POLL_SLEEP; do
+            case "${!v}" in '' | *[!0-9]* | 0*)
+              echo "::error::$v must be a positive integer (got '${!v}')"; exit 1 ;; esac
+          done
 
-          if [ -z "$PR_JSON" ]; then
-            echo "No open release-please PR found"
-            echo "has_conflict=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
+          polls=0
+          while :; do
+            # Find open release-please PRs. A failed read fails the step
+            # (bash -e) instead of reading as "no PR".
+            PR_JSON=$(gh pr list \
+              --repo "$REPO" \
+              --head "release-please--branches--main" \
+              --state open \
+              --json number,mergeable,headRefName \
+              --limit 1 \
+              -q '.[0] // empty')
 
-          NUMBER=$(echo "$PR_JSON" | jq -r '.number')
-          MERGEABLE=$(echo "$PR_JSON" | jq -r '.mergeable')
-          BRANCH=$(echo "$PR_JSON" | jq -r '.headRefName')
+            if [ -z "$PR_JSON" ]; then
+              echo "No open release-please PR found"
+              echo "has_conflict=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            NUMBER=$(echo "$PR_JSON" | jq -r '.number')
+            MERGEABLE=$(echo "$PR_JSON" | jq -r '.mergeable')
+            BRANCH=$(echo "$PR_JSON" | jq -r '.headRefName')
+
+            if [ "$MERGEABLE" != "UNKNOWN" ] || [ "$polls" -ge "$MAX_POLLS" ]; then
+              break
+            fi
+            polls=$((polls + 1))
+            echo "Mergeability UNKNOWN for release-please PR #$NUMBER; waiting ${POLL_SLEEP}s ($polls/$MAX_POLLS)"
+            sleep "$POLL_SLEEP"
+          done
 
           echo "PR #$NUMBER on branch $BRANCH — mergeable: $MERGEABLE"
 
@@ -95,6 +122,9 @@ jobs:
             echo "pr_number=$NUMBER" >> "$GITHUB_OUTPUT"
             echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
           else
+            if [ "$MERGEABLE" = "UNKNOWN" ]; then
+              echo "::warning::release-please PR #$NUMBER still reads mergeable UNKNOWN after $MAX_POLLS polls; the scheduled run will retry"
+            fi
             echo "has_conflict=false" >> "$GITHUB_OUTPUT"
           fi
 

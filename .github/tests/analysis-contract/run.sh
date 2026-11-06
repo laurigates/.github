@@ -116,6 +116,10 @@ for WF in "${workflows[@]}"; do
     if [[ "$out_value" =~ ^\$\{\{\ steps\.publish\.outputs\.count_([a-z_]+)\ \}\}$ ]]; then
       in_list "${BASH_REMATCH[1]}" "$COUNT_KEYS" \
         || fail "job output '$out_name' reads count_${BASH_REMATCH[1]}, which is not in COUNT_KEYS ($COUNT_KEYS)"
+    elif [[ "$out_value" =~ ^\$\{\{\ steps\.tscritical\.outputs\.(any_count|critical_count)\ \}\}$ ]]; then
+      # The deterministic TypeScript pattern step: its counts are bash
+      # integers, not model output (.github/tests/ts-critical-patterns).
+      :
     else
       fail "job output '$out_name' is '$out_value', expected \${{ steps.publish.outputs.count_<key> }}: only the publish step's outputs are type-checked"
     fi

@@ -454,6 +454,13 @@ run_detect() {
 # ------------------------------------------------------------ find-conflicts
 CASE_NAME='find'
 new_case find
+# The step's mergeable-UNKNOWN wait bound, as shipped (conflict-mergeable-wait
+# covers the wait itself; no fixture here reads UNKNOWN, so nothing sleeps).
+run_find() {
+  run_in "$C/pws" find GH_TOKEN=x \
+    MAX_POLLS="$(step_field find-conflicts "$FIND_STEP" .env.MAX_POLLS)" \
+    POLL_SLEEP="$(step_field find-conflicts "$FIND_STEP" .env.POLL_SLEEP)" "$@"
+}
 cat > "$STUB_DIR/prs.json" <<'JSON'
 [{"number": 7, "mergeable": "CONFLICTING", "headRefName": "feature", "isCrossRepository": false},
  {"number": 8, "mergeable": "CONFLICTING", "headRefName": "dependabot/npm/x", "isCrossRepository": false},
@@ -464,7 +471,7 @@ cat > "$STUB_DIR/prs.json" <<'JSON'
  {"number": 13, "mergeable": "CONFLICTING", "headRefName": "release-please--branches--main", "isCrossRepository": false}]
 JSON
 echo 'release/1.x' > "$STUB_DIR/protected"
-run_in "$C/pws" find GH_TOKEN=x PR_INPUT= SKIP_RELEASE_PLEASE=false
+run_find PR_INPUT= SKIP_RELEASE_PLEASE=false
 assert_eq "$RC" 0 "find exit ($(stderr_tail))"
 assert_eq "$(outv matrix)" '{"include":[{"pr_number":"7"}]}' "matrix (fork, stale, default-branch and protected-branch PRs left out)"
 assert_contains "$(cat "$C/stdout")" "::notice::PR #11" "notice for a PR whose head is the default branch"
@@ -475,26 +482,26 @@ assert_eq "$(comments)" 2 "stale close comments"
 : > "$STUB_DIR/closed.log"
 # skip-release-please: the release-please PR never reaches the loop, so it is
 # neither closed nor resolved; the other stale PR is still closed.
-run_in "$C/pws" find GH_TOKEN=x PR_INPUT= SKIP_RELEASE_PLEASE=true
+run_find PR_INPUT= SKIP_RELEASE_PLEASE=true
 assert_eq "$RC" 0 "find exit, skip-release-please ($(stderr_tail))"
 assert_eq "$(outv matrix)" '{"include":[{"pr_number":"7"}]}' "matrix with skip-release-please"
 assert_eq "$(paste -sd, - < "$STUB_DIR/closed.log" 2>/dev/null)" 8 "closed with skip-release-please (release-please PR left alone)"
 assert_lacks "$(cat "$C/stdout")" "PR #13" "release-please PR not mentioned with skip-release-please"
 : > "$STUB_DIR/closed.log"
-run_in "$C/pws" find GH_TOKEN=x PR_INPUT=9 SKIP_RELEASE_PLEASE=false
+run_find PR_INPUT=9 SKIP_RELEASE_PLEASE=false
 assert_eq "$(outv has_conflicts)" false "an explicit fork PR is not resolved"
-run_in "$C/pws" find GH_TOKEN=x 'PR_INPUT=7; touch PWNED' SKIP_RELEASE_PLEASE=false
+run_find 'PR_INPUT=7; touch PWNED' SKIP_RELEASE_PLEASE=false
 ok; [ "$RC" -ne 0 ] || fail "a non-numeric pr_number must fail"
 ok; if [ -e "$C/pws/PWNED" ]; then fail "pr_number was executed"; fi
 # A protection lookup that fails (403/404) skips the PR, never includes it.
 touch "$STUB_DIR/branches-error"
-run_in "$C/pws" find GH_TOKEN=x PR_INPUT=7 SKIP_RELEASE_PLEASE=false
+run_find PR_INPUT=7 SKIP_RELEASE_PLEASE=false
 assert_eq "$RC" 0 "find exit, protection lookup failing ($(stderr_tail))"
 assert_eq "$(outv has_conflicts)" false "a PR whose branch protection cannot be read is not resolved"
 rm -f "$STUB_DIR/branches-error"
 # No default branch, no decision: the job fails instead of resolving blind.
 touch "$STUB_DIR/repo-error"
-run_in "$C/pws" find GH_TOKEN=x PR_INPUT=7 SKIP_RELEASE_PLEASE=false
+run_find PR_INPUT=7 SKIP_RELEASE_PLEASE=false
 ok; [ "$RC" -ne 0 ] || fail "find must fail when the default branch cannot be read"
 assert_lacks "$(outv has_conflicts)" true "has_conflicts when the default branch cannot be read"
 rm -f "$STUB_DIR/repo-error"
