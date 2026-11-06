@@ -113,7 +113,7 @@ assert_lacks "$prompt" 'gh issue create' "Claude prompt (issue creation belongs 
 # workflow never opens (it pushes to the failing branch). It could never fire.
 all_runs="$(yq -r '.jobs["auto-fix"].steps[].run // ""' "$WORKFLOW")"
 assert_lacks "$all_runs" 'head:auto-fix/' "workflow run bodies"
-assert_eq "$(step_field "$CLAUDE_STEP" .if)" "steps.context.outputs.recent_fix_count == '0'" "Claude step if:"
+assert_eq "$(step_field "$CLAUDE_STEP" .if)" "steps.gate.outputs.run == 'true' && steps.context.outputs.recent_fix_count == '0'" "Claude step if:"
 assert_contains "$(step_field "$LABEL_STEP" .if)" "steps.existing.outputs.mode == 'create'" "label step if:"
 
 # Outside `create` mode the agent must not be able to file an issue at all,
@@ -133,7 +133,7 @@ APP_STEP='Generate GitHub App token'
 assert_eq "$(step_field "$CHECKOUT_STEP" .with.token)" \
   "\${{ inputs.app-id != '' && steps.app-token.outputs.token || secrets.PAT_TOKEN || github.token }}" "checkout token"
 assert_eq "$(step_field "$APP_STEP" .id)" app-token "'$APP_STEP' id"
-assert_eq "$(step_field "$APP_STEP" .if)" "inputs.app-id != ''" "'$APP_STEP' if:"
+assert_eq "$(step_field "$APP_STEP" .if)" "steps.gate.outputs.run == 'true' && inputs.app-id != ''" "'$APP_STEP' if:"
 assert_eq "$(yq -r '.on.workflow_call.secrets.APP_PRIVATE_KEY.required' "$WORKFLOW")" false "secret APP_PRIVATE_KEY required"
 p_app="$(pos "$APP_STEP")"; p_checkout="$(pos "$CHECKOUT_STEP")"
 ok

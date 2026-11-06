@@ -18,6 +18,13 @@
 # chore/claude-config-sync PR rather than have Claude resolve it; that case
 # pattern is extracted and evaluated too.
 #
+# reusable-auto-fix.yml runs on workflow_run, whose pull_requests[] carries
+# no author, so its own `gate` step (a different body: it resolves the PR
+# from pr_number or the branch, then reads the author through the API) runs
+# first, before the App token and checkout, and every later step requires
+# its output (laurigates/.github#119). Its body is extracted and run the
+# same way, against stub `pr list` and `api repos/.../pulls/N` calls.
+#
 # Usage: bash .github/tests/claude-cost-guard/run.sh
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
@@ -52,6 +59,12 @@ case "$*" in
   "api --paginate repos/"*"/pulls/"*"/files?per_page=100")
     [ "${GH_FAIL:-}" = 1 ] && { echo 'gh: Server Error (HTTP 502)' >&2; exit 1; }
     cat "$FX_FILES" ;;
+  "pr list --repo "*" --head "*)
+    [ "${GH_FAIL:-}" = 1 ] && { echo 'gh: Server Error (HTTP 502)' >&2; exit 1; }
+    [ -z "${FX_PR:-}" ] || printf '%s\n' "$FX_PR" ;;
+  "api repos/"*"/pulls/"*" --jq .user.login")
+    [ "${GH_FAIL:-}" = 1 ] && { echo 'gh: Server Error (HTTP 502)' >&2; exit 1; }
+    printf '%s\n' "$FX_AUTHOR" ;;
   *) echo "STUB-GH unexpected call: $*" >&2; exit 97 ;;
 esac
 STUB
@@ -256,6 +269,144 @@ for spec in reusable-claude-review.yml:review reusable-claude.yml:claude; do
   run_gate "$body" laurigates '7; id' "$code"
   ok; [ "$RC" -ne 0 ] || fail "a non-numeric PR number must fail the step"
 done
+
+# ------------------------------------------------------ auto-fix gate
+AF=.github/workflows/reusable-auto-fix.yml
+afsteps='.jobs["auto-fix"].steps'
+CASE=auto-fix/extract
+afbody="$work/auto-fix-gate.sh"
+yq "${afsteps}[] | select(.id == \"gate\") | .run // \"\"" "$AF" > "$afbody"
+ok
+if [ ! -s "$afbody" ] || [ "$(cat "$afbody")" = "" ]; then
+  fail "no step with id 'gate' and a run: body in $AF"
+else
+  ok
+  if grep -qF '${{' "$afbody"; then fail "the auto-fix gate's run body interpolates an expression; pass values through env:"; fi
+
+  # ---- wiring
+  CASE=auto-fix/wiring
+  i_gate="$(yq "[${afsteps}[]] | to_entries | map(select(.value.id == \"gate\")) | .[0].key // -1" "$AF")"
+  eq "$i_gate" 0 "the gate is the job's first step (before the App token and checkout)"
+  n_steps="$(yq "${afsteps} | length" "$AF")"
+  ok; [ "$n_steps" -gt 1 ] || fail "auto-fix job has $n_steps step(s)"
+  for ((i = 1; i < n_steps; i++)); do
+    cond="$(yq "[${afsteps}[]] | .[$i].if // \"\"" "$AF")"
+    name="$(yq "[${afsteps}[]] | .[$i].name // \"\"" "$AF")"
+    ok
+    case "$cond" in
+      *"||"*) fail "step $i ($name) if: has || so the gate is not a hard precondition ('$cond')" ;;
+      *"$GUARD"*) ;;
+      *) fail "step $i ($name) does not require \"$GUARD\" ('$cond')" ;;
+    esac
+  done
+  afbind() { # <env var> <expected expression>
+    ok
+    got="$(K="$1" yq "${afsteps}[] | select(.id == \"gate\") | .env[strenv(K)] // \"\"" "$AF")"
+    [ "$got" = "$2" ] || fail "auto-fix gate env $1 is '$got', expected '$2'"
+  }
+  afbind GH_TOKEN '${{ github.token }}'
+  afbind REPO '${{ github.repository }}'
+  afbind BRANCH '${{ inputs.branch }}'
+  afbind PR_NUMBER_INPUT '${{ inputs.pr_number }}'
+  afbind SKIP_AUTHORS '${{ inputs.skip_authors }}'
+  eq "$(yq '.on.workflow_call.inputs.skip_authors.default // ""' "$AF")" "$BOT" "auto-fix skip_authors default"
+  # The actor gate stays as it was.
+  ok
+  yq -e '.jobs["auto-fix"].if | test("allowed_bots")' "$AF" >/dev/null 2>&1 \
+    || fail "the auto-fix job's if: lost its allowed_bots actor clause"
+
+  # run_af <branch> <pr_number input>: FX_PR / FX_AUTHOR / GH_FAIL / SKIP_AUTHORS
+  # from the environment. Sets OUT, LOG, ANN and RC.
+  run_af() {
+    rm -rf "$work/run"
+    mkdir -p "$work/run"
+    OUT="$work/run/output"; LOG="$work/run/gh.log"; ANN="$work/run/stdout"
+    : > "$OUT"; : > "$LOG"
+    set +e
+    PATH="$bin:$PATH" STUB_DIR="$work/run" FX_PR="${FX_PR:-}" FX_AUTHOR="${FX_AUTHOR:-}" \
+      GH_FAIL="${GH_FAIL:-}" GITHUB_OUTPUT="$OUT" GH_TOKEN=stub REPO=laurigates/example \
+      BRANCH="$1" PR_NUMBER_INPUT="$2" SKIP_AUTHORS="${SKIP_AUTHORS-$BOT}" \
+      bash "$afbody" > "$ANN" 2> "$work/run/stderr"
+    RC=$?
+    set -e
+  }
+  af_skip() {
+    eq "$RC" 0 "exit status ($(head -c 200 "$work/run/stderr"))"
+    eq "$(out_of run "$OUT")" false "run output"
+    has "$ANN" '::notice title=Auto-fix skipped::' "skip notice"
+    has "$ANN" "$1" "skip reason"
+  }
+  af_run() {
+    eq "$RC" 0 "exit status ($(head -c 200 "$work/run/stderr"))"
+    eq "$(out_of run "$OUT")" true "run output"
+    hasnt "$ANN" '::notice title=Auto-fix skipped::' "no skip notice"
+  }
+
+  # ---- behaviour
+  CASE=auto-fix/listed-author-skip
+  FX_PR=12 FX_AUTHOR="$BOT" run_af chore/claude-config-sync ''
+  af_skip "the PR author '$BOT' is listed in skip_authors"
+  has "$LOG" 'STUB-GH pr list --repo laurigates/example --head chore/claude-config-sync' "PR detected from the branch"
+  has "$LOG" 'STUB-GH api repos/laurigates/example/pulls/12 --jq .user.login' "author read through the API"
+
+  CASE=auto-fix/case-insensitive
+  FX_PR=12 FX_AUTHOR='Laurigates-Claude-Config-Sync[bot]' run_af chore/claude-config-sync ''
+  af_skip "is listed in skip_authors"
+
+  CASE=auto-fix/human-author-run
+  FX_PR=12 FX_AUTHOR=laurigates run_af feat/x ''
+  af_run
+
+  CASE=auto-fix/pr-number-input
+  FX_PR=99 FX_AUTHOR="$BOT" run_af chore/claude-config-sync 34
+  af_skip "is listed in skip_authors"
+  hasnt "$LOG" 'STUB-GH pr list' "no PR lookup when pr_number is given"
+  has "$LOG" 'STUB-GH api repos/laurigates/example/pulls/34 --jq .user.login' "author read for the given PR"
+
+  CASE=auto-fix/no-pr-run
+  FX_PR='' FX_AUTHOR="$BOT" run_af feat/no-pr ''
+  af_run
+  hasnt "$LOG" 'STUB-GH api repos/' "no author read without a PR"
+
+  CASE=auto-fix/empty-skip-authors-run
+  SKIP_AUTHORS='' FX_PR=12 FX_AUTHOR="$BOT" run_af chore/claude-config-sync ''
+  af_run
+  ok; [ ! -s "$LOG" ] || fail "skip_authors='' still called gh: $(cat "$LOG")"
+
+  CASE=auto-fix/comma-separated
+  SKIP_AUTHORS="someone, $BOT" FX_PR=12 FX_AUTHOR="$BOT" run_af chore/claude-config-sync ''
+  af_skip "is listed in skip_authors"
+
+  CASE=auto-fix/bad-pr-number-red
+  FX_PR=12 FX_AUTHOR="$BOT" run_af feat/x '7; id'
+  ok; [ "$RC" -ne 0 ] || fail "a non-numeric pr_number must fail the step"
+  ok; [ -z "$(out_of run "$OUT")" ] || fail "a bad pr_number wrote run=$(out_of run "$OUT")"
+  ok; [ ! -s "$LOG" ] || fail "a bad pr_number still called gh: $(cat "$LOG")"
+
+  CASE=auto-fix/api-failure-red
+  GH_FAIL=1 FX_PR=12 FX_AUTHOR="$BOT" run_af feat/x ''
+  ok; [ "$RC" -ne 0 ] || fail "a failed PR lookup must fail the step, not skip or run"
+  ok; [ -z "$(out_of run "$OUT")" ] || fail "a failed lookup wrote run=$(out_of run "$OUT")"
+  GH_FAIL=1 FX_AUTHOR="$BOT" run_af feat/x 34
+  ok; [ "$RC" -ne 0 ] || fail "a failed author read must fail the step, not skip or run"
+  ok; [ -z "$(out_of run "$OUT")" ] || fail "a failed author read wrote run=$(out_of run "$OUT")"
+
+  # A branch name is caller-controlled (issue #69): it reaches gh as one
+  # argument and is never evaluated.
+  CASE=auto-fix/hostile-branch
+  hostile="x\$(touch $work/run/pwned)\`touch $work/run/pwned2\`"$'\n'"run=false"
+  FX_PR=12 FX_AUTHOR=laurigates run_af "$hostile" ''
+  af_run
+  ok; [ ! -e "$work/run/pwned" ] && [ ! -e "$work/run/pwned2" ] || fail "the branch name was executed"
+  has "$LOG" "--head x\$(touch" "hostile branch passed literally to gh"
+  eq "$(grep -c '^run=' "$OUT")" 1 "exactly one run= line in GITHUB_OUTPUT"
+
+  # A login that is not a login shape is sanitised before the notice.
+  CASE=auto-fix/sanitised-author
+  SKIP_AUTHORS="$BOT" FX_PR=12 FX_AUTHOR=$'laurigates-claude-config-sync[bot]%0A::error::x' run_af feat/x ''
+  af_run
+  hasnt "$ANN" '::error::' "workflow command injected through the author"
+fi
 
 # ------------------------------------------------- auto-resolve close list
 CASE=auto-resolve/close-list

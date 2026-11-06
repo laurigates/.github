@@ -64,6 +64,18 @@ on:
         required: false
         type: string
         default: ''
+      skip_authors:
+        description: >-
+          PR authors whose pull requests auto-fix does not run on, comma- or
+          newline-separated, compared case-insensitively with the [bot] suffix
+          included. Checked against the author of the failed branch's PR, not
+          the actor, so a human re-running or pushing to such a PR does not
+          start a run. The default is the claude-config-sync App, whose PRs
+          touch only Claude config (laurigates/gitops#341). '' disables the
+          check
+        required: false
+        type: string
+        default: 'laurigates-claude-config-sync[bot]'
       max_auto_fix_prs:
         description: >-
           Flood guard: once this many issues filed by this workflow are open
@@ -194,6 +206,77 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.timeout_minutes }}
     steps:
+      # Skips green, before the App token and before checkout, a failure on a
+      # PR whose author is in skip_authors (laurigates/.github#119). It has to
+      # be a step that calls the API: the workflow_run payload's
+      # pull_requests[] carries number, head and base but no user, so the job
+      # if: cannot see the author. The PR comes from pr_number, else from the
+      # branch; no PR means nothing to skip. A failed API read fails the step.
+      # Every later step requires run == 'true', a string equality, so an
+      # unset output fails closed. Values reach the script through env: only;
+      # the branch name is caller-controlled (issue #69). The
+      # claude-cost-guard test extracts and runs this body.
+      - name: Check PR author
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ inputs.branch }}
+          PR_NUMBER_INPUT: ${{ inputs.pr_number }}
+          SKIP_AUTHORS: ${{ inputs.skip_authors }}
+        run: |
+          set -euo pipefail
+          # entries <input>: one entry per line from a comma- or newline-separated
+          # input, trimmed, with blank entries and '#' comments dropped.
+          entries() {
+            local e
+            while IFS= read -r e; do
+              e="${e#"${e%%[![:space:]]*}"}"
+              e="${e%"${e##*[![:space:]]}"}"
+              case "$e" in '' | '#'*) continue ;; esac
+              printf '%s\n' "$e"
+            done < <(printf '%s\n' "$1" | tr ',' '\n')
+          }
+          lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
+          authors="$(entries "${SKIP_AUTHORS:-}")"
+          if [ -z "$authors" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          pr="${PR_NUMBER_INPUT:-}"
+          if [ -z "$pr" ]; then
+            # No checkout yet, so --repo is required.
+            pr="$(gh pr list --repo "$REPO" --head "$BRANCH" --state open \
+                    --json number --jq '.[0].number // empty')"
+            if [ -z "$pr" ]; then
+              echo "run=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          if ! [[ "$pr" =~ ^[0-9]+$ ]]; then
+            echo "::error title=Auto-fix::pr_number is not a PR number"
+            exit 1
+          fi
+
+          # The REST login carries the [bot] suffix, as skip_authors does; gh pr
+          # view reports an App as app/<slug>. A login is [A-Za-z0-9-] plus the
+          # [bot] suffix; anything else is dropped before it reaches a
+          # workflow command.
+          login="$(gh api "repos/$REPO/pulls/$pr" --jq .user.login)"
+          author="$(printf '%s' "$login" | tr -cd 'A-Za-z0-9_.[]-')"
+          if [ -n "$author" ]; then
+            while IFS= read -r who; do
+              if [ "$(lower "$who")" = "$(lower "$author")" ]; then
+                echo "::notice title=Auto-fix skipped::the PR author '$author' is listed in skip_authors"
+                echo "run=false" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+            done <<<"$authors"
+          fi
+          echo "run=true" >> "$GITHUB_OUTPUT"
+
       # The agent pushes with the checkout's credential. A GITHUB_TOKEN push
       # starts no CI: the PR's runs are held, then concluded `failure` with
       # zero jobs once a later push or the merge supersedes them, so a fix
@@ -201,13 +284,14 @@ jobs:
       # push runs CI as usual. The token is scoped to this repository.
       - name: Generate GitHub App token
         id: app-token
-        if: inputs.app-id != ''
+        if: steps.gate.outputs.run == 'true' && inputs.app-id != ''
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ inputs.app-id }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
 
       - name: Checkout failed branch
+        if: steps.gate.outputs.run == 'true'
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           ref: ${{ inputs.branch }}
@@ -216,6 +300,7 @@ jobs:
 
       - name: Gather failure context
         id: context
+        if: steps.gate.outputs.run == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CI_CONTEXT_DIR: ${{ runner.temp }}/ci-failure-context
@@ -273,6 +358,7 @@ jobs:
       # .github/tests/auto-fix-dedup/run.sh runs this body against real logs.
       - name: Compute failure signature
         id: signature
+        if: steps.gate.outputs.run == 'true'
         env:
           CONTEXT_DIR: ${{ steps.context.outputs.context_dir }}
           WORKFLOW_NAME: ${{ inputs.workflow_name }}
@@ -399,6 +485,7 @@ jobs:
       # unconditional "create an issue" instruction.
       - name: Find existing issue for this failure
         id: existing
+        if: steps.gate.outputs.run == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SIGNATURE: ${{ steps.signature.outputs.signature }}
@@ -523,7 +610,7 @@ jobs:
       # cannot be provisioned is a warning: the directive tells the agent to
       # drop --label, and the dedup marker does not depend on labels.
       - name: Ensure issue labels exist
-        if: steps.existing.outputs.mode == 'create' && steps.context.outputs.recent_fix_count == '0'
+        if: steps.gate.outputs.run == 'true' && steps.existing.outputs.mode == 'create' && steps.context.outputs.recent_fix_count == '0'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           LABEL_COLOR: 'd73a4a'
@@ -545,15 +632,15 @@ jobs:
           done
 
       - name: Skip if already attempted fix
-        if: steps.context.outputs.recent_fix_count != '0'
+        if: steps.gate.outputs.run == 'true' && steps.context.outputs.recent_fix_count != '0'
         run: |
           echo "::notice::Skipping auto-fix - a recent fix commit already exists on this branch. Manual intervention may be needed."
           echo "Recent commits:"
           git log --oneline -5
 
       - name: Analyze and fix with Claude
-        if: steps.context.outputs.recent_fix_count == '0'
-        uses: anthropics/claude-code-action@v1
+        if: steps.gate.outputs.run == 'true' && steps.context.outputs.recent_fix_count == '0'
+        uses: anthropics/claude-code-action@v1.0.266
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           allowed_bots: ${{ inputs.allowed_bots }}

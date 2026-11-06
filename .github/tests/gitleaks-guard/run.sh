@@ -10,6 +10,12 @@
 #   - `gitleaks git --log-opts=<range>` on a range that resolves to no commits,
 #     a missing base ref included, exits 0 with "0 commits scanned".
 #
+# And one way a pull request could pass with a leak in it (issue #112): the
+# config and .gitleaksignore came from the PR head, so a PR could allowlist
+# or ignore its own key. gitleaks also loads <source>/.gitleaks.toml when
+# GITLEAKS_CONFIG is unset and <source>/.gitleaksignore always, so both must
+# come from the base ref on pull_request.
+#
 # The test EXTRACTS the job's shipped step bodies with yq and runs them in
 # scratch repositories. On Linux x86_64 (CI) it gets gitleaks by running the
 # shipped install step, which also checks the pinned SHA256; elsewhere it
@@ -64,6 +70,12 @@ for s in "$INSTALL" "$CANARY" "$SCAN"; do
   # shellcheck disable=SC2016 # a literal ${{, not a shell expansion
   if grep -qF '${{' <<<"$(step "$s" .run)"; then fail "'$s' interpolates an expression into its run: body"; fi
 done
+for k in EVENT_NAME BASE_REF; do
+  ok; [ "$(K="$k" STEP="$CANARY" yq '.jobs.gitleaks.steps[] | select(.name == strenv(STEP)) | .env | has(strenv(K))' "$WORKFLOW")" = true ] \
+    || fail "'$CANARY' must read $k through env:"
+done
+ok; grep -qF -- '--gitleaks-ignore-path "$GITLEAKS_IGNORE_PATH"' <<<"$(step "$SCAN" .run)" \
+  || fail "the scan does not pass --gitleaks-ignore-path \"\$GITLEAKS_IGNORE_PATH\""
 step "$CANARY" .run > "$work/canary.sh"
 step "$SCAN" .run > "$work/scan.sh"
 
@@ -111,12 +123,16 @@ commit_file() { # <dir> <path> <content>
 ZERO_RULE=$'[allowlist]\ndescription = "allowlist only"\npaths = [\'\'\'^docs/\'\'\']'
 USE_DEFAULT=$'[extend]\nuseDefault = true\n\n[allowlist]\npaths = [\'\'\'^docs/\'\'\']'
 
-# run_canary <repo>: sets RC, OUT (stdout), ENVF (GITHUB_ENV file).
+# run_canary <repo> <event> [KEY=VALUE...]: sets RC, OUT (stdout), ENVF
+# (GITHUB_ENV file).
 run_canary() {
+  local repo="$1" event="$2"
+  shift 2
   rm -rf "$work/rt/c" && mkdir -p "$work/rt/c"
   ENVF="$work/rt/c/env"; : > "$ENVF"
   RC=0
-  (cd "$1" && env -u GITLEAKS_CONFIG RUNNER_TEMP="$work/rt/c" GITHUB_ENV="$ENVF" bash "$work/canary.sh") \
+  (cd "$repo" && env -u GITLEAKS_CONFIG -u GITLEAKS_IGNORE_PATH EVENT_NAME="$event" BASE_REF=main "$@" \
+    RUNNER_TEMP="$work/rt/c" GITHUB_ENV="$ENVF" bash "$work/canary.sh") \
     > "$work/rt/c/out" 2>&1 || RC=$?
   OUT="$(cat "$work/rt/c/out")"
 }
@@ -129,11 +145,11 @@ run_scan() {
   RC=0
   (
     cd "$repo"
-    unset GITLEAKS_CONFIG
+    unset GITLEAKS_CONFIG GITLEAKS_IGNORE_PATH
     if [ -s "${ENVF:-/dev/null}" ]; then
       while IFS='=' read -r k v; do export "$k=$v"; done < "$ENVF"
     fi
-    env EVENT_NAME="$event" BASE_REF=main BEFORE='' AFTER="$(git rev-parse HEAD)" "$@" \
+    env EVENT_NAME="$event" BASE_REF=main DEFAULT_BRANCH=main BEFORE='' AFTER="$(git rev-parse HEAD)" "$@" \
       RUNNER_TEMP="$work/rt/s" GITHUB_STEP_SUMMARY="$work/rt/s/summary.md" bash "$work/scan.sh"
   ) > "$work/rt/s/out" 2>&1 || RC=$?
   OUT="$(cat "$work/rt/s/out")"
@@ -142,27 +158,52 @@ run_scan() {
 has()   { ok; grep -qF -- "$1" <<<"$2" || fail "expected '$1' in: $(head -c 400 <<<"$2")"; }
 lacks() { ok; if grep -qF -- "$1" <<<"$2"; then fail "did not expect '$1' in output"; fi; }
 rc_is() { ok; [ "$RC" = "$1" ] || fail "expected exit $1, got $RC: $(head -c 400 <<<"$OUT")"; }
+# run_job <repo> <event> [KEY=VALUE...]: the config check, then the scan
+# with the same event values, as the job runs them.
+run_job() {
+  run_canary "$@"
+  if [ "$RC" != 0 ]; then fail "the config check failed (exit $RC): $(head -c 400 <<<"$OUT")"; return; fi
+  run_scan "$@"
+}
 
 # --------------------------------------------------------- config check
 CASE=canary/no-config
 new_repo "$work/r1"
-run_canary "$work/r1"
+run_canary "$work/r1" pull_request
 rc_is 0
-ok; [ ! -s "$ENVF" ] || fail "no .gitleaks.toml, yet GITHUB_ENV was written: $(cat "$ENVF")"
+ok; grep -qxF "GITLEAKS_CONFIG=$work/rt/c/gitleaks-config/.gitleaks.toml" "$ENVF" \
+  || fail "no config anywhere, yet GITLEAKS_CONFIG does not name the default-only file: $(cat "$ENVF")"
+ok; grep -qxF "GITLEAKS_IGNORE_PATH=$work/rt/c/gitleaks-config/.gitleaksignore" "$ENVF" \
+  || fail "GITLEAKS_IGNORE_PATH not exported: $(cat "$ENVF")"
+ok; [ -f "$work/rt/c/gitleaks-config/.gitleaksignore" ] && [ ! -s "$work/rt/c/gitleaks-config/.gitleaksignore" ] \
+  || fail "the ignore file for a base without one must exist and be empty"
 
-CASE=canary/zero-rule-config
+CASE=canary/zero-rule-config-push
 new_repo "$work/r2"
 commit_file "$work/r2" .gitleaks.toml "$ZERO_RULE"
-run_canary "$work/r2"
+run_canary "$work/r2" push
 rc_is 1
 has '::error file=.gitleaks.toml::gitleaks found neither of two keys' "$OUT"
 
-CASE=canary/use-default-config
+CASE=canary/zero-rule-config-on-base
+git -C "$work/r2" update-ref refs/remotes/origin/main HEAD
+commit_file "$work/r2" src/app.py 'print("hello")'
+run_canary "$work/r2" pull_request
+rc_is 1
+has '::error::gitleaks found neither of two keys' "$OUT"
+has '.gitleaks.toml from origin/main' "$OUT"
+
+CASE=canary/use-default-config-push
 new_repo "$work/r3"
 commit_file "$work/r3" .gitleaks.toml "$USE_DEFAULT"
-run_canary "$work/r3"
+run_canary "$work/r3" push
 rc_is 0
 ok; grep -qxF "GITLEAKS_CONFIG=$work/r3/.gitleaks.toml" "$ENVF" || fail "GITLEAKS_CONFIG not exported to GITHUB_ENV: $(cat "$ENVF")"
+
+CASE=canary/pr-missing-base
+run_canary "$work/r3" pull_request BASE_REF=no-such-branch
+rc_is 1
+has '::error::gitleaks: cannot resolve the base ref origin/no-such-branch' "$OUT"
 
 # Teeth for the guard itself: the zero-rule config really does hide a leak
 # from a plain scan, so the canary is what stands between it and a pass.
@@ -178,8 +219,7 @@ ok; (cd "$work/r4" && gitleaks git --no-banner --redact --log-opts=origin/main..
 CASE=scan/pr-leak
 new_repo "$work/s1"
 commit_file "$work/s1" src/config.env "aws_access_key_id = \"$(fresh_key)\""
-ENVF=''
-run_scan "$work/s1" pull_request
+run_job "$work/s1" pull_request
 rc_is 1
 has '::error file=src/config.env,line=1::gitleaks: aws-access-token' "$OUT"
 has 'Scanned 1 commit(s): origin/main..HEAD.' "$SUMMARY"
@@ -190,35 +230,78 @@ new_repo "$work/s2"
 commit_file "$work/s2" leak.env "k = \"$(fresh_key)\""
 git -C "$work/s2" rm -q leak.env
 git -C "$work/s2" commit -q -m "remove it again"
-run_scan "$work/s2" pull_request
+run_job "$work/s2" pull_request
 rc_is 1
 has 'Scanned 2 commit(s)' "$SUMMARY"
 
 CASE=scan/pr-clean
 new_repo "$work/s3"
 commit_file "$work/s3" src/app.py 'print("hello")'
-run_scan "$work/s3" pull_request
+run_job "$work/s3" pull_request
 rc_is 0
 has 'No leaks found.' "$SUMMARY"
 
-CASE=scan/pr-missing-base
-run_scan "$work/s3" pull_request BASE_REF=no-such-branch
+CASE=scan/no-config-check
+# The scan refuses to run on gitleaks' own discovery.
+ENVF=''
+run_scan "$work/s3" pull_request
 rc_is 1
-has 'cannot resolve the scan range origin/no-such-branch..HEAD' "$OUT"
+has '::error::gitleaks: GITLEAKS_CONFIG and GITLEAKS_IGNORE_PATH' "$OUT"
 
 CASE=scan/push-range
 new_repo "$work/s4"
 before="$(git -C "$work/s4" rev-parse HEAD)"
 commit_file "$work/s4" a.env "k = \"$(fresh_key)\""
 commit_file "$work/s4" b.txt 'clean'
-run_scan "$work/s4" push BEFORE="$before"
+run_job "$work/s4" push BEFORE="$before"
 rc_is 1
 has "Scanned 2 commit(s): ${before}.." "$SUMMARY"
 
+# A push that creates a branch has an all-zero before. The key sits in the
+# earlier of the two commits beyond origin/main, so scanning only the last
+# commit would pass it (issue #111).
 CASE=scan/push-new-branch
-run_scan "$work/s4" push BEFORE=0000000000000000000000000000000000000000
+run_job "$work/s4" push BEFORE=0000000000000000000000000000000000000000
+rc_is 1
+has 'Scanned 2 commit(s): origin/main..' "$SUMMARY"
+has '::error file=a.env,line=1::gitleaks: aws-access-token' "$OUT"
+
+# A force-push: before is a commit that is not an ancestor of the new head.
+CASE=scan/force-push
+new_repo "$work/s6"
+git -C "$work/s6" switch -q -c side
+commit_file "$work/s6" side.txt 'rewritten away'
+replaced="$(git -C "$work/s6" rev-parse HEAD)"
+git -C "$work/s6" switch -q main
+commit_file "$work/s6" a.env "k = \"$(fresh_key)\""
+commit_file "$work/s6" b.txt 'clean'
+run_job "$work/s6" push BEFORE="$replaced"
+rc_is 1
+has 'Scanned 2 commit(s): origin/main..' "$SUMMARY"
+has '::error file=a.env,line=1::gitleaks: aws-access-token' "$OUT"
+
+# schedule on the default branch: no commits outside origin/main, so the
+# last commit is scanned and the summary says the earlier ones were not.
+CASE=scan/schedule-on-default
+new_repo "$work/s7"
+commit_file "$work/s7" b.txt 'clean'
+git -C "$work/s7" update-ref refs/remotes/origin/main HEAD
+run_job "$work/s7" schedule
 rc_is 0
-has 'Scanned 1 commit(s): the last commit.' "$SUMMARY"
+has 'Scanned 1 commit(s): the last commit' "$SUMMARY"
+has 'earlier commits were not scanned' "$SUMMARY"
+has '::notice::gitleaks: scanned the last commit' "$OUT"
+has 'earlier commits were not scanned' "$OUT"
+lacks 'nothing to scan' "$OUT"
+
+# An unresolvable default branch falls back to the last commit, with the
+# same notice, rather than crashing under set -e.
+CASE=scan/push-missing-default
+run_job "$work/s4" push BEFORE=0000000000000000000000000000000000000000 DEFAULT_BRANCH=no-such-branch
+rc_is 0
+has 'Scanned 1 commit(s): the last commit' "$SUMMARY"
+has 'origin/no-such-branch does not resolve' "$SUMMARY"
+has 'earlier commits were not scanned' "$OUT"
 
 CASE=scan/config-from-canary
 # The scan loads the config the check exported: an allowlisted path is not
@@ -227,10 +310,69 @@ new_repo "$work/s5"
 commit_file "$work/s5" .gitleaks.toml "$USE_DEFAULT"
 git -C "$work/s5" update-ref refs/remotes/origin/main HEAD
 commit_file "$work/s5" docs/example.env "k = \"$(fresh_key)\""
-run_canary "$work/s5"
+run_job "$work/s5" pull_request
 rc_is 0
-run_scan "$work/s5" pull_request
+
+# ------------------------------------------------- PR-controlled allowlist
+# Issue #112: a PR that adds an allowlist or ignore entry for its own key.
+ALLOW_LEAK=$'[extend]\nuseDefault = true\n\n[allowlist]\npaths = [\'\'\'^leak\\.env$\'\'\']\nregexes = [\'\'\'AKIA[A-Z2-7]{16}\'\'\']'
+
+CASE=pr-allowlist/no-base-config
+new_repo "$work/a1"
+commit_file "$work/a1" .gitleaks.toml "$ALLOW_LEAK"
+commit_file "$work/a1" leak.env "k = \"$(fresh_key)\""
+run_job "$work/a1" pull_request
+rc_is 1
+has '::error file=leak.env,line=1::gitleaks: aws-access-token' "$OUT"
+
+CASE=pr-allowlist/base-has-config
+new_repo "$work/a2"
+commit_file "$work/a2" .gitleaks.toml "$USE_DEFAULT"
+git -C "$work/a2" update-ref refs/remotes/origin/main HEAD
+commit_file "$work/a2" .gitleaks.toml "$ALLOW_LEAK"
+commit_file "$work/a2" leak.env "k = \"$(fresh_key)\""
+run_job "$work/a2" pull_request
+rc_is 1
+has '::error file=leak.env,line=1::gitleaks: aws-access-token' "$OUT"
+
+CASE=control/allowlist-on-base-push
+# The same allowlist, once on the base branch, does hide the key: a broken
+# ALLOW_LEAK cannot make the two cases above pass by accident.
+new_repo "$work/a3"
+commit_file "$work/a3" .gitleaks.toml "$ALLOW_LEAK"
+git -C "$work/a3" update-ref refs/remotes/origin/main HEAD
+before="$(git -C "$work/a3" rev-parse HEAD)"
+commit_file "$work/a3" leak.env "k = \"$(fresh_key)\""
+run_job "$work/a3" push BEFORE="$before"
 rc_is 0
+has 'Scanned 1 commit(s)' "$SUMMARY"
+
+CASE=control/allowlist-on-base-pr
+run_job "$work/a3" pull_request
+rc_is 0
+
+CASE=pr-gitleaksignore
+new_repo "$work/a4"
+before="$(git -C "$work/a4" rev-parse HEAD)"
+commit_file "$work/a4" leak.env "k = \"$(fresh_key)\""
+run_job "$work/a4" pull_request
+rc_is 1
+fp="$(jq -r '.[0].Fingerprint // empty' "$work/rt/s/gitleaks-report.json" 2>/dev/null || true)"
+ok; [ -n "$fp" ] || fail "no fingerprint in the first run's report"
+commit_file "$work/a4" .gitleaksignore "$fp"
+run_job "$work/a4" pull_request
+rc_is 1
+has '::error file=leak.env,line=1::gitleaks: aws-access-token' "$OUT"
+has 'takes effect only once it is on the base branch' "$OUT"
+
+CASE=control/gitleaksignore-push
+# The fingerprint is right: after review (push) the head's entry applies.
+# The PR run removed the file from its checkout; a push job gets a fresh one.
+ok; [ ! -e "$work/a4/.gitleaksignore" ] || fail "the PR scan left the head's .gitleaksignore in its checkout"
+git -C "$work/a4" checkout -q -- .gitleaksignore
+run_job "$work/a4" push BEFORE="$before"
+rc_is 0
+has 'Scanned 2 commit(s)' "$SUMMARY"
 
 if [ "$failures" -ne 0 ]; then
   printf 'FAIL: %s (%d of %d assertion(s) failed)\n' "$NAME" "$failures" "$checks"

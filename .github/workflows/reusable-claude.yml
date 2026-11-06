@@ -198,7 +198,7 @@ jobs:
           echo "run=true" >> "$GITHUB_OUTPUT"
 
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v6.1.0
         with:
           fetch-depth: 0
         if: steps.gate.outputs.run == 'true'
@@ -207,7 +207,7 @@ jobs:
         id: claude
         if: steps.gate.outputs.run == 'true'
         continue-on-error: true
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@v1.0.266
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           claude_args: >-
@@ -221,7 +221,12 @@ jobs:
             2. For CODE CHANGES: commit and push partial progress early. Do not wait until everything is done.
             3. For ANALYSIS/REVIEW tasks: post your findings incrementally. Use a checklist in your comment so partial progress is visible even if you run out of turns.
             4. After each milestone, update your comment with completed and remaining work.
-            5. If you realize the task will exceed your budget, summarize what is done and what remains so a continuation can pick up where you left off."
+            5. If you realize the task will exceed your budget, summarize what is done and what remains so a continuation can pick up where you left off.
+
+            Evidence rules for reviews and analysis:
+            1. A blocker, or a claim that code will fail, does not parse, or uses a module, function, API or language feature that does not exist, must cite evidence obtained in this run: a file you read, a tool output, or a CI job result. Without that evidence, post the point as a question, not a blocker. Your knowledge of language and library versions can predate the code under review; for example, Python 3.14 accepts an unparenthesized except A, B: clause without an as binding (PEP 758).
+            2. Do not report syntax or parse errors from reading code. CI is the source for syntax and lint: read the lint and test results for the head commit with the github_ci tools (get_ci_status, get_workflow_run_details, download_job_log). While those checks are pending or absent, make no parse or lint claims and say that CI has not reported yet.
+            3. A local interpreter or linter on this runner counts as evidence only when its version matches the one the repository declares (requires-python, .python-version, mise.toml, engines). The Ubuntu 24.04 runners ship Python 3.12, so compiling 3.14 code with it can report a false SyntaxError."
             ${{ inputs.claude_args }}
           additional_permissions: |
             actions: read
@@ -283,7 +288,7 @@ jobs:
 
       - name: Post continuation comment on failure
         if: steps.claude.outcome == 'failure'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v7.1.0
         # The same rule for JavaScript: a `'` in the SDK's error text closed a
         # string literal in a script run with the job's github-token.
         env:
