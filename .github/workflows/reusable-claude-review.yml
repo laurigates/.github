@@ -242,7 +242,11 @@ jobs:
             - Documentation needs
 
             IMPORTANT: Use built-in tools (Read, Grep, Glob) for file exploration.
-            Do NOT use Bash for find/grep operations - use the dedicated tools instead.' }}
+            Do NOT use Bash for find/grep operations - use the dedicated tools instead.
+
+            Evidence rules:
+            - A blocker, or a claim that code will fail, does not parse, or uses a module, function, API or language feature that does not exist, must cite evidence obtained in this run: a file you read, a tool output, or a CI job result. Without that evidence, post the point as a question, not a blocker. Your knowledge of language and library versions can predate the code under review; for example, Python 3.14 accepts an unparenthesized `except A, B:` clause without an `as` binding (PEP 758).
+            - Do not report syntax or parse errors from reading code. CI is the source for syntax and lint: read the lint and test results for the head commit with the github_ci tools (mcp__github_ci__get_ci_status, mcp__github_ci__get_workflow_run_details, mcp__github_ci__download_job_log). This review starts alongside CI, so those checks are often still pending; while they are pending or absent, make no parse or lint claims and say that CI has not reported yet.' }}
           # The tool boundary belongs in `--allowedTools`. It used to sit in
           # `additional_permissions:`, but that input takes a GitHub permissions
           # MAP ("actions: read"), not a Claude tool list, so the list was inert.
