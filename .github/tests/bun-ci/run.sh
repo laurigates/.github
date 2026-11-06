@@ -55,7 +55,7 @@ reusable-a11y-wcag.yml 1
 reusable-auto-merge-image-updater.yml 1
 reusable-container-build.yml 4
 reusable-container-release.yml 1
-reusable-fix-release-conflicts.yml 1
+reusable-fix-release-conflicts.yml 0
 reusable-npm-publish.yml 1
 reusable-quality-async.yml 1
 reusable-quality-code-smell.yml 1

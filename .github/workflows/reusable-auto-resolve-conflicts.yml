@@ -133,8 +133,18 @@ jobs:
           REPO: ${{ github.repository }}
           PR_INPUT: ${{ inputs.pr_number }}
           SKIP_RELEASE_PLEASE: ${{ inputs.skip-release-please }}
+          # A push to the base makes GitHub recompute every open PR's
+          # mergeability, and the field reads UNKNOWN until it has. Re-read up
+          # to MAX_POLLS times, POLL_SLEEP seconds apart, before classifying.
+          MAX_POLLS: '6'
+          POLL_SLEEP: '10'
         run: |
           set -euo pipefail
+          for v in MAX_POLLS POLL_SLEEP; do
+            case "${!v}" in '' | *[!0-9]* | 0*)
+              echo "::error::$v must be a positive integer (got '${!v}')"; exit 1 ;; esac
+          done
+
           if [ -n "$PR_INPUT" ]; then
             if ! [[ "$PR_INPUT" =~ ^[0-9]+$ ]]; then
               echo "::error::pr_number must be a PR number (digits only)"
@@ -144,9 +154,30 @@ jobs:
           else
             # skip-release-please: fix-release-conflicts owns those PRs. An
             # explicit pr_number (above) is not filtered.
-            PRS=$(gh pr list --repo "$REPO" --state open --json number,mergeable,headRefName,isCrossRepository |
-              jq -c --arg skip "$SKIP_RELEASE_PLEASE" '[.[] | select(.mergeable == "CONFLICTING")
-                | select($skip != "true" or (.headRefName | startswith("release-please--branches--") | not))]')
+            polls=0
+            while :; do
+              # Read into a variable, not piped into jq, so a failed gh read
+              # fails the step rather than reading as "no conflicts".
+              LISTING=$(gh pr list --repo "$REPO" --state open --json number,mergeable,headRefName,isCrossRepository)
+              CANDIDATES=$(jq -c --arg skip "$SKIP_RELEASE_PLEASE" '[.[]
+                | select($skip != "true" or (.headRefName | startswith("release-please--branches--") | not))]' <<<"$LISTING")
+              UNKNOWN_COUNT=$(jq '[.[] | select(.mergeable == "UNKNOWN")] | length' <<<"$CANDIDATES")
+              UNKNOWN_PRS=$(jq -r '[.[] | select(.mergeable == "UNKNOWN") | "#\(.number)"] | join(" ")' <<<"$CANDIDATES")
+              if [ "$UNKNOWN_COUNT" -eq 0 ] || [ "$polls" -ge "$MAX_POLLS" ]; then
+                break
+              fi
+              polls=$((polls + 1))
+              echo "Mergeability UNKNOWN for $UNKNOWN_COUNT PR(s) ($UNKNOWN_PRS); waiting ${POLL_SLEEP}s ($polls/$MAX_POLLS)"
+              sleep "$POLL_SLEEP"
+            done
+
+            # Still UNKNOWN: not sent to resolve, which assumes a real conflict.
+            # The next push to the base (or a dispatch) reads them again.
+            if [ "$UNKNOWN_COUNT" -gt 0 ]; then
+              echo "::warning::$UNKNOWN_COUNT PR(s) still read mergeable UNKNOWN after $MAX_POLLS polls and were not resolved: $UNKNOWN_PRS"
+            fi
+
+            PRS=$(jq -c '[.[] | select(.mergeable == "CONFLICTING")]' <<<"$CANDIDATES")
           fi
 
           if ! DEFAULT_BRANCH=$(gh api "repos/$REPO" --jq '.default_branch') || [ -z "$DEFAULT_BRANCH" ]; then
