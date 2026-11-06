@@ -30,6 +30,7 @@ Call these from any repo using `uses: laurigates/.github/.github/workflows/<name
 | `reusable-fix-release-conflicts.yml` | Auto-resolve release-please merge conflicts |
 | `reusable-claude.yml` | Claude Code @-mention support in issues and PRs |
 | `reusable-changelog-review.yml` | Weekly Claude Code changelog triage: gate on new upstream versions, open a tracking issue + version-ratchet PR (caller supplies the analyzer script) |
+| `reusable-renovate.yml` | Renovate runner on a GitHub App token; the optional `ANTHROPIC_API_KEY` secret adds an `api.anthropic.com` host rule for the custom datasource in this repo's `renovate.json` that tracks pinned Claude model IDs |
 
 ### Build & Test
 

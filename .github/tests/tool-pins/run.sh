@@ -16,8 +16,8 @@
 #   ShellCheck  the same checks as actionlint, for SHELLCHECK_VERSION /
 #               SHELLCHECK_SHA256 and the justfile's shellcheck_version.
 #
-# Nothing here tracks these versions automatically (this repo has no
-# renovate.json); a bump edits every site, and this test fails until they agree.
+# Nothing here tracks these versions automatically (renovate.json tracks only
+# Claude model IDs); a bump edits every site, and this test fails until they agree.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
