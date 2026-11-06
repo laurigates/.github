@@ -10,6 +10,18 @@ name: Enforce Conventional Commits (Reusable)
 #   pull_request:
 #     types: [opened, edited, synchronize]
 #
+# Opt-in squash-commit parse check (`squash-message-check: warn | error`,
+# default `off`). Only for repos with
+# squash_merge_commit_message = PR_BODY, where the PR description becomes the
+# squash commit body. A second job rebuilds that commit as GitHub does (title,
+# " (#N)", description hard-wrapped at 72 columns outside column-0 fenced
+# blocks) and parses it with release-please's own conventional-commit parser.
+# release-please drops a commit that parser throws on, so a feat/fix PR would
+# merge green and cut no release; the title check alone cannot see this. It
+# runs after the title fixer and reads the title from the API, because a title
+# rewritten with GITHUB_TOKEN starts no new run and the event payload still
+# holds the old one. `warn` annotates; `error` fails the job.
+#
 # Example caller:
 #
 #   on:
@@ -19,6 +31,8 @@ name: Enforce Conventional Commits (Reusable)
 #   jobs:
 #     conventional-commits:
 #       uses: laurigates/.github/.github/workflows/reusable-enforce-conventional-commits.yml@main
+#       with:
+#         squash-message-check: warn   # only with squash_merge_commit_message = PR_BODY
 
 on:
   workflow_call:
@@ -28,6 +42,15 @@ on:
         required: false
         type: string
         default: '{}'
+      squash-message-check:
+        description: >-
+          Parse the PR's squash commit (title, PR number, description wrapped at
+          72 columns as GitHub wraps it) with release-please's parser. Only for
+          repos with squash_merge_commit_message = PR_BODY. "warn" annotates,
+          "error" fails the job, "off" disables the check.
+        required: false
+        type: string
+        default: 'off'
 
 permissions:
   pull-requests: write
@@ -297,3 +320,54 @@ jobs:
               `  docs(readme): update installation steps\n\n` +
               `Please update the PR title manually.`
             );
+
+  squash-message-check:
+    name: Squash commit parses
+    needs: fix-pr-title
+    if: inputs.squash-message-check != 'off'
+    # ubuntu-slim: gh, an npm install of one package and a Node script.
+    runs-on: ubuntu-slim
+    timeout-minutes: 5
+    steps:
+      # Anything but warn|error is a hard error, so a typo such as `true` or
+      # `block` cannot silently pass as a check that never runs.
+      - name: Validate squash-message-check
+        env:
+          MODE: ${{ inputs.squash-message-check }}
+        run: |
+          set -euo pipefail
+          case "$MODE" in
+            warn | error) echo "squash-message-check: $MODE" ;;
+            *)
+              echo "::error::squash-message-check must be one of off, warn, error (got '$MODE')"
+              exit 1
+              ;;
+          esac
+
+      # The title fixer above may have rewritten the title with GITHUB_TOKEN,
+      # which starts no new run, so the event payload can hold the old title.
+      # The API returns the current one. jq -c keeps the JSON on one line, so
+      # no title or body can add a line to GITHUB_OUTPUT.
+      - name: Read the current PR title and body
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          if [ -z "$PR_NUMBER" ]; then
+            echo "::error::squash-message-check needs a pull_request event (no PR number in the payload)"
+            exit 1
+          fi
+          pr=$(gh api "repos/$REPO/pulls/$PR_NUMBER" | jq -c '{number, title, body: (.body // "")}')
+          echo "pr=$pr" >> "$GITHUB_OUTPUT"
+
+      # Fully qualified: a ./ path would resolve against the caller's checkout.
+      - name: Parse the squash commit with release-please's parser
+        uses: laurigates/.github/.github/actions/squash-message-check@main
+        with:
+          title: ${{ fromJSON(steps.pr.outputs.pr).title }}
+          body: ${{ fromJSON(steps.pr.outputs.pr).body }}
+          number: ${{ fromJSON(steps.pr.outputs.pr).number }}
+          mode: ${{ inputs.squash-message-check }}
