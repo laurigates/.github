@@ -351,6 +351,97 @@ CASE=control/allowlist-on-base-pr
 run_job "$work/a3" pull_request
 rc_is 0
 
+# Issue #124: gitleaks resolves a relative [extend] path against its working
+# directory, which was the PR-head checkout, so a PR could edit (or add) the
+# extended file to allowlist its own key.
+EXTENDS=$'[extend]\npath = "config/extra.toml"'
+DEFAULT_ONLY=$'[extend]\nuseDefault = true'
+
+CASE=pr-extend/head-edits-extended-file
+new_repo "$work/e1"
+commit_file "$work/e1" .gitleaks.toml "$EXTENDS"
+commit_file "$work/e1" config/extra.toml "$DEFAULT_ONLY"
+git -C "$work/e1" update-ref refs/remotes/origin/main HEAD
+commit_file "$work/e1" config/extra.toml "$ALLOW_LEAK"
+commit_file "$work/e1" leak.env "k = \"$(fresh_key)\""
+run_job "$work/e1" pull_request
+rc_is 1
+has '::error file=leak.env,line=1::gitleaks: aws-access-token' "$OUT"
+
+CASE=pr-extend/head-adds-extended-file
+# The base extends a file it does not have; the PR supplies it.
+new_repo "$work/e2"
+commit_file "$work/e2" .gitleaks.toml "$EXTENDS"
+git -C "$work/e2" update-ref refs/remotes/origin/main HEAD
+commit_file "$work/e2" config/extra.toml "$ALLOW_LEAK"
+commit_file "$work/e2" leak.env "k = \"$(fresh_key)\""
+run_canary "$work/e2" pull_request
+rc_is 1
+has '::error file=.gitleaks.toml::gitleaks: [extend] path "config/extra.toml" names a file origin/main does not have' "$OUT"
+
+CASE=pr-extend/nested
+# A chain: .gitleaks.toml -> config/extra.toml -> config/inner.toml, each
+# relative to the repository root. The PR edits the innermost file.
+INNER_RULE=$'[[rules]]\nid = "aws-access-token"\nregex = \'\'\'AKIA[A-Z2-7]{16}\'\'\''
+new_repo "$work/e3"
+commit_file "$work/e3" .gitleaks.toml "$EXTENDS"
+commit_file "$work/e3" config/extra.toml $'[extend]\npath = "config/inner.toml"'
+commit_file "$work/e3" config/inner.toml "$INNER_RULE"
+git -C "$work/e3" update-ref refs/remotes/origin/main HEAD
+commit_file "$work/e3" config/inner.toml "$INNER_RULE"$'\n\n[allowlist]\npaths = [\'\'\'^leak\\.env$\'\'\']'
+commit_file "$work/e3" leak.env "k = \"$(fresh_key)\""
+run_job "$work/e3" pull_request
+rc_is 1
+has '::error file=leak.env,line=1::gitleaks: aws-access-token' "$OUT"
+
+CASE=pr-extend/absolute-path
+new_repo "$work/e4"
+commit_file "$work/e4" .gitleaks.toml $'[extend]\npath = "/etc/gitleaks.toml"'
+git -C "$work/e4" update-ref refs/remotes/origin/main HEAD
+commit_file "$work/e4" src/app.py 'print("hello")'
+run_canary "$work/e4" pull_request
+rc_is 1
+has '::error file=.gitleaks.toml::gitleaks: [extend] path "/etc/gitleaks.toml" is absolute' "$OUT"
+
+CASE=pr-extend/escapes-repo
+new_repo "$work/e5"
+commit_file "$work/e5" .gitleaks.toml $'[extend]\npath = "config/../../extra.toml"'
+git -C "$work/e5" update-ref refs/remotes/origin/main HEAD
+commit_file "$work/e5" src/app.py 'print("hello")'
+run_canary "$work/e5" pull_request
+rc_is 1
+has '::error file=.gitleaks.toml::gitleaks: [extend] path "config/../../extra.toml" leaves the repository' "$OUT"
+
+CASE=control/extend-on-base
+# The base's own extended allowlist applies on a pull request (it resolves
+# against the base's copy) and on a push (against the checkout): a broken
+# EXTENDS cannot make the cases above pass by accident.
+new_repo "$work/e6"
+commit_file "$work/e6" .gitleaks.toml "$EXTENDS"
+commit_file "$work/e6" config/extra.toml "$ALLOW_LEAK"
+git -C "$work/e6" update-ref refs/remotes/origin/main HEAD
+before="$(git -C "$work/e6" rev-parse HEAD)"
+commit_file "$work/e6" leak.env "k = \"$(fresh_key)\""
+run_job "$work/e6" pull_request
+rc_is 0
+has 'No leaks found.' "$SUMMARY"
+run_job "$work/e6" push BEFORE="$before"
+rc_is 0
+has 'Scanned 1 commit(s)' "$SUMMARY"
+
+CASE=control/nested-on-base
+# The same allowlist in the base's innermost file applies on a pull request,
+# so every link of the chain is read from the base's copy.
+new_repo "$work/e7"
+commit_file "$work/e7" .gitleaks.toml "$EXTENDS"
+commit_file "$work/e7" config/extra.toml $'[extend]\npath = "config/inner.toml"'
+commit_file "$work/e7" config/inner.toml "$INNER_RULE"$'\n\n[allowlist]\npaths = [\'\'\'^leak\\.env$\'\'\']'
+git -C "$work/e7" update-ref refs/remotes/origin/main HEAD
+commit_file "$work/e7" leak.env "k = \"$(fresh_key)\""
+run_job "$work/e7" pull_request
+rc_is 0
+has 'No leaks found.' "$SUMMARY"
+
 CASE=pr-gitleaksignore
 new_repo "$work/a4"
 before="$(git -C "$work/a4" rev-parse HEAD)"
