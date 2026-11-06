@@ -126,6 +126,40 @@ switch release-please-managed repos to
 `squash_merge_commit_message = COMMIT_MESSAGES` so the squash body is the
 authored commit message rather than the PR description.
 
+## Squash Commit Parse Check
+
+In a repo with `squash_merge_commit_message = PR_BODY`, GitHub builds the squash
+commit from the PR title, ` (#N)` and the description hard-wrapped at 72
+columns (lines under a column-0 fenced block are left alone). A wrap that puts
+a mid-sentence call such as `name(` at the start of a line makes
+release-please's conventional-commit parser throw, and release-please drops the
+commit: a feat/fix PR merges green and cuts no release. The description as
+written may parse.
+
+`reusable-enforce-conventional-commits.yml` can check this before merge. With
+`squash-message-check: warn` (annotate) or `error` (fail the job), a second job
+runs after the title fixer, reads the current title and description from the
+API, rebuilds the squash message and parses it with `@conventional-commits/parser`
+at the version `reusable-release-please.yml`'s release-please-action pin
+bundles. It reports the parser error, the line number and the line.
+
+```yaml
+on:
+  pull_request:
+    types: [opened, edited, synchronize]
+
+jobs:
+  conventional-commits:
+    uses: laurigates/.github/.github/workflows/reusable-enforce-conventional-commits.yml@main
+    with:
+      squash-message-check: warn   # off (default) | warn | error
+```
+
+Leave it `off` in repos that squash with `COMMIT_MESSAGES`. To fix a reported
+line, reword the sentence, or add a `BEGIN_COMMIT_OVERRIDE` /
+`END_COMMIT_OVERRIDE` section with the intended commit message to the
+description.
+
 ## Finding the Release PR
 
 A release PR is opened by a bot and mentions nobody, so it shows up in none of
