@@ -608,6 +608,8 @@ jobs:
 
             Skip file sections that have no relevant changes — empty sections are noise.
 
+            Do not write a `## Processing` section. The workflow appends it to your body when it files the issue (who processes the issue, what completed means, when it closes).
+
             ## Step 4: Write the state-file entry
 
             Write `triage-entry.json` in the repo root, with the `Write` tool: one JSON object with exactly two keys, both arrays of strings.
@@ -652,6 +654,12 @@ jobs:
       #
       # Creation and the ratchet PR stay on the PAT, so the pushed branch
       # triggers the caller's CI.
+      #
+      # The `## Processing` section (claude-plugins#3346, docs/issue-lifecycle.md
+      # there) is appended here, not asked of the agent: anything read later
+      # as structure is written by the deterministic side. A Processing section
+      # the agent wrote anyway is dropped, so the filed body carries exactly one.
+      # The agent's file is left as written; the filed body is a temp file.
       - name: Publish tracking issue and ratchet PR
         id: publish
         env:
@@ -666,6 +674,7 @@ jobs:
           EFFECTIVE_LATEST: ${{ needs.check-changelog.outputs.effective_latest }}
           WINDOWED: ${{ needs.check-changelog.outputs.windowed }}
           COMMIT_TYPE_SCOPE: ${{ inputs.commit-type-scope }}
+          ISSUE_OWNER: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
           REPO="$GITHUB_REPOSITORY"
@@ -686,6 +695,19 @@ jobs:
             git checkout -- "$VERSION_FILE"
           fi
 
+          # The filed body: the agent's text without any Processing section of
+          # its own, then the workflow's.
+          FILED_BODY="$(mktemp)"
+          {
+            awk '/^## Processing[[:space:]]*$/ { skip = 1; next }
+                 /^## / { skip = 0 }
+                 !skip' "$BODY_FILE"
+            printf '\n## Processing\n\n'
+            printf -- '- **Processed by:** %s, the owner of this repository.\n' "$ISSUE_OWNER"
+            printf -- '- **Completed means:** every action listed above has been applied, filed as its own issue, or dismissed with a reason.\n'
+            printf -- '- **Closes:** by hand once processed. This workflow does not close it.\n'
+          } > "$FILED_BODY"
+
           # 2. File the tracking issue exactly once.
           find_open_issue() {
             gh issue list --repo "$REPO" --state open --limit 1000 --json number,title \
@@ -694,7 +716,7 @@ jobs:
           ISSUE="$(find_open_issue)"
           if [ -n "$ISSUE" ]; then
             FILED="Reused open issue #$ISSUE (same title)"
-          elif url="$(gh issue create --repo "$REPO" --title "$ISSUE_TITLE" --body-file "$BODY_FILE")"; then
+          elif url="$(gh issue create --repo "$REPO" --title "$ISSUE_TITLE" --body-file "$FILED_BODY")"; then
             ISSUE="${url##*/}"
             FILED="Filed issue #$ISSUE"
           else
