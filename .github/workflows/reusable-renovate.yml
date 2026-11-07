@@ -139,9 +139,14 @@ jobs:
           rules=$(jq -cn '[{matchHost: "ghcr.io", hostType: "docker", username: "x-access-token", password: $ENV.REGISTRY_TOKEN}]')
           if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
             # `token` makes Renovate send `Authorization: Bearer <key>` and
-            # redacts the key from its logs. A global (admin) host rule is
-            # trusted, so allowedHeaders does not filter its headers.
+            # redacts the key from its logs.
             rules=$(jq -c '. + [{matchHost: "api.anthropic.com", token: $ENV.ANTHROPIC_API_KEY, headers: {"anthropic-version": $ENV.ANTHROPIC_VERSION}}]' <<<"$rules")
+            # Renovate filters the headers of every host rule, global ones
+            # included, against allowedHeaders (default ["X-*"]) and drops
+            # the rest with a "Disallowed hostRules headers" error, which also
+            # makes the run exit 1. Keep the default and admit
+            # anthropic-version.
+            echo 'RENOVATE_ALLOWED_HEADERS=["X-*","anthropic-version"]' >> "$GITHUB_ENV"
           fi
           echo "RENOVATE_HOST_RULES=$rules" >> "$GITHUB_ENV"
 

@@ -10,7 +10,11 @@
 #     rule the workflow used to paste inline;
 #   - secret set: a second rule for api.anthropic.com carries the key as
 #     `token` (Renovate sends `Authorization: Bearer <token>`) and the shipped
-#     `anthropic-version` header;
+#     `anthropic-version` header, and a RENOVATE_ALLOWED_HEADERS line keeps
+#     the `X-*` default and admits that header. Renovate's applyHostRule
+#     filters the headers of every host rule, global ones included, against
+#     allowedHeaders (default `["X-*"]`), so without it the header is dropped
+#     with a "Disallowed hostRules headers" error;
 #   - a key or registry token holding `"`, `\` or a newline still yields one
 #     $GITHUB_ENV line of valid JSON that round-trips the value exactly.
 # Structural checks: the secret is declared optional and bound from
@@ -26,7 +30,7 @@ command -v yq >/dev/null || { echo "FAIL: renovate-host-rules: yq is required" >
 command -v jq >/dev/null || { echo "FAIL: renovate-host-rules: jq is required" >&2; exit 1; }
 
 python3 - <<'PY'
-import json, os, re, subprocess, sys, tempfile
+import fnmatch, json, os, re, subprocess, sys, tempfile
 
 NAME = "renovate-host-rules"
 WF = ".github/workflows/reusable-renovate.yml"
@@ -78,8 +82,9 @@ check(len(renovate_idx) == 1, f"expected one renovatebot/github-action step, fou
 if renovate_idx:
     r = steps[renovate_idx[0]]
     check(idx < renovate_idx[0], f"'{STEP}' must run before the Renovate action")
-    check("RENOVATE_HOST_RULES" not in (r.get("env") or {}),
-          "the Renovate step's env: sets RENOVATE_HOST_RULES, which overrides the $GITHUB_ENV value")
+    for var in ("RENOVATE_HOST_RULES", "RENOVATE_ALLOWED_HEADERS"):
+        check(var not in (r.get("env") or {}),
+              f"the Renovate step's env: sets {var}, which overrides the $GITHUB_ENV value")
 
 check("${{" not in body, f"'{STEP}' run body contains ${{{{ }}}}; bind values through env:")
 check(env.get("ANTHROPIC_API_KEY", "").replace(" ", "") == "${{secrets.ANTHROPIC_API_KEY}}",
@@ -112,18 +117,27 @@ def run_step(registry_token, api_key):
     return p.returncode, lines, p.stderr
 
 
-def rules_of(lines, label):
-    """Parse the single RENOVATE_HOST_RULES= line, or record why not."""
-    check(len(lines) == 1, f"{label}: expected one $GITHUB_ENV line, got {len(lines)}: {lines!r}")
-    if len(lines) != 1:
+def env_lines(lines, label, want_keys):
+    """Map the $GITHUB_ENV lines by name; record a failure unless the names are exactly want_keys."""
+    keys = [line.partition("=")[0] for line in lines]
+    check(sorted(keys) == sorted(want_keys),
+          f"{label}: expected $GITHUB_ENV lines {sorted(want_keys)}, got {lines!r}")
+    return {k: v for k, _, v in (line.partition("=") for line in lines)}
+
+
+def parsed(envs, var, label):
+    """Return (raw, parsed JSON) of one $GITHUB_ENV value, or record why not."""
+    if var not in envs:
         return None, None
-    key, _, value = lines[0].partition("=")
-    check(key == "RENOVATE_HOST_RULES", f"{label}: $GITHUB_ENV line sets '{key}', not RENOVATE_HOST_RULES")
     try:
-        return value, json.loads(value)
+        return envs[var], json.loads(envs[var])
     except json.JSONDecodeError as exc:
-        check(False, f"{label}: RENOVATE_HOST_RULES is not valid JSON ({exc}): {value!r}")
-        return value, None
+        check(False, f"{label}: {var} is not valid JSON ({exc}): {envs[var]!r}")
+        return envs[var], None
+
+
+def rules_of(lines, label, want_keys=("RENOVATE_HOST_RULES",)):
+    return parsed(env_lines(lines, label, want_keys), "RENOVATE_HOST_RULES", label)
 
 
 TOKEN = "ghs_sampleRegistryToken123"
@@ -143,7 +157,11 @@ for label, key in (("plain key", "sk-ant-api03-sampleKey_0123456789"),
                    ("hostile key", 'sk-"quoted"\\back\nslash')):
     rc, lines, err = run_step(TOKEN, key)
     check(rc == 0, f"{label}: step exited {rc}: {err.strip()}")
-    _, rules = rules_of(lines, label)
+    envs = env_lines(lines, label, ("RENOVATE_HOST_RULES", "RENOVATE_ALLOWED_HEADERS"))
+    _, rules = parsed(envs, "RENOVATE_HOST_RULES", label)
+    _, allowed = parsed(envs, "RENOVATE_ALLOWED_HEADERS", label)
+    check(isinstance(allowed, list) and "X-*" in allowed,
+          f"{label}: RENOVATE_ALLOWED_HEADERS must keep Renovate's X-* default, got {allowed!r}")
     if rules is None:
         continue
     check(isinstance(rules, list) and len(rules) == 2, f"{label}: expected 2 host rules, got {rules!r}")
@@ -155,6 +173,12 @@ for label, key in (("plain key", "sk-ant-api03-sampleKey_0123456789"),
     check(a.get("token") == key, f"{label}: the API key did not round-trip as token")
     check(a.get("headers") == {"anthropic-version": version},
           f"{label}: headers must be exactly anthropic-version {version}, got {a.get('headers')!r}")
+    # Renovate matches header names with minimatch, case-insensitively.
+    for header in (a.get("headers") or {}):
+        check(isinstance(allowed, list)
+              and any(fnmatch.fnmatch(header.lower(), str(p).lower()) for p in allowed),
+              f"{label}: header {header!r} is not admitted by RENOVATE_ALLOWED_HEADERS {allowed!r}, "
+              "so Renovate drops it")
     check("hostType" not in a and "password" not in a and "username" not in a,
           f"{label}: the api.anthropic.com rule carries unexpected auth/hostType keys: {sorted(a)}")
 
