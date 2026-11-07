@@ -16,6 +16,11 @@
 # publish step's EXTRACTED run: body is executed against a stub `gh` and a real
 # git repository with a local bare remote. It never holds a retyped copy.
 #
+# The publish step also appends the issue's `## Processing` section (who
+# processes it, what completed means, when it closes; claude-plugins#3346).
+# The harness reads the body the stub `gh issue create` received, so it pins
+# what is filed, not what the agent wrote.
+#
 # Usage: bash .github/tests/changelog-review-publish/run.sh [workflow-file]
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
@@ -84,6 +89,8 @@ prompt="$(step_field "$CLAUDE_STEP" .with.prompt)"
 for cmd in 'gh issue create' 'gh pr create' 'git push' '--assignee' '--label'; do
   assert_lacks "$prompt" "$cmd" "Claude prompt"
 done
+# The workflow appends the Processing section; the prompt tells the agent so.
+assert_contains "$prompt" '`## Processing`' "Claude prompt (Processing is appended by the workflow)"
 
 # The prompt and the publish step must name the same two hand-off files.
 body_file="$(step_field "$PUBLISH_STEP" .env.BODY_FILE)"
@@ -108,6 +115,7 @@ VERSION_FILE|${{ inputs.version-file }}
 EFFECTIVE_LATEST|${{ needs.check-changelog.outputs.effective_latest }}
 WINDOWED|${{ needs.check-changelog.outputs.windowed }}
 COMMIT_TYPE_SCOPE|${{ inputs.commit-type-scope }}
+ISSUE_OWNER|${{ github.repository_owner }}
 WIRING
 
 step_field "$PUBLISH_STEP" .run > "$work/publish.sh"
@@ -136,6 +144,11 @@ case "$1 ${2:-}" in
     else cat "$S/list.json"; fi ;;
   "issue create")
     touch "$S/created"
+    prev=
+    for a in "$@"; do
+      if [ "$prev" = "--body-file" ]; then cat -- "$a" > "$S/created-body"; fi
+      prev="$a"
+    done
     if [ -f "$S/create-fails" ]; then echo "GraphQL: could not assign (replaceActorsForAssignable)" >&2; exit 1; fi
     echo "https://github.com/o/r/issues/101" ;;
   "pr create")
@@ -233,7 +246,7 @@ run_publish() {
       GITHUB_REPOSITORY=o/r GITHUB_OUTPUT="$C/output" GITHUB_STEP_SUMMARY="$C/summary" \
       GH_TOKEN=pat-token META_TOKEN=workflow-token \
       ISSUE_TITLE="$TITLE" BODY_FILE="$body_file" ENTRY_FILE="$entry_file" \
-      ISSUE_LABELS='changelog-review, maintenance' ASSIGNEE=laurigates \
+      ISSUE_LABELS='changelog-review, maintenance' ASSIGNEE=laurigates ISSUE_OWNER=repo-owner \
       VERSION_FILE=.claude-code-version-check.json EFFECTIVE_LATEST=2.1.300 WINDOWED=false \
       COMMIT_TYPE_SCOPE='chore(project-plugin)' \
       bash --noprofile --norc -eo pipefail "$work/publish.sh"
@@ -244,6 +257,22 @@ run_publish() {
 }
 count_calls() { printf '%s\n' "$CALLS" | grep -c -- "^$1" || true; }
 state() { jq -r "$1" "$C/repo/.claude-code-version-check.json"; }
+filed_body() { cat "$C/stub/created-body" 2>/dev/null || true; }
+count_lines() { printf '%s\n' "$1" | grep -cxF -- "$2" || true; }
+# assert_processing: the filed body carries exactly one Processing section,
+# after the agent's text, naming the repository owner and the close rule.
+assert_processing() {
+  local body processing
+  body="$(filed_body)"
+  assert_eq "$(count_lines "$body" '## Processing')" 1 "filed body: '## Processing' headings"
+  assert_contains "$body" '- 2.1.295: new hook event' "filed body keeps the agent's text"
+  processing="$(printf '%s\n' "$body" | sed -n '/^## Processing$/,$p')"
+  assert_contains "$processing" 'repo-owner' "Processing names the repository owner"
+  assert_lacks "$processing" 'laurigates' "Processing names the owner, not the assignee"
+  assert_contains "$processing" 'applied, filed as its own issue, or dismissed' "Processing: completed means"
+  assert_contains "$processing" '**Closes:** by hand once processed' "Processing: close rule"
+  assert_lacks "$processing" '### hooks-reference.md' "Processing comes after the agent's sections"
+}
 remote_state() { git -C "$C/repo" show "origin/chore/changelog-triage-2.1.300:.claude-code-version-check.json" | jq -r "$1"; }
 
 # ------------------------------------------------------------ fresh range
@@ -254,7 +283,8 @@ assert_eq "$(count_calls 'issue create')" 1 "gh issue create calls"
 create_call="$(printf '%s\n' "$CALLS" | grep '^issue create' || true)"
 assert_lacks "$create_call" '--assignee' "issue create (assignment is a separate, verified call)"
 assert_lacks "$create_call" '--label' "issue create (labels are a separate, verified call)"
-assert_contains "$create_call" "--body-file $body_file" "issue create"
+assert_contains "$create_call" "--body-file " "issue create"
+assert_lacks "$create_call" "--body-file $body_file" "issue create (files the composed body, not the agent's file)"
 assert_contains "$create_call" 'token=pat-token' "issue create token"
 assert_contains "$CALLS" $'api -X POST repos/o/r/issues/101/labels --input -\ttoken=workflow-token' "issue labels via workflow token"
 assert_contains "$CALLS" $'api -X POST repos/o/r/issues/101/assignees --input -\ttoken=workflow-token' "issue assignee via workflow token"
@@ -276,6 +306,17 @@ pr_call="$(printf '%s\n' "$CALLS" | grep '^pr create' || true)"
 assert_lacks "$pr_call" '--assignee' "pr create"
 assert_contains "$CALLS" $'api -X POST repos/o/r/issues/102/labels --input -\ttoken=workflow-token' "PR labels via workflow token"
 assert_eq "$(sed -n 's/^issue_number=//p' "$C/output")" 101 "issue_number output"
+assert_processing
+assert_eq "$(git -C "$C/repo" status --porcelain -- "$body_file")" '?? triage-issue-body.md' "agent body file left as written (untracked)"
+assert_lacks "$(cat "$C/repo/$body_file")" '## Processing' "agent body file is not rewritten"
+
+# ------------------- the agent wrote its own Processing section: the workflow's wins
+setup_case agent-wrote-processing
+printf '%s\n' '## Processing' '' 'Agent-invented rule: close after a week.' '' '## Follow-up tasks' '' '### hooks-reference.md' '- 2.1.295: new hook event' > "$C/repo/triage-issue-body.md"
+run_publish
+assert_eq "$RC" 0 "exit code (stderr: $(tail -n 3 "$C/stderr" | tr '\n' ' '))"
+assert_processing
+assert_lacks "$(filed_body)" 'Agent-invented rule' "the agent's Processing section is dropped"
 
 # ------------------------------------------------ an open issue already exists
 setup_case existing
@@ -294,6 +335,7 @@ run_publish
 assert_eq "$RC" 0 "exit code (stderr: $(tail -n 3 "$C/stderr" | tr '\n' ' '))"
 assert_eq "$(count_calls 'issue create')" 1 "gh issue create calls (never retried)"
 assert_contains "$(state '.reviewedChanges[0].actionsRequired[0]')" '#101' "entry cites the issue the failed call filed"
+assert_processing
 
 # ------------------------- create fails and no issue exists: fail, file nothing
 setup_case create-fails
