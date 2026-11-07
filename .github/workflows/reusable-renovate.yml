@@ -62,6 +62,9 @@ on:
       APP_PRIVATE_KEY:
         description: 'Renovate App private key. Required iff app-id is set.'
         required: false
+      ANTHROPIC_API_KEY:
+        description: 'Claude API key. When set, Renovate sends it to api.anthropic.com (Authorization: Bearer, plus an anthropic-version header) for the custom datasource that reads GET /v1/models to track pinned Claude model IDs. Unset leaves RENOVATE_HOST_RULES unchanged.'
+        required: false
 
 concurrency:
   group: renovate-${{ github.repository }}
@@ -119,6 +122,34 @@ jobs:
             echo "RENOVATE_REPOSITORIES=$DEFAULT_REPOSITORY" >> "$GITHUB_ENV"
           fi
 
+      # RENOVATE_HOST_RULES is built with jq, reading every value from env:, so
+      # a token or key holding `"`, `\` or a newline cannot break the JSON or
+      # add a second $GITHUB_ENV line. The Renovate step must not set
+      # RENOVATE_HOST_RULES in its own env:, which would override this value.
+      # The api.anthropic.com rule is added only when ANTHROPIC_API_KEY is set;
+      # without it the value is the ghcr.io rule alone, as before (#135).
+      - name: Build Renovate host rules
+        env:
+          REGISTRY_TOKEN: ${{ inputs.app-id != '' && steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # The anthropic-version request header; current value per
+          # https://platform.claude.com/docs/en/api/versioning
+          ANTHROPIC_VERSION: '2026-10-21'
+        run: |
+          rules=$(jq -cn '[{matchHost: "ghcr.io", hostType: "docker", username: "x-access-token", password: $ENV.REGISTRY_TOKEN}]')
+          if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+            # `token` makes Renovate send `Authorization: Bearer <key>` and
+            # redacts the key from its logs.
+            rules=$(jq -c '. + [{matchHost: "api.anthropic.com", token: $ENV.ANTHROPIC_API_KEY, headers: {"anthropic-version": $ENV.ANTHROPIC_VERSION}}]' <<<"$rules")
+            # Renovate filters the headers of every host rule, global ones
+            # included, against allowedHeaders (default ["X-*"]) and drops
+            # the rest with a "Disallowed hostRules headers" error, which also
+            # makes the run exit 1. Keep the default and admit
+            # anthropic-version.
+            echo 'RENOVATE_ALLOWED_HEADERS=["X-*","anthropic-version"]' >> "$GITHUB_ENV"
+          fi
+          echo "RENOVATE_HOST_RULES=$rules" >> "$GITHUB_ENV"
+
       - uses: renovatebot/github-action@v46.3.12
         with:
           token: ${{ inputs.app-id != '' && steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
@@ -128,4 +159,3 @@ jobs:
           RENOVATE_DRY_RUN: ${{ inputs.dry-run != 'false' && inputs.dry-run || '' }}
           RENOVATE_USERNAME: ${{ inputs.bot-username }}
           RENOVATE_GIT_AUTHOR: ${{ inputs.bot-git-author }}
-          RENOVATE_HOST_RULES: "[{\"matchHost\":\"ghcr.io\",\"hostType\":\"docker\",\"username\":\"x-access-token\",\"password\":\"${{ inputs.app-id != '' && steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}\"}]"
