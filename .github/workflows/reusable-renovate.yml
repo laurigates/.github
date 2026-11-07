@@ -150,7 +150,7 @@ jobs:
           fi
           echo "RENOVATE_HOST_RULES=$rules" >> "$GITHUB_ENV"
 
-      - uses: renovatebot/github-action@v46.3.10
+      - uses: renovatebot/github-action@v46.3.12
         with:
           token: ${{ inputs.app-id != '' && steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
           configurationFile: ${{ inputs.config-file }}
