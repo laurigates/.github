@@ -401,10 +401,16 @@ else
   has "$LOG" "--head x\$(touch" "hostile branch passed literally to gh"
   eq "$(grep -c '^run=' "$OUT")" 1 "exactly one run= line in GITHUB_OUTPUT"
 
-  # A login that is not a login shape is sanitised before the notice.
+  # A login that is not a login shape is sanitised before the notice. The
+  # notice is printed only for a listed author, so skip_authors lists both
+  # the sanitised and the raw login: the case skips either way, and the
+  # notice carries whichever the gate compared. Without the sanitiser it
+  # embeds the raw login and its ::error:: (issues #126, #130).
   CASE=auto-fix/sanitised-author
-  SKIP_AUTHORS="$BOT" FX_PR=12 FX_AUTHOR=$'laurigates-claude-config-sync[bot]%0A::error::x' run_af feat/x ''
-  af_run
+  raw='laurigates-claude-config-sync[bot]%0A::error::x'
+  clean='laurigates-claude-config-sync[bot]0Aerrorx'
+  SKIP_AUTHORS="$clean"$'\n'"$raw" FX_PR=12 FX_AUTHOR="$raw" run_af feat/x ''
+  af_skip "the PR author '$clean' is listed in skip_authors"
   hasnt "$ANN" '::error::' "workflow command injected through the author"
 fi
 
