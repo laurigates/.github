@@ -63,7 +63,7 @@ on:
         description: 'Renovate App private key. Required iff app-id is set.'
         required: false
       ANTHROPIC_API_KEY:
-        description: 'Claude API key. When set, Renovate sends it to api.anthropic.com (Authorization: Bearer, plus an anthropic-version header) for the custom datasource that reads GET /v1/models to track pinned Claude model IDs. Unset leaves RENOVATE_HOST_RULES unchanged.'
+        description: 'Claude API key. When set, Renovate sends it to api.anthropic.com (Authorization: Bearer, plus an anthropic-version header) for the custom datasource that reads GET /v1/models to track pinned Claude model IDs. Use a key scoped to one workspace: the rule sends no anthropic-workspace-id header, which the API requires for a key that is not workspace-scoped. Unset leaves RENOVATE_HOST_RULES unchanged.'
         required: false
 
 concurrency:
@@ -127,7 +127,9 @@ jobs:
       # add a second $GITHUB_ENV line. The Renovate step must not set
       # RENOVATE_HOST_RULES in its own env:, which would override this value.
       # The api.anthropic.com rule is added only when ANTHROPIC_API_KEY is set;
-      # without it the value is the ghcr.io rule alone, as before (#135).
+      # without it the value is the ghcr.io rule alone, as before (#135). The
+      # rule sends no anthropic-workspace-id header, so the key must be scoped
+      # to one workspace (#140; CLAUDE.md, reusable-renovate.yml entry).
       - name: Build Renovate host rules
         env:
           REGISTRY_TOKEN: ${{ inputs.app-id != '' && steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
