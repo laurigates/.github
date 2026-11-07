@@ -48,6 +48,7 @@ git config --file "$GIT_CONFIG_GLOBAL" core.hooksPath /dev/null
 step() { STEP="$1" yq ".jobs.gitleaks.steps[] | select(.name == strenv(STEP)) | $2 // \"\"" "$WORKFLOW"; }
 INSTALL='Install gitleaks'
 CANARY='Prove the gitleaks config detects a planted key'
+FETCH='Fetch the push base'
 SCAN='Scan the change for secrets'
 
 # ------------------------------------------------------------------ wiring
@@ -60,12 +61,17 @@ ok; [ "$(yq '.jobs.gitleaks.steps[0].with.fetch-depth' "$WORKFLOW")" = 0 ] || fa
 ok; [ "$(yq '.jobs.gitleaks.steps[0].with.persist-credentials' "$WORKFLOW")" = false ] || fail "checkout must set persist-credentials: false"
 names="$(yq -r '.jobs.gitleaks.steps[].name' "$WORKFLOW")"
 pos() { grep -nxF -- "$1" <<<"$names" | cut -d: -f1 || true; }
-p_i="$(pos "$INSTALL")"; p_c="$(pos "$CANARY")"; p_s="$(pos "$SCAN")"
-ok; [ -n "$p_i" ] && [ -n "$p_c" ] && [ -n "$p_s" ] && [ "$p_i" -lt "$p_c" ] && [ "$p_c" -lt "$p_s" ] \
-  || fail "steps must run install < config check < scan (got ${p_i:-?} ${p_c:-?} ${p_s:-?})"
+p_i="$(pos "$INSTALL")"; p_c="$(pos "$CANARY")"; p_f="$(pos "$FETCH")"; p_s="$(pos "$SCAN")"
+ok; [ -n "$p_i" ] && [ -n "$p_c" ] && [ -n "$p_f" ] && [ -n "$p_s" ] \
+  && [ "$p_i" -lt "$p_c" ] && [ "$p_c" -lt "$p_f" ] && [ "$p_f" -lt "$p_s" ] \
+  || fail "steps must run install < config check < fetch push base < scan (got ${p_i:-?} ${p_c:-?} ${p_f:-?} ${p_s:-?})"
 ok; [ "$(yq '[.jobs.gitleaks.steps[] | select(has("if"))] | length' "$WORKFLOW")" = 0 ] \
   || fail "a gitleaks step carries an if:, so the config check or the scan can be skipped"
-for s in "$INSTALL" "$CANARY" "$SCAN"; do
+# The token is only for fetching a force-pushed-away push base (issue #125);
+# the scan step itself holds none.
+ok; [ "$(STEP="$SCAN" yq '.jobs.gitleaks.steps[] | select(.name == strenv(STEP)) | .env // {} | to_entries | map(select(.value | test("token|secrets"))) | length' "$WORKFLOW")" = 0 ] \
+  || fail "'$SCAN' must not hold a token"
+for s in "$INSTALL" "$CANARY" "$FETCH" "$SCAN"; do
   ok
   # shellcheck disable=SC2016 # a literal ${{, not a shell expansion
   if grep -qF '${{' <<<"$(step "$s" .run)"; then fail "'$s' interpolates an expression into its run: body"; fi
@@ -77,6 +83,7 @@ done
 ok; grep -qF -- '--gitleaks-ignore-path "$GITLEAKS_IGNORE_PATH"' <<<"$(step "$SCAN" .run)" \
   || fail "the scan does not pass --gitleaks-ignore-path \"\$GITLEAKS_IGNORE_PATH\""
 step "$CANARY" .run > "$work/canary.sh"
+step "$FETCH" .run > "$work/fetch.sh"
 step "$SCAN" .run > "$work/scan.sh"
 
 # ------------------------------------------------------------- the binary
@@ -158,11 +165,22 @@ run_scan() {
 has()   { ok; grep -qF -- "$1" <<<"$2" || fail "expected '$1' in: $(head -c 400 <<<"$2")"; }
 lacks() { ok; if grep -qF -- "$1" <<<"$2"; then fail "did not expect '$1' in output"; fi; }
 rc_is() { ok; [ "$RC" = "$1" ] || fail "expected exit $1, got $RC: $(head -c 400 <<<"$OUT")"; }
-# run_job <repo> <event> [KEY=VALUE...]: the config check, then the scan
-# with the same event values, as the job runs them.
+# run_fetch <repo> <event> [KEY=VALUE...]: the push-base fetch step. Sets
+# RC and FETCH_OUT.
+run_fetch() {
+  local repo="$1" event="$2"
+  shift 2
+  RC=0
+  FETCH_OUT="$(cd "$repo" && env EVENT_NAME="$event" BEFORE='' TOKEN=fixture-token \
+    SERVER_URL=https://github.com "$@" bash "$work/fetch.sh" 2>&1)" || RC=$?
+}
+# run_job <repo> <event> [KEY=VALUE...]: the config check, the push-base
+# fetch and the scan with the same event values, as the job runs them.
 run_job() {
   run_canary "$@"
   if [ "$RC" != 0 ]; then fail "the config check failed (exit $RC): $(head -c 400 <<<"$OUT")"; return; fi
+  run_fetch "$@"
+  if [ "$RC" != 0 ]; then fail "the push-base fetch failed (exit $RC): $(head -c 400 <<<"$FETCH_OUT")"; return; fi
   run_scan "$@"
 }
 
@@ -280,6 +298,72 @@ rc_is 1
 has 'Scanned 2 commit(s): origin/main..' "$SUMMARY"
 has '::error file=a.env,line=1::gitleaks: aws-access-token' "$OUT"
 
+# A force-push to the default branch itself (issue #125): origin/main is the
+# new head, so there are no commits outside it. Two clean commits are
+# replaced by a key commit and a clean one; scanning only the last commit
+# would pass the key, so the scan covers merge-base(before, after)..after.
+CASE=scan/force-push-default
+new_repo "$work/f1"
+fork="$(git -C "$work/f1" rev-parse HEAD)"
+commit_file "$work/f1" c1.txt 'clean one'
+commit_file "$work/f1" c2.txt 'clean two'
+replaced="$(git -C "$work/f1" rev-parse HEAD)"
+git -C "$work/f1" reset -q --hard "$fork"
+commit_file "$work/f1" a.env "k = \"$(fresh_key)\""
+commit_file "$work/f1" b.txt 'clean'
+git -C "$work/f1" update-ref refs/remotes/origin/main HEAD
+run_job "$work/f1" push BEFORE="$replaced"
+rc_is 1
+has '::error file=a.env,line=1::gitleaks: aws-access-token' "$OUT"
+has "Scanned 2 commit(s): ${fork}..$(git -C "$work/f1" rev-parse HEAD)" "$SUMMARY"
+has '::notice::gitleaks: a non-fast-forward push' "$OUT"
+lacks 'earlier commits were not scanned' "$OUT$SUMMARY"
+
+# The same push in a fresh clone: the replaced commit is reachable from no
+# ref, so actions/checkout does not fetch it. The fetch step asks the remote
+# for it by SHA, as GitHub serves a force-pushed-away commit.
+CASE=scan/force-push-default-fetch-base
+git init -q --bare "$work/f2-origin.git"
+git -C "$work/f2-origin.git" config uploadpack.allowAnySHA1InWant true
+git -C "$work/f1" push -q "$work/f2-origin.git" "${replaced}:refs/heads/main"
+git -C "$work/f1" push -q -f "$work/f2-origin.git" HEAD:refs/heads/main
+git clone -q --no-local "file://$work/f2-origin.git" "$work/f2"
+ok; if git -C "$work/f2" cat-file -e "${replaced}^{commit}" 2>/dev/null; then
+  fail "premise: the fresh clone already has the replaced commit, so the fetch is not exercised"
+fi
+run_job "$work/f2" push BEFORE="$replaced"
+rc_is 1
+has "fetched the push base ${replaced}" "$FETCH_OUT"
+has '::error file=a.env,line=1::gitleaks: aws-access-token' "$OUT"
+has "Scanned 2 commit(s): ${fork}.." "$SUMMARY"
+
+# A push base the remote cannot serve: the fetch says so and the scan falls
+# back to the last commit with its notice, as before.
+CASE=scan/force-push-default-base-gone
+gone=0123456789abcdef0123456789abcdef01234567
+run_job "$work/f2" push BEFORE="$gone"
+rc_is 0
+has "::notice::gitleaks: could not fetch the push base ${gone}" "$FETCH_OUT"
+has 'Scanned 1 commit(s): the last commit' "$SUMMARY"
+has 'earlier commits were not scanned' "$OUT"
+
+# The fetch step does nothing on a pull request, a fast-forward or a new
+# branch, and refuses a before that is not a commit SHA.
+CASE=fetch/no-op
+run_fetch "$work/f2" pull_request BEFORE="$gone"
+rc_is 0
+ok; [ -z "$FETCH_OUT" ] || fail "the fetch step printed on a pull_request: $FETCH_OUT"
+run_fetch "$work/f2" push BEFORE=0000000000000000000000000000000000000000
+rc_is 0
+ok; [ -z "$FETCH_OUT" ] || fail "the fetch step printed for a new branch: $FETCH_OUT"
+run_fetch "$work/f2" push BEFORE="$(git -C "$work/f2" rev-parse HEAD~1)"
+rc_is 0
+ok; [ -z "$FETCH_OUT" ] || fail "the fetch step printed for a commit the clone has: $FETCH_OUT"
+run_fetch "$work/f2" push BEFORE="--upload-pack=touch $work/pwned"
+rc_is 0
+has '::notice::gitleaks: the push base is not a commit SHA' "$FETCH_OUT"
+ok; [ ! -e "$work/pwned" ] || fail "a before carrying an option reached git"
+
 # schedule on the default branch: no commits outside origin/main, so the
 # last commit is scanned and the summary says the earlier ones were not.
 CASE=scan/schedule-on-default
@@ -350,6 +434,97 @@ has 'Scanned 1 commit(s)' "$SUMMARY"
 CASE=control/allowlist-on-base-pr
 run_job "$work/a3" pull_request
 rc_is 0
+
+# Issue #124: gitleaks resolves a relative [extend] path against its working
+# directory, which was the PR-head checkout, so a PR could edit (or add) the
+# extended file to allowlist its own key.
+EXTENDS=$'[extend]\npath = "config/extra.toml"'
+DEFAULT_ONLY=$'[extend]\nuseDefault = true'
+
+CASE=pr-extend/head-edits-extended-file
+new_repo "$work/e1"
+commit_file "$work/e1" .gitleaks.toml "$EXTENDS"
+commit_file "$work/e1" config/extra.toml "$DEFAULT_ONLY"
+git -C "$work/e1" update-ref refs/remotes/origin/main HEAD
+commit_file "$work/e1" config/extra.toml "$ALLOW_LEAK"
+commit_file "$work/e1" leak.env "k = \"$(fresh_key)\""
+run_job "$work/e1" pull_request
+rc_is 1
+has '::error file=leak.env,line=1::gitleaks: aws-access-token' "$OUT"
+
+CASE=pr-extend/head-adds-extended-file
+# The base extends a file it does not have; the PR supplies it.
+new_repo "$work/e2"
+commit_file "$work/e2" .gitleaks.toml "$EXTENDS"
+git -C "$work/e2" update-ref refs/remotes/origin/main HEAD
+commit_file "$work/e2" config/extra.toml "$ALLOW_LEAK"
+commit_file "$work/e2" leak.env "k = \"$(fresh_key)\""
+run_canary "$work/e2" pull_request
+rc_is 1
+has '::error file=.gitleaks.toml::gitleaks: [extend] path "config/extra.toml" names a file origin/main does not have' "$OUT"
+
+CASE=pr-extend/nested
+# A chain: .gitleaks.toml -> config/extra.toml -> config/inner.toml, each
+# relative to the repository root. The PR edits the innermost file.
+INNER_RULE=$'[[rules]]\nid = "aws-access-token"\nregex = \'\'\'AKIA[A-Z2-7]{16}\'\'\''
+new_repo "$work/e3"
+commit_file "$work/e3" .gitleaks.toml "$EXTENDS"
+commit_file "$work/e3" config/extra.toml $'[extend]\npath = "config/inner.toml"'
+commit_file "$work/e3" config/inner.toml "$INNER_RULE"
+git -C "$work/e3" update-ref refs/remotes/origin/main HEAD
+commit_file "$work/e3" config/inner.toml "$INNER_RULE"$'\n\n[allowlist]\npaths = [\'\'\'^leak\\.env$\'\'\']'
+commit_file "$work/e3" leak.env "k = \"$(fresh_key)\""
+run_job "$work/e3" pull_request
+rc_is 1
+has '::error file=leak.env,line=1::gitleaks: aws-access-token' "$OUT"
+
+CASE=pr-extend/absolute-path
+new_repo "$work/e4"
+commit_file "$work/e4" .gitleaks.toml $'[extend]\npath = "/etc/gitleaks.toml"'
+git -C "$work/e4" update-ref refs/remotes/origin/main HEAD
+commit_file "$work/e4" src/app.py 'print("hello")'
+run_canary "$work/e4" pull_request
+rc_is 1
+has '::error file=.gitleaks.toml::gitleaks: [extend] path "/etc/gitleaks.toml" is absolute' "$OUT"
+
+CASE=pr-extend/escapes-repo
+new_repo "$work/e5"
+commit_file "$work/e5" .gitleaks.toml $'[extend]\npath = "config/../../extra.toml"'
+git -C "$work/e5" update-ref refs/remotes/origin/main HEAD
+commit_file "$work/e5" src/app.py 'print("hello")'
+run_canary "$work/e5" pull_request
+rc_is 1
+has '::error file=.gitleaks.toml::gitleaks: [extend] path "config/../../extra.toml" leaves the repository' "$OUT"
+
+CASE=control/extend-on-base
+# The base's own extended allowlist applies on a pull request (it resolves
+# against the base's copy) and on a push (against the checkout): a broken
+# EXTENDS cannot make the cases above pass by accident.
+new_repo "$work/e6"
+commit_file "$work/e6" .gitleaks.toml "$EXTENDS"
+commit_file "$work/e6" config/extra.toml "$ALLOW_LEAK"
+git -C "$work/e6" update-ref refs/remotes/origin/main HEAD
+before="$(git -C "$work/e6" rev-parse HEAD)"
+commit_file "$work/e6" leak.env "k = \"$(fresh_key)\""
+run_job "$work/e6" pull_request
+rc_is 0
+has 'No leaks found.' "$SUMMARY"
+run_job "$work/e6" push BEFORE="$before"
+rc_is 0
+has 'Scanned 1 commit(s)' "$SUMMARY"
+
+CASE=control/nested-on-base
+# The same allowlist in the base's innermost file applies on a pull request,
+# so every link of the chain is read from the base's copy.
+new_repo "$work/e7"
+commit_file "$work/e7" .gitleaks.toml "$EXTENDS"
+commit_file "$work/e7" config/extra.toml $'[extend]\npath = "config/inner.toml"'
+commit_file "$work/e7" config/inner.toml "$INNER_RULE"$'\n\n[allowlist]\npaths = [\'\'\'^leak\\.env$\'\'\']'
+git -C "$work/e7" update-ref refs/remotes/origin/main HEAD
+commit_file "$work/e7" leak.env "k = \"$(fresh_key)\""
+run_job "$work/e7" pull_request
+rc_is 0
+has 'No leaks found.' "$SUMMARY"
 
 CASE=pr-gitleaksignore
 new_repo "$work/a4"
