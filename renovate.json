@@ -1,0 +1,36 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": [
+    "Repository config for laurigates/.github. The owner-wide Renovate runner supplies everything else; this file only adds tracking of the Claude model IDs pinned as workflow_call input defaults (#135).",
+    "The lookup needs the runner to pass ANTHROPIC_API_KEY to reusable-renovate.yml, which then authenticates api.anthropic.com. Without it the lookup fails and the pins are not updated; nothing else changes."
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Claude model IDs pinned as workflow_call input defaults, e.g. default: 'claude-opus-5-5'. Dated snapshot IDs and prose mentions are not matched.",
+      "managerFilePatterns": ["/^\\.github/workflows/[^/]+\\.ya?ml$/"],
+      "matchStrings": [
+        "default:\\s*[\"']?(?<currentValue>(?<depName>claude-(?:opus|sonnet|haiku|fable))-\\d+-\\d+)[\"'\\s]"
+      ],
+      "datasourceTemplate": "custom.claude-models",
+      "versioningTemplate": "regex:^{{{depName}}}-(?<major>\\d+)-(?<minor>\\d+)$"
+    }
+  ],
+  "customDatasources": {
+    "claude-models": {
+      "description": "GET https://api.anthropic.com/v1/models (active and deprecated models). The per-line regex versioning above drops other model lines and dated snapshot IDs.",
+      "defaultRegistryUrlTemplate": "https://api.anthropic.com/v1/models?limit=1000",
+      "format": "json",
+      "transformTemplates": [
+        "{\"releases\": [data.{\"version\": id, \"releaseTimestamp\": created_at, \"isDeprecated\": lifecycle = \"deprecated\"}]}"
+      ]
+    }
+  },
+  "packageRules": [
+    {
+      "description": "A model change alters review behaviour and cost for every caller, so it gets its own PR instead of riding in a grouped dependency update.",
+      "matchDatasources": ["custom.claude-models"],
+      "groupName": "Claude model IDs"
+    }
+  ]
+}
