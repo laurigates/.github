@@ -20,7 +20,9 @@ name: Enforce Conventional Commits (Reusable)
 # merge green and cut no release; the title check alone cannot see this. It
 # runs after the title fixer and reads the title from the API, because a title
 # rewritten with GITHUB_TOKEN starts no new run and the event payload still
-# holds the old one. `warn` annotates; `error` fails the job.
+# holds the old one. It also runs when the fixer fails: the description is then
+# parsed under a placeholder title, since the parser stops at a bad title.
+# `warn` annotates; `error` fails the job.
 #
 # Example caller:
 #
@@ -324,7 +326,12 @@ jobs:
   squash-message-check:
     name: Squash commit parses
     needs: fix-pr-title
-    if: inputs.squash-message-check != 'off'
+    # needs: orders this job after the title fixer, so it reads the fixed title.
+    # !cancelled() keeps it running when the fixer fails (an unfixable title).
+    # The parser stops at the title then, so the action parses the description
+    # under a placeholder title, and title-reported below keeps the title from
+    # failing a second time here.
+    if: ${{ !cancelled() && inputs.squash-message-check != 'off' }}
     # ubuntu-slim: gh, an npm install of one package and a Node script.
     runs-on: ubuntu-slim
     timeout-minutes: 5
@@ -371,3 +378,4 @@ jobs:
           body: ${{ fromJSON(steps.pr.outputs.pr).body }}
           number: ${{ fromJSON(steps.pr.outputs.pr).number }}
           mode: ${{ inputs.squash-message-check }}
+          title-reported: ${{ needs.fix-pr-title.result == 'failure' }}

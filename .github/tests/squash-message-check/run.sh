@@ -16,9 +16,13 @@
 #     fixture PR bodies, and asserts exit code, reported line number and line;
 #   - pins the parser version to the one release-please-action's pin bundles;
 #   - runs the workflow's shipped mode-validation and PR-read steps;
-#   - checks the job wiring: `needs: fix-pr-title`, the title read from the API
-#     rather than the event payload, a fully qualified `uses:`, and no `${{`
-#     inside any run body.
+#   - runs the parse step with a title the parser rejects: the
+#     description is still parsed and its error reported, and with
+#     title-reported=true the title is a notice rather than a second error;
+#   - checks the job wiring: `needs: fix-pr-title` with `!cancelled()` in the
+#     job `if:` (a failed title check must not skip it), title-reported
+#     taken from the fixer's result, the title read from the API rather than the
+#     event payload, a fully qualified `uses:`, and no `${{` inside any run body.
 #
 # WORKFLOW / ACTION_DIR / RP_WORKFLOW override the files under test.
 set -euo pipefail
@@ -89,9 +93,12 @@ for step in "$INSTALL_STEP" "$PARSE_STEP"; do
   expect "$(STEP="$step" yq -r '.runs.steps[] | select(.name == strenv(STEP)) | .shell // ""' "$ACTION")" bash "shell of '$step'"
 done
 expect "$(yq -r '.runs.using' "$ACTION")" composite "runs.using"
-for input in title body number mode; do
+for input in title body number mode title-reported; do
   expect "$(IN="$input" yq -r '.inputs | has(strenv(IN))' "$ACTION")" true "action declares input '$input'"
 done
+expect "$(yq -r '.inputs["title-reported"].default' "$ACTION")" false "title-reported defaults to false"
+expect "$(STEP="$PARSE_STEP" yq -r '.runs.steps[] | select(.name == strenv(STEP)) | .env.TITLE_REPORTED // ""' "$ACTION")" \
+  '${{ inputs.title-reported }}' "parse step passes title-reported as TITLE_REPORTED"
 
 CASE=install
 step_script "$ACTION" '.runs.steps[]' "$INSTALL_STEP" "$work/install.sh"
@@ -109,13 +116,13 @@ check_mjs=$(find "$work/runner" -name check.mjs | head -1)
 [ -n "$check_mjs" ] || fatal "install step did not copy check.mjs into RUNNER_TEMP"
 
 step_script "$ACTION" '.runs.steps[]' "$PARSE_STEP" "$work/parse.sh"
-# run_parse MODE TITLE BODY: sets rc, out, summary.
+# run_parse MODE TITLE BODY [TITLE_REPORTED]: sets rc, out, summary.
 run_parse() {
   : >"$work/summary"
   rc=0
   out=$(cd "$work" && RUNNER_TEMP="$work/runner" GITHUB_ACTION_PATH="$ACTION_ABS" \
     GITHUB_STEP_SUMMARY="$work/summary" MODE="$1" PR_TITLE="$2" PR_BODY="$3" PR_NUMBER=12 \
-    bash --noprofile --norc -e "$work/parse.sh" 2>&1) || rc=$?
+    TITLE_REPORTED="${4:-false}" bash --noprofile --norc -e "$work/parse.sh" 2>&1) || rc=$?
   summary=$(cat "$work/summary")
 }
 
@@ -163,6 +170,49 @@ CASE=indented
 run_parse error "$TITLE" "$INDENT_BODY"
 expect "$rc" 0 "indented body exit code"
 
+# A title the fixer cannot repair. The parser stops at its first error,
+# so parsing the real message would report line 1 and never reach the body.
+BAD_TITLE='Dashboard tweaks'
+WRAP_HELP='GitHub wraps'
+TITLE_HELP='conventional commit header'
+
+CASE=bad-title-body-error-reported
+run_parse error "$BAD_TITLE" "$CALL_BODY" true
+expect "$rc" 1 "the body error still fails the job"
+has "$out" "Line $CALL_LINE: $CALL_TEXT" "the body error is reported behind a bad title"
+hasnt "$out" "at line 1:" "the reported title is not a second error"
+has "$out" "::notice::" "notice that the title does not parse"
+has "$out" "$WRAP_HELP" "wrap advice for the body error"
+hasnt "$out" "$TITLE_HELP" "no title advice when the title is reported elsewhere"
+has "$summary" "$CALL_TEXT" "job summary quotes the body line"
+
+CASE=bad-title-clean-reported
+run_parse error "$BAD_TITLE" "$CLEAN_BODY" true
+expect "$rc" 0 "a reported title and a clean body pass"
+hasnt "$out" "::error::" "no error annotation"
+has "$out" "::notice::" "notice that the title does not parse"
+hasnt "$out" "$WRAP_HELP" "no wrap advice for a clean body"
+has "$summary" "placeholder title" "job summary says the body was parsed under a placeholder title"
+
+CASE=bad-title-clean-unreported
+run_parse error "$BAD_TITLE" "$CLEAN_BODY"
+expect "$rc" 1 "an unreported bad title fails here"
+has "$out" "at line 1:" "the title error"
+has "$out" "$TITLE_HELP" "title advice"
+hasnt "$out" "$WRAP_HELP" "no wrap advice when only the title fails"
+
+CASE=bad-title-body-error-unreported
+run_parse error "$BAD_TITLE" "$CALL_BODY"
+expect "$rc" 1 "exit code"
+has "$out" "at line 1:" "the title error"
+has "$out" "Line $CALL_LINE: $CALL_TEXT" "and the body error, in one run"
+
+CASE=bad-title-body-error-warn
+run_parse warn "$BAD_TITLE" "$CALL_BODY" true
+expect "$rc" 0 "warn mode exit code"
+has "$out" "::warning::" "the body error is a warning"
+has "$out" "Line $CALL_LINE: $CALL_TEXT" "body line"
+
 CASE=bogus-mode
 run_parse bogus "$TITLE" "$CLEAN_BODY"
 [ "$rc" -ne 0 ] && ok || bad "check.mjs accepted MODE=bogus"
@@ -197,7 +247,11 @@ CASE=job-wiring
 expect "$(yq -r ".jobs[\"$JOB\"] | has(\"needs\")" "$WORKFLOW")" true "job has needs"
 needs=$(yq -r ".jobs[\"$JOB\"].needs | (select(tag == \"!!seq\") | join(\",\")) // ." "$WORKFLOW")
 expect "$needs" fix-pr-title "needs"
-has "$(yq -r ".jobs[\"$JOB\"].if // \"\"" "$WORKFLOW")" "inputs.squash-message-check != 'off'" "job if"
+job_if=$(yq -r ".jobs[\"$JOB\"].if // \"\"" "$WORKFLOW")
+has "$job_if" "inputs.squash-message-check != 'off'" "job if"
+# Without a status function, `needs` implies success(), so a title the
+# fixer cannot repair skips the body check instead of reporting it.
+has "$job_if" "!cancelled()" "job if runs the check when fix-pr-title fails"
 expect "$(yq -r ".jobs[\"$JOB\"].runs-on" "$WORKFLOW")" ubuntu-slim "runs-on"
 uses=$(yq -r ".jobs[\"$JOB\"].steps[] | select(has(\"uses\")) | .uses" "$WORKFLOW")
 expect "$uses" "laurigates/.github/.github/actions/squash-message-check@main" "fully qualified uses"
@@ -207,6 +261,8 @@ for k in title body number mode; do
   hasnt "$v" "github.event" "with.$k reads from the event payload"
 done
 has "$(yq -r ".jobs[\"$JOB\"].steps[] | select(has(\"uses\")) | .with.title" "$WORKFLOW")" "steps.pr.outputs" "title comes from the API read"
+expect "$(yq -r ".jobs[\"$JOB\"].steps[] | select(has(\"uses\")) | .with[\"title-reported\"] // \"\"" "$WORKFLOW")" \
+  "\${{ needs.fix-pr-title.result == 'failure' }}" "title-reported is the fixer's failure"
 runs=$(yq -r ".jobs[\"$JOB\"].steps[] | .run // \"\"" "$WORKFLOW")
 [ -n "$runs" ] || fatal "job $JOB has no run steps"
 hasnt "$runs" '${{' "no \${{ }} inside a run body of job $JOB"

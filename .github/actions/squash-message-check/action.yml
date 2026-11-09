@@ -20,6 +20,15 @@ inputs:
   mode:
     description: '"warn" annotates a parse error; "error" also fails the step.'
     required: true
+  title-reported:
+    description: >-
+      "true" when another check already fails on a title that is not a
+      conventional commit (the workflow passes the title fixer's failure). A
+      title the parser rejects is then a notice here instead of a second error.
+      The description is parsed either way, under a placeholder title when the
+      real one does not parse.
+    required: false
+    default: 'false'
 
 runs:
   using: composite
@@ -52,4 +61,5 @@ runs:
         PR_BODY: ${{ inputs.body }}
         PR_NUMBER: ${{ inputs.number }}
         MODE: ${{ inputs.mode }}
+        TITLE_REPORTED: ${{ inputs.title-reported }}
       run: node "$RUNNER_TEMP/squash-message-check/check.mjs"
