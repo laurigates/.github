@@ -26,7 +26,14 @@
  * appends. The wrap is what puts a mid-sentence call such as `name(` at a line
  * start, where the parser reads the line as a footer and throws.
  *
- * Environment: PR_TITLE, PR_BODY, PR_NUMBER, MODE (warn | error), and
+ * The parser stops at its first error, so a title it rejects (line 1) would
+ * hide every error in the description. When the title does not parse alone,
+ * the description is parsed again under a placeholder subject; the subject is
+ * one line, so the line numbers do not change.
+ *
+ * Environment: PR_TITLE, PR_BODY, PR_NUMBER, MODE (warn | error),
+ * TITLE_REPORTED ('true' when another check already fails on the title, so a
+ * title the parser rejects is a notice here rather than a second error), and
  * GITHUB_STEP_SUMMARY when set. Exit 0 when the message parses or MODE=warn,
  * 1 on a parse error under MODE=error, 2 on bad input.
  */
@@ -37,6 +44,8 @@ import { parser } from '@conventional-commits/parser'
 export const WRAP_WIDTH = 72
 export const SQUASH_SOURCE = 'the squash commit message'
 export const OVERRIDE_SOURCE = 'the BEGIN_COMMIT_OVERRIDE section'
+// Stands in for a title the parser rejects, so the description is still parsed.
+export const PLACEHOLDER_TITLE = 'chore: placeholder for the PR title'
 
 // Only a fence in column 0 stops the wrap.
 const FENCE = /^(```|~~~)/
@@ -169,15 +178,25 @@ export function parseErrors(message) {
 
 /**
  * What release-please will parse for this PR once it is squash-merged, and
- * the errors it would hit.
+ * the errors it would hit. `errors` are in the description (or the override
+ * section); `titleErrors` are the title's, found by parsing the subject alone.
+ * When the title does not parse, `errors` come from the same message under
+ * PLACEHOLDER_TITLE, with each `text` taken from the real message.
  * @param {{ title: string, number: string | number, body?: string | null }} pr
- * @returns {{ source: string, message: string, errors: ReturnType<typeof parseErrors> }}
+ * @returns {{ source: string, message: string, errors: ReturnType<typeof parseErrors>, titleErrors: ReturnType<typeof parseErrors> }}
  */
 export function checkPullRequest(pr) {
   const override = commitOverride(pr.body)
-  const source = override ? OVERRIDE_SOURCE : SQUASH_SOURCE
-  const message = override || buildSquashMessage(pr)
-  return { source, message, errors: parseErrors(message) }
+  // release-please parses the override instead of the commit: the title is not used.
+  if (override) return { source: OVERRIDE_SOURCE, message: override, errors: parseErrors(override), titleErrors: [] }
+  const message = buildSquashMessage(pr)
+  const titleErrors = parseErrors(buildSquashMessage({ ...pr, body: '' }))
+  if (titleErrors.length === 0) return { source: SQUASH_SOURCE, message, errors: parseErrors(message), titleErrors }
+  const lines = message.split(NEWLINE)
+  const errors = parseErrors(buildSquashMessage({ ...pr, title: PLACEHOLDER_TITLE })).map((e) =>
+    e.line ? { ...e, text: lines[e.line - 1] ?? null } : e,
+  )
+  return { source: SQUASH_SOURCE, message, errors, titleErrors }
 }
 
 /** Escape newlines so a parser error such as `unexpected token '\n'` stays on one line. */
@@ -196,8 +215,13 @@ const HELP = [
   'Line 1 is the PR title.',
 ]
 
+const TITLE_HELP = [
+  'release-please needs the PR title (line 1) to be a conventional commit header,',
+  '`type(scope): subject`, such as `fix(api): handle empty rows`.',
+]
+
 function main() {
-  const { PR_TITLE, PR_BODY, PR_NUMBER, MODE, GITHUB_STEP_SUMMARY } = process.env
+  const { PR_TITLE, PR_BODY, PR_NUMBER, MODE, TITLE_REPORTED, GITHUB_STEP_SUMMARY } = process.env
   if (MODE !== 'warn' && MODE !== 'error') {
     console.log(`::error::squash-message-check mode must be warn or error (got '${annotation(MODE ?? '')}')`)
     process.exit(2)
@@ -206,16 +230,33 @@ function main() {
     console.log('::error::PR_TITLE and PR_NUMBER must be set (PR_BODY may be empty).')
     process.exit(2)
   }
-  const { source, message, errors } = checkPullRequest({ title: PR_TITLE, number: PR_NUMBER, body: PR_BODY })
+  const { source, message, errors, titleErrors } = checkPullRequest({
+    title: PR_TITLE,
+    number: PR_NUMBER,
+    body: PR_BODY,
+  })
   const messageLines = message.split(NEWLINE)
-  if (errors.length === 0) {
-    console.log(`release-please parses ${source} (${messageLines.length} lines).`)
+  // Exactly 'true': anything else reports the title here too.
+  const titleReported = TITLE_REPORTED === 'true'
+  const reported = titleReported ? errors : [...titleErrors, ...errors]
+  const summary = []
+  if (titleReported && titleErrors.length > 0) {
+    const note =
+      'The PR title does not parse as a conventional commit; the title check reports that, ' +
+      'so the description was parsed under a placeholder title.'
+    console.log(`::notice::${annotation(note)}`)
+    summary.push(note, '')
+  }
+  if (reported.length === 0) {
+    const what = titleErrors.length > 0 ? 'the description in the squash commit message' : source
+    console.log(`release-please parses ${what} (${messageLines.length} lines).`)
+    if (GITHUB_STEP_SUMMARY && summary.length) appendFileSync(GITHUB_STEP_SUMMARY, `${summary.join('\n')}\n`)
     return
   }
 
   const level = MODE === 'error' ? 'error' : 'warning'
-  const summary = [`### release-please cannot parse ${source}`, '']
-  for (const { error, line, text } of errors) {
+  summary.push(`### release-please cannot parse ${source}`, '')
+  for (const { error, line, text } of reported) {
     const where = line ? `line ${line}` : 'an unknown line'
     console.log(`::${level}::${annotation(`release-please cannot parse ${source} at ${where}: ${visible(error)}`)}`)
     summary.push(`- ${where}: \`${visible(error)}\``)
@@ -237,8 +278,10 @@ function main() {
     console.log(`\n${note}`)
     summary.push(note, '')
   }
-  console.log(['', ...HELP].join('\n'))
-  summary.push(HELP.join('\n'), '')
+  // The wrap advice is about the description; a title error gets its own.
+  const help = [...(errors.length > 0 ? HELP : []), ...(reported.length > errors.length ? TITLE_HELP : [])]
+  console.log(['', ...help].join('\n'))
+  summary.push(help.join('\n'), '')
   if (GITHUB_STEP_SUMMARY) appendFileSync(GITHUB_STEP_SUMMARY, `${summary.join('\n')}\n`)
   if (MODE === 'error') process.exit(1)
 }

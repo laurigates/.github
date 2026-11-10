@@ -142,7 +142,10 @@ written may parse.
 runs after the title fixer, reads the current title and description from the
 API, rebuilds the squash message and parses it with `@conventional-commits/parser`
 at the version `reusable-release-please.yml`'s release-please-action pin
-bundles. It reports the parser error, the line number and the line.
+bundles. It reports the parser error, the line number and the line. It also
+runs when the title check fails. The parser stops at its first error, so it then
+parses the description under a placeholder title, and reports the title only as
+a notice, since the title check already fails on it.
 
 ```yaml
 on:
