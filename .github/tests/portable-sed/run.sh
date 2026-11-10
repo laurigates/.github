@@ -3,14 +3,14 @@
 # regex escapes: `\|` (alternation), `\+` and `\?`. GNU sed accepts them in a
 # BRE as an extension; BSD sed (macOS) treats them as literals, so the script
 # silently matches nothing. That is how claude-failure-type passed in CI and
-# failed 10 of its assertions on macOS (ForumViriumHelsinki/.github#192).
+# failed 10 of its assertions on macOS (upstream org issue #192).
 #
 # Fix a flagged line by switching to an extended regex, which both seds accept:
 #   sed -n 's/^\(a\|b\)=.*/\1/p'   ->   sed -nE 's/^(a|b)=.*/\1/p'
 #
 # Three checks:
 #   1. scan: every `sed` without -E/-r in `git ls-files '*.sh'`;
-#   2. control: the same scan flags a scratch file holding the pre-fix line (ForumViriumHelsinki/.github#192),
+#   2. control: the same scan flags a scratch file holding the pre-fix line (upstream org issue #192),
 #      so an empty scan cannot pass vacuously;
 #   3. teeth: the shipped OUT_KEYS line of claude-failure-type, extracted from
 #      that file, still yields all four keys under a POSIX sed (GNU
@@ -105,7 +105,7 @@ if [ -n "$hits" ]; then
   fail=1
 fi
 
-# 2. Control: the pre-fix line (ForumViriumHelsinki/.github#192) must be flagged. Built with printf so this
+# 2. Control: the pre-fix line (upstream org issue #192) must be flagged. Built with printf so this
 # file's own source does not contain the pattern it scans for.
 bs='\\'
 printf '  OUT_KEYS="$(sed -n %s "$f")"\n' \
