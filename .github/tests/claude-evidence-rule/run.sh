@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Regression test for ForumViriumHelsinki/.github#199: the free-form Claude
+# Regression test for upstream org issue #199: the free-form Claude
 # review bots reported valid Python 3.14 syntax (PEP 758 `except A, B:`) as a
 # blocking SyntaxError, predicted from model knowledge with no tool or CI run
 # behind it.
