@@ -1,0 +1,702 @@
+name: Issue Labels (Reusable)
+
+# Keeps a repository's issue and PR labels in step with its label taxonomy,
+# without a model. Which job runs depends on the caller's event:
+#
+#   push to the default branch       provision: create, update or rename the
+#                                    build: and area: labels the taxonomy file
+#                                    defines. Deletes nothing.
+#   issues opened/reopened/edited    classify-issue: add the type and routing
+#                                    labels the title (and, with no routing
+#                                    label, the paths quoted in the body) point
+#                                    at. `edited` is skipped for an issue a bot
+#                                    opened.
+#   issues closed                    unblock: remove `blocked` from each open
+#                                    issue this one was blocking whose
+#                                    blocked_by issues are now all closed.
+#   pull_request opened/             classify-pr: add the type label from the
+#     synchronize/reopened           title and a routing label per changed
+#                                    file. Skipped for fork PRs, Dependabot,
+#                                    heads matching `skip-heads`, and when
+#                                    `pr-labels` is false.
+#   schedule, workflow_dispatch      sweep: `mode: audit` reports label gaps to
+#                                    the job summary and to one rolling issue;
+#                                    `mode: backfill` classifies open issues
+#                                    that lack a type or routing label, at most
+#                                    `max-issues` per run, oldest first.
+#
+# Every decision is git-plugin/scripts/issue-labels.py in
+# laurigates/claude-plugins, fetched at the commit pinned in `plugins-ref`. The
+# vocabulary (type labels, build: / area: / core: routing labels, needs: labels
+# and `blocked`) and who sets and clears each label are described in
+# git-plugin/skills/github-labels/SKILL.md there. This workflow passes no
+# vocabulary flag, so the script's defaults apply. The standard labels come
+# from laurigates/gitops (labels.tf); this workflow creates only the build: and
+# area: labels of the repository's own taxonomy file.
+#
+# What the workflow guarantees:
+#
+#   - The taxonomy is read through the contents API at the default branch. No
+#     job checks out the calling repository, so a pull request cannot change
+#     the taxonomy or the code that labels it.
+#   - Titles and bodies never reach a shell. The script reads them from the API
+#     by issue or PR number, and no `run:` body contains an expression.
+#   - Additive only. A label is added when its group (type, or one routing
+#     prefix) has none on the item, and only when the label exists in the
+#     repository. The one removal is `blocked`, by the unblock job, for an
+#     issue whose dependency links are all closed. Titles and bodies are never
+#     edited.
+#   - Every write uses GITHUB_TOKEN. A label write made with it starts no
+#     workflow, so the labels this workflow adds cannot re-trigger it or any
+#     caller that listens for label events. Keep label events out of the
+#     caller's `types:` lists all the same: the jobs here ignore them, and
+#     each one would still start a run.
+#   - `dry-run: true` prints what would change and writes nothing. A step
+#     writes only when the value is exactly `false`.
+#   - A repository with no taxonomy file still gets classify, unblock and
+#     sweep: the script's built-in core: globs apply. Provision then does
+#     nothing and says so in a notice.
+#
+# The rolling audit issue is found by its exact title ("Issue label audit")
+# among open issues, and filed only when the audit has findings. A later audit
+# whose set of findings differs comments on it; an unchanged set posts nothing.
+# Close it by hand; the next audit with findings files a new one. It lists
+# issue numbers inside a code block so that no listed issue gains a
+# cross-reference from each report; the job summary carries the links.
+#
+# Limits:
+#
+#   - Issues created with GITHUB_TOKEN fire no `issues` event. The sweep
+#     covers them.
+#   - Backfill takes the oldest candidates first. An issue the script cannot
+#     classify stays a candidate, so more than `max-issues` of those hold the
+#     queue; the audit keeps listing them.
+#   - `pull_request_target` is not handled.
+#   - Fork PRs and Dependabot runs get a read-only GITHUB_TOKEN, so their
+#     label writes would fail; they are skipped.
+#
+# Permissions: the caller grants `contents: read`, `issues: write` and
+# `pull-requests: write`. Each job below declares the part it uses. A caller
+# that grants less than any one job asks for fails at startup, on every event,
+# including the events that job does not run on.
+#
+# Example caller (.github/workflows/issue-labels.yml):
+#
+#   name: Issue labels
+#   on:
+#     issues:
+#       types: [opened, reopened, edited, closed]
+#     pull_request:
+#       types: [opened, synchronize, reopened]
+#     push:
+#       branches: [main]
+#       paths: [.github/issue-labels.json]
+#     schedule:
+#       - cron: '17 5 * * 1'
+#     workflow_dispatch:
+#       inputs:
+#         mode:
+#           description: 'audit reports label gaps; backfill labels open issues that lack a type or routing label'
+#           type: choice
+#           options: [audit, backfill]
+#           default: audit
+#         dry-run:
+#           description: 'Print what would change and write nothing'
+#           type: boolean
+#           default: true
+#   permissions:
+#     contents: read
+#     issues: write
+#     pull-requests: write
+#   jobs:
+#     issue-labels:
+#       uses: laurigates/.github/.github/workflows/reusable-issue-labels.yml@main
+#       with:
+#         mode: ${{ inputs.mode || 'audit' }}
+#         dry-run: ${{ inputs.dry-run || false }}
+
+on:
+  workflow_call:
+    inputs:
+      taxonomy-path:
+        description: 'Path of the label taxonomy (JSON) in the calling repository, read from its default branch'
+        required: false
+        type: string
+        default: '.github/issue-labels.json'
+      plugins-ref:
+        description: 'laurigates/claude-plugins commit that provides git-plugin/scripts/issue-labels.py'
+        required: false
+        type: string
+        # laurigates/claude-plugins#3569 (git-plugin issue-labels.py). Bump by hand
+        # when the script changes; Renovate does not track a `with: ref:` pin.
+        default: '2a46797490f5fe50e3f56ccc7818c839e4cf838c'
+      dry-run:
+        description: 'Print what would change and write nothing'
+        required: false
+        type: boolean
+        default: false
+      mode:
+        description: 'What a schedule or workflow_dispatch run does: audit or backfill'
+        required: false
+        type: string
+        default: 'audit'
+      max-issues:
+        description: 'Most issues one backfill run classifies'
+        required: false
+        type: number
+        default: 25
+      pr-labels:
+        description: 'Label pull requests from their title and changed files'
+        required: false
+        type: boolean
+        default: true
+      skip-heads:
+        description: 'PR head branches left alone: comma- or newline-separated bash patterns'
+        required: false
+        type: string
+        default: 'release-please--*'
+      needs-stale-days:
+        description: 'Days after which the audit reports a needs: label as stale'
+        required: false
+        type: number
+        default: 30
+      audit-labels:
+        description: 'Comma-separated labels for the rolling audit issue; a label the repository lacks is left off'
+        required: false
+        type: string
+        default: 'chore,core:quality'
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  provision:
+    name: Provision build and area labels
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    # ubuntu-slim: one stdlib python3 script plus `gh` API calls, in every job.
+    runs-on: ubuntu-slim
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    concurrency:
+      group: issue-labels-provision-${{ github.repository }}
+      cancel-in-progress: false
+    steps:
+      - name: Fetch the labelling script
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          repository: laurigates/claude-plugins
+          ref: ${{ inputs.plugins-ref }}
+          path: .issue-labels
+          sparse-checkout: git-plugin/scripts/issue-labels.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Provision labels from the taxonomy
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAXONOMY_PATH: ${{ inputs.taxonomy-path }}
+          DRY_RUN: ${{ inputs.dry-run }}
+          RESULT: ${{ runner.temp }}/provision.txt
+        run: |
+          set -uo pipefail
+          args=(provision --repo "$REPO" --taxonomy-path "$TAXONOMY_PATH")
+          [ "${DRY_RUN:-}" = false ] || args+=(--dry-run)
+          rc=0
+          python3 .issue-labels/git-plugin/scripts/issue-labels.py "${args[@]}" >"$RESULT" || rc=$?
+          cat "$RESULT"
+          # The script treats an absent taxonomy as an error. Here it means the
+          # repository defines no build: or area: labels, which is allowed.
+          if [ "$rc" -ne 0 ] && grep -q '^REASON=taxonomy_missing:' "$RESULT"; then
+            echo "::notice title=Issue labels::no label taxonomy on the default branch; nothing to provision"
+            exit 0
+          fi
+          {
+            echo "## Label provisioning"
+            echo
+            echo '```text'
+            cat "$RESULT"
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+          exit "$rc"
+
+  classify-issue:
+    name: Label the issue
+    if: >-
+      github.event_name == 'issues' &&
+      (github.event.action == 'opened' || github.event.action == 'reopened' ||
+      (github.event.action == 'edited' && github.event.issue.user.type != 'Bot'))
+    runs-on: ubuntu-slim
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    concurrency:
+      group: issue-labels-issue-${{ github.repository }}-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    steps:
+      - name: Fetch the labelling script
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          repository: laurigates/claude-plugins
+          ref: ${{ inputs.plugins-ref }}
+          path: .issue-labels
+          sparse-checkout: git-plugin/scripts/issue-labels.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      # The Classify and Apply labels bodies are identical in classify-pr; the
+      # issue-labels test extracts both and fails when they differ.
+      - name: Classify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          KIND: issue
+          NUMBER: ${{ github.event.issue.number }}
+          TAXONOMY_PATH: ${{ inputs.taxonomy-path }}
+          RESULT: ${{ runner.temp }}/classify.json
+        run: |
+          set -uo pipefail
+          case "${KIND:-}" in issue | pr) ;; *) echo "::error title=Issue labels::KIND must be issue or pr"; exit 1 ;; esac
+          case "${NUMBER:-}" in '' | *[!0-9]*) echo "::error title=Issue labels::the event carries no usable issue or PR number"; exit 1 ;; esac
+          rc=0
+          python3 .issue-labels/git-plugin/scripts/issue-labels.py classify --repo "$REPO" "--$KIND" "$NUMBER" \
+            --taxonomy-path "$TAXONOMY_PATH" >"$RESULT" || rc=$?
+          cat "$RESULT"
+          exit "$rc"
+
+      - name: Apply labels
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.issue.number }}
+          DRY_RUN: ${{ inputs.dry-run }}
+          RESULT: ${{ runner.temp }}/classify.json
+        run: |
+          set -euo pipefail
+          # `add` is what classify decided: labels that exist in the repository
+          # and whose group has no label on the item yet. Nothing else is sent.
+          if ! jq -e '.status == "OK" and (.add | type == "array") and all(.add[]; type == "string")' "$RESULT" >/dev/null 2>&1; then
+            echo "::error title=Issue labels::the classify result is missing or malformed; nothing was applied"
+            exit 1
+          fi
+          names="$(jq -r '.add | map("`" + . + "`") | join(", ")' "$RESULT")"
+          if [ -z "$names" ]; then
+            echo "Nothing to add to #$NUMBER."
+            exit 0
+          fi
+          if [ "${DRY_RUN:-}" != false ]; then
+            echo "Dry run: would add to #$NUMBER: $names"
+            echo "Dry run: would add to #$NUMBER: $names" >>"$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          jq -c '{labels: .add}' "$RESULT" | gh api -X POST "repos/$REPO/issues/$NUMBER/labels" --input - --silent
+          echo "Added to #$NUMBER: $names"
+          echo "Added to #$NUMBER: $names" >>"$GITHUB_STEP_SUMMARY"
+
+  classify-pr:
+    name: Label the pull request
+    # A fork PR and a Dependabot run both get a read-only GITHUB_TOKEN.
+    if: >-
+      github.event_name == 'pull_request' && inputs.pr-labels &&
+      contains(fromJSON('["opened", "synchronize", "reopened"]'), github.event.action) &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.actor != 'dependabot[bot]' &&
+      github.event.pull_request.user.login != 'dependabot[bot]'
+    runs-on: ubuntu-slim
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+      # The script lists the repository's labels through GraphQL; `issues: read`
+      # keeps that read independent of which scope GraphQL accepts for labels.
+      issues: read
+    concurrency:
+      group: issue-labels-pr-${{ github.repository }}-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    steps:
+      # A branch name is text its author chose: it reaches the script through
+      # env: only, and is never echoed into a workflow command.
+      - name: Check the head branch
+        id: gate
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          SKIP_HEADS: ${{ inputs.skip-heads }}
+        run: |
+          set -euo pipefail
+          # entries <input>: one entry per line from a comma- or newline-separated
+          # input, trimmed, with blank entries and '#' comments dropped.
+          entries() {
+            local e
+            while IFS= read -r e; do
+              e="${e#"${e%%[![:space:]]*}"}"
+              e="${e%"${e##*[![:space:]]}"}"
+              case "$e" in '' | '#'*) continue ;; esac
+              printf '%s\n' "$e"
+            done < <(printf '%s\n' "$1" | tr ',' '\n')
+          }
+          while IFS= read -r pat; do
+            # shellcheck disable=SC2053 # $pat is a pattern on purpose
+            if [[ "${HEAD_REF:-}" == $pat ]]; then
+              echo "::notice title=Issue labels::the head branch matches a skip-heads pattern; the PR is not labelled"
+              echo "run=false" >>"$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done < <(entries "${SKIP_HEADS:-}")
+          echo "run=true" >>"$GITHUB_OUTPUT"
+
+      - name: Fetch the labelling script
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          repository: laurigates/claude-plugins
+          ref: ${{ inputs.plugins-ref }}
+          path: .issue-labels
+          sparse-checkout: git-plugin/scripts/issue-labels.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Classify
+        if: steps.gate.outputs.run == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          KIND: pr
+          NUMBER: ${{ github.event.pull_request.number }}
+          TAXONOMY_PATH: ${{ inputs.taxonomy-path }}
+          RESULT: ${{ runner.temp }}/classify.json
+        run: |
+          set -uo pipefail
+          case "${KIND:-}" in issue | pr) ;; *) echo "::error title=Issue labels::KIND must be issue or pr"; exit 1 ;; esac
+          case "${NUMBER:-}" in '' | *[!0-9]*) echo "::error title=Issue labels::the event carries no usable issue or PR number"; exit 1 ;; esac
+          rc=0
+          python3 .issue-labels/git-plugin/scripts/issue-labels.py classify --repo "$REPO" "--$KIND" "$NUMBER" \
+            --taxonomy-path "$TAXONOMY_PATH" >"$RESULT" || rc=$?
+          cat "$RESULT"
+          exit "$rc"
+
+      - name: Apply labels
+        if: steps.gate.outputs.run == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.pull_request.number }}
+          DRY_RUN: ${{ inputs.dry-run }}
+          RESULT: ${{ runner.temp }}/classify.json
+        run: |
+          set -euo pipefail
+          # `add` is what classify decided: labels that exist in the repository
+          # and whose group has no label on the item yet. Nothing else is sent.
+          if ! jq -e '.status == "OK" and (.add | type == "array") and all(.add[]; type == "string")' "$RESULT" >/dev/null 2>&1; then
+            echo "::error title=Issue labels::the classify result is missing or malformed; nothing was applied"
+            exit 1
+          fi
+          names="$(jq -r '.add | map("`" + . + "`") | join(", ")' "$RESULT")"
+          if [ -z "$names" ]; then
+            echo "Nothing to add to #$NUMBER."
+            exit 0
+          fi
+          if [ "${DRY_RUN:-}" != false ]; then
+            echo "Dry run: would add to #$NUMBER: $names"
+            echo "Dry run: would add to #$NUMBER: $names" >>"$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          jq -c '{labels: .add}' "$RESULT" | gh api -X POST "repos/$REPO/issues/$NUMBER/labels" --input - --silent
+          echo "Added to #$NUMBER: $names"
+          echo "Added to #$NUMBER: $names" >>"$GITHUB_STEP_SUMMARY"
+
+  unblock:
+    name: Unblock dependents of the closed issue
+    if: github.event_name == 'issues' && github.event.action == 'closed'
+    runs-on: ubuntu-slim
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    # Its own group: a pending run in classify-issue's group would be replaced
+    # by the next edit of the same issue.
+    concurrency:
+      group: issue-labels-unblock-${{ github.repository }}-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    steps:
+      - name: Fetch the labelling script
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          repository: laurigates/claude-plugins
+          ref: ${{ inputs.plugins-ref }}
+          path: .issue-labels
+          sparse-checkout: git-plugin/scripts/issue-labels.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Clear the blocked label where every blocker is closed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.issue.number }}
+          DRY_RUN: ${{ inputs.dry-run }}
+          RESULT: ${{ runner.temp }}/unblock.txt
+        run: |
+          set -uo pipefail
+          case "${NUMBER:-}" in '' | *[!0-9]*) echo "::error title=Issue labels::the event carries no usable issue number"; exit 1 ;; esac
+          args=(unblock --repo "$REPO" --issue "$NUMBER")
+          [ "${DRY_RUN:-}" = false ] || args+=(--dry-run)
+          rc=0
+          python3 .issue-labels/git-plugin/scripts/issue-labels.py "${args[@]}" >"$RESULT" || rc=$?
+          cat "$RESULT"
+          {
+            echo "## Unblock"
+            echo
+            echo '```text'
+            cat "$RESULT"
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+          exit "$rc"
+
+  sweep:
+    name: Audit or backfill open issues
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-slim
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      issues: write
+    concurrency:
+      group: issue-labels-sweep-${{ github.repository }}
+      cancel-in-progress: false
+    steps:
+      - name: Fetch the labelling script
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          repository: laurigates/claude-plugins
+          ref: ${{ inputs.plugins-ref }}
+          path: .issue-labels
+          sparse-checkout: git-plugin/scripts/issue-labels.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Audit open issues
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          MODE: ${{ inputs.mode }}
+          NEEDS_STALE_DAYS: ${{ inputs.needs-stale-days }}
+          AUDIT: ${{ runner.temp }}/audit.json
+        run: |
+          set -uo pipefail
+          case "${MODE:-}" in audit | backfill) ;; *) echo "::error title=Issue labels::mode must be audit or backfill"; exit 1 ;; esac
+          rc=0
+          python3 .issue-labels/git-plugin/scripts/issue-labels.py audit --repo "$REPO" \
+            --needs-stale-days "$NEEDS_STALE_DAYS" --json >"$AUDIT" || rc=$?
+          if [ "$rc" -ne 0 ]; then
+            cat "$AUDIT"
+            exit "$rc"
+          fi
+          jq -r '"open issues: \(.open_issues)", (.counts | to_entries[] | "\(.key): \(.value)")' "$AUDIT"
+
+      - name: Report audit findings
+        if: inputs.mode == 'audit'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SERVER_URL: ${{ github.server_url }}
+          RUN_ID: ${{ github.run_id }}
+          DRY_RUN: ${{ inputs.dry-run }}
+          NEEDS_STALE_DAYS: ${{ inputs.needs-stale-days }}
+          AUDIT_TITLE: Issue label audit
+          AUDIT_LABELS: ${{ inputs.audit-labels }}
+          ASSIGNEE: ${{ github.repository_owner }}
+          AUDIT: ${{ runner.temp }}/audit.json
+        run: |
+          set -euo pipefail
+          if ! jq -e '(.findings | type == "array") and (.counts | type == "object")' "$AUDIT" >/dev/null 2>&1; then
+            echo "::error title=Issue labels::the audit result is missing or malformed; nothing was reported"
+            exit 1
+          fi
+          total="$(jq '.findings | length' "$AUDIT")"
+          open="$(jq -r '.open_issues' "$AUDIT")"
+          url="$SERVER_URL/$REPO"
+
+          # 1. Job summary, with a link per finding.
+          {
+            echo "## Issue label audit"
+            echo
+            echo "$open open issue(s), $total finding(s). needs-stale-days: $NEEDS_STALE_DAYS."
+            echo
+            echo "| Finding | Count |"
+            echo "|---|---|"
+            jq -r '.counts | to_entries[] | "| `\(.key)` | \(.value) |"' "$AUDIT"
+            if [ "$total" -gt 0 ]; then
+              echo
+              echo "| Issue | Finding | Detail |"
+              echo "|---|---|---|"
+              jq -r --arg url "$url" '.findings[]
+                | "| [#\(.number)](\($url)/issues/\(.number)) | `\(.type)` | \(.msg | gsub("\\|"; "\\|")) |"' "$AUDIT"
+            fi
+          } >>"$GITHUB_STEP_SUMMARY"
+
+          if [ "$total" -eq 0 ]; then
+            echo "No findings: no audit issue is filed or commented on."
+            exit 0
+          fi
+
+          # 2. The report. The marker is a hash of the (type, issue) pairs, so
+          # a needs: label that only grew a day older does not change it.
+          sig="$(jq -c '[.findings[] | [.type, .number]] | sort' "$AUDIT" \
+            | python3 -c 'import hashlib, sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest()[:12])')"
+          body="$RUNNER_TEMP/audit-body.md"
+          {
+            echo "The label audit found $total finding(s) in $open open issue(s). [The run's summary]($url/actions/runs/$RUN_ID) links each issue."
+            echo
+            echo "| Finding | Count |"
+            echo "|---|---|"
+            jq -r '.counts | to_entries[] | select(.value > 0) | "| `\(.key)` | \(.value) |"' "$AUDIT"
+            echo
+            echo '```text'
+            jq -r '.findings[:300][] | "#\(.number)  \(.type)  \(.msg)"' "$AUDIT"
+            echo '```'
+            if [ "$total" -gt 300 ]; then
+              echo
+              echo "$((total - 300)) more finding(s) are in the run's summary."
+            fi
+            echo
+            echo "Issue numbers are in a code block so that this report adds no cross-reference to the listed issues. Close this issue by hand once the findings are handled; a later audit with a different set of findings comments here, and the next audit after it is closed files a new issue."
+            echo
+            echo "<!-- issue-labels-audit: $sig -->"
+          } >"$body"
+
+          find_open_issue() {
+            gh issue list --repo "$REPO" --state open --limit 1000 --json number,title \
+              | jq -r --arg t "$AUDIT_TITLE" '[.[] | select(.title == $t) | .number] | min // empty'
+          }
+          existing="$(find_open_issue)"
+
+          if [ "${DRY_RUN:-}" != false ]; then
+            if [ -n "$existing" ]; then
+              echo "Dry run: would comment on #$existing unless its latest report has the same findings. The report:"
+            else
+              echo "Dry run: would file an issue titled '$AUDIT_TITLE'. The report:"
+            fi
+            cat "$body"
+            exit 0
+          fi
+
+          # 3. An open audit issue gets a comment, once per set of findings.
+          if [ -n "$existing" ]; then
+            text="$(gh api "repos/$REPO/issues/$existing" --jq '.body // ""')"
+            text+=$'\n'"$(gh api --paginate "repos/$REPO/issues/$existing/comments?per_page=100" --jq '.[].body')"
+            last="$(grep -oE 'issue-labels-audit: [0-9a-f]{12}' <<<"$text" | tail -n 1 || true)"
+            if [ "$last" = "issue-labels-audit: $sig" ]; then
+              echo "The findings match the latest report on #$existing; nothing posted."
+              exit 0
+            fi
+            jq -Rs '{body: .}' "$body" | gh api -X POST "repos/$REPO/issues/$existing/comments" --input - --jq '.html_url'
+            exit 0
+          fi
+
+          # 4. Otherwise file it, once. The create call can exit non-zero
+          # after creating the issue, so a failure re-reads the listing and
+          # never retries.
+          if created="$(gh issue create --repo "$REPO" --title "$AUDIT_TITLE" --body-file "$body")"; then
+            issue="${created##*/}"
+          else
+            issue="$(find_open_issue)"
+            if [ -z "$issue" ]; then
+              echo "::error title=Issue labels::filing the audit issue failed and no open issue titled '$AUDIT_TITLE' exists"
+              exit 1
+            fi
+            echo "::warning title=Issue labels::the create call exited non-zero but issue #$issue exists; not retrying"
+          fi
+          case "$issue" in '' | *[!0-9]*) echo "::error title=Issue labels::could not read the new issue's number"; exit 1 ;; esac
+          echo "Filed audit issue #$issue."
+
+          # Its own labels and assignee, so the next audit does not list it.
+          # Only labels the repository has: the API would create a missing one.
+          have="$(gh label list --repo "$REPO" --limit 500 --json name)"
+          want="$(jq -c --arg l "$AUDIT_LABELS" '[.[].name | ascii_downcase] as $have
+            | $l | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))
+            | map(select(ascii_downcase as $w | $have | index($w)))' <<<"$have")"
+          if [ "$(jq 'length' <<<"$want")" -gt 0 ]; then
+            jq -c '{labels: .}' <<<"$want" | gh api -X POST "repos/$REPO/issues/$issue/labels" --input - --silent \
+              || echo "::warning title=Issue labels::adding labels to #$issue failed"
+          fi
+          if [ -n "${ASSIGNEE:-}" ]; then
+            jq -nc --arg a "$ASSIGNEE" '{assignees: [$a]}' | gh api -X POST "repos/$REPO/issues/$issue/assignees" --input - --silent \
+              || echo "::warning title=Issue labels::assigning #$issue failed"
+          fi
+
+      - name: Backfill labels
+        if: inputs.mode == 'backfill'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SERVER_URL: ${{ github.server_url }}
+          DRY_RUN: ${{ inputs.dry-run }}
+          MAX_ISSUES: ${{ inputs.max-issues }}
+          TAXONOMY_PATH: ${{ inputs.taxonomy-path }}
+          AUDIT: ${{ runner.temp }}/audit.json
+        run: |
+          set -euo pipefail
+          case "${MAX_ISSUES:-}" in '' | *[!0-9]*) echo "::error title=Issue labels::max-issues must be a whole number"; exit 1 ;; esac
+          if ! jq -e '.findings | type == "array"' "$AUDIT" >/dev/null 2>&1; then
+            echo "::error title=Issue labels::the audit result is missing or malformed; nothing was classified"
+            exit 1
+          fi
+          # Candidates: open issues the audit lists without a type or without a
+          # routing label, oldest first.
+          candidates="$(jq -r '[.findings[] | select(.type == "missing_type" or .type == "missing_routing") | .number]
+            | unique | .[]' "$AUDIT")"
+          total="$(grep -c . <<<"$candidates" || true)"
+          url="$SERVER_URL/$REPO"
+          rows="$RUNNER_TEMP/backfill-rows.md"
+          : >"$rows"
+          seen=0
+          labelled=0
+          while IFS= read -r n; do
+            [ -n "$n" ] || continue
+            [ "$seen" -lt "$MAX_ISSUES" ] || break
+            seen=$((seen + 1))
+            out="$RUNNER_TEMP/classify-$n.json"
+            if ! python3 .issue-labels/git-plugin/scripts/issue-labels.py classify --repo "$REPO" --issue "$n" \
+              --taxonomy-path "$TAXONOMY_PATH" >"$out" </dev/null; then
+              cat "$out"
+              echo "::error title=Issue labels::classify failed for #$n; stopped before labelling it"
+              exit 1
+            fi
+            if ! jq -e '.status == "OK" and (.add | type == "array") and all(.add[]; type == "string")' "$out" >/dev/null 2>&1; then
+              echo "::error title=Issue labels::the classify result for #$n is malformed; stopped before labelling it"
+              exit 1
+            fi
+            names="$(jq -r '.add | map("`" + . + "`") | join(", ")' "$out")"
+            if [ -z "$names" ]; then
+              verdict="nothing derived"
+            elif [ "${DRY_RUN:-}" != false ]; then
+              verdict="would add"
+              labelled=$((labelled + 1))
+            else
+              jq -c '{labels: .add}' "$out" | gh api -X POST "repos/$REPO/issues/$n/labels" --input - --silent
+              verdict="added"
+              labelled=$((labelled + 1))
+            fi
+            echo "#$n: $verdict${names:+ $names}"
+            printf '| [#%s](%s/issues/%s) | %s | %s |\n' "$n" "$url" "$n" "$verdict" "$names" >>"$rows"
+          done <<<"$candidates"
+          {
+            echo "## Label backfill"
+            echo
+            if [ "${DRY_RUN:-}" != false ]; then echo "Dry run: nothing was written."; echo; fi
+            echo "$total candidate(s) lack a type or routing label; $seen classified (max-issues: $MAX_ISSUES); $labelled with labels to add."
+            if [ "$seen" -gt 0 ]; then
+              echo
+              echo "| Issue | Result | Labels |"
+              echo "|---|---|---|"
+              cat "$rows"
+            fi
+          } >>"$GITHUB_STEP_SUMMARY"
+          echo "$total candidate(s), $seen classified, $labelled with labels to add."
