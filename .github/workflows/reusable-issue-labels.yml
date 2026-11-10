@@ -9,13 +9,13 @@ name: Issue Labels (Reusable)
 #   issues opened/reopened/edited    classify-issue: add the type and routing
 #                                    labels the title (and, with no routing
 #                                    label, the paths quoted in the body) point
-#                                    at. `edited` is skipped for an issue a bot
-#                                    opened.
+#                                    at. `edited` is skipped when a bot made
+#                                    the edit (the event's sender).
 #   issues closed                    unblock: remove `blocked` from each open
 #                                    issue this one was blocking whose
 #                                    blocked_by issues are now all closed.
 #   pull_request opened/             classify-pr: add the type label from the
-#     synchronize/reopened           title and a routing label per changed
+#     synchronize/reopened/edited    title and a routing label per changed
 #                                    file. Skipped for fork PRs, Dependabot,
 #                                    heads matching `skip-heads`, and when
 #                                    `pr-labels` is false.
@@ -58,7 +58,9 @@ name: Issue Labels (Reusable)
 #     nothing and says so in a notice.
 #
 # The rolling audit issue is found by its exact title ("Issue label audit")
-# among open issues, and filed only when the audit has findings. A later audit
+# among open issues that github-actions[bot] opened, so an issue someone else
+# opens with that title is never adopted. It is filed only when the audit has
+# findings. A later audit
 # whose set of findings differs comments on it; an unchanged set posts nothing.
 # Close it by hand; the next audit with findings files a new one. It lists
 # issue numbers inside a code block so that no listed issue gains a
@@ -87,7 +89,7 @@ name: Issue Labels (Reusable)
 #     issues:
 #       types: [opened, reopened, edited, closed]
 #     pull_request:
-#       types: [opened, synchronize, reopened]
+#       types: [opened, synchronize, reopened, edited]
 #     push:
 #       branches: [main]
 #       paths: [.github/issue-labels.json]
@@ -231,7 +233,7 @@ jobs:
     if: >-
       github.event_name == 'issues' &&
       (github.event.action == 'opened' || github.event.action == 'reopened' ||
-      (github.event.action == 'edited' && github.event.issue.user.type != 'Bot'))
+      (github.event.action == 'edited' && github.event.sender.type != 'Bot'))
     runs-on: ubuntu-slim
     timeout-minutes: 5
     permissions:
@@ -303,9 +305,11 @@ jobs:
   classify-pr:
     name: Label the pull request
     # A fork PR and a Dependabot run both get a read-only GITHUB_TOKEN.
+    # `edited` re-classifies after a title change; the steps read the title
+    # and the changed files by PR number, so no step depends on a new head.
     if: >-
       github.event_name == 'pull_request' && inputs.pr-labels &&
-      contains(fromJSON('["opened", "synchronize", "reopened"]'), github.event.action) &&
+      contains(fromJSON('["opened", "synchronize", "reopened", "edited"]'), github.event.action) &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.actor != 'dependabot[bot]' &&
       github.event.pull_request.user.login != 'dependabot[bot]'
@@ -571,9 +575,13 @@ jobs:
             echo "<!-- issue-labels-audit: $sig -->"
           } >"$body"
 
+          # Only an issue this workflow filed: GITHUB_TOKEN's author reads as
+          # `app/github-actions` in `gh issue list --json author`. Anyone can
+          # open an issue with the same title on a public repository.
           find_open_issue() {
-            gh issue list --repo "$REPO" --state open --limit 1000 --json number,title \
-              | jq -r --arg t "$AUDIT_TITLE" '[.[] | select(.title == $t) | .number] | min // empty'
+            gh issue list --repo "$REPO" --state open --limit 1000 --json number,title,author \
+              | jq -r --arg t "$AUDIT_TITLE" '[.[] | select(.title == $t and .author.login == "app/github-actions")
+                | .number] | min // empty'
           }
           existing="$(find_open_issue)"
 
@@ -618,10 +626,15 @@ jobs:
 
           # Its own labels and assignee, so the next audit does not list it.
           # Only labels the repository has: the API would create a missing one.
-          have="$(gh label list --repo "$REPO" --limit 500 --json name)"
+          # The issue exists now, so a failure from here on is a warning: an
+          # exit would leave it unassigned, and a re-run posts nothing.
+          if ! have="$(gh label list --repo "$REPO" --limit 500 --json name)"; then
+            echo "::warning title=Issue labels::listing the repository's labels failed; #$issue gets no labels"
+            have='[]'
+          fi
           want="$(jq -c --arg l "$AUDIT_LABELS" '[.[].name | ascii_downcase] as $have
             | $l | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))
-            | map(select(ascii_downcase as $w | $have | index($w)))' <<<"$have")"
+            | map(select(ascii_downcase as $w | $have | index($w)))' <<<"$have" 2>/dev/null)" || want='[]'
           if [ "$(jq 'length' <<<"$want")" -gt 0 ]; then
             jq -c '{labels: .}' <<<"$want" | gh api -X POST "repos/$REPO/issues/$issue/labels" --input - --silent \
               || echo "::warning title=Issue labels::adding labels to #$issue failed"
