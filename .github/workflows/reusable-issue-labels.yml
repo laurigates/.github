@@ -129,9 +129,9 @@ on:
         description: 'laurigates/claude-plugins commit that provides git-plugin/scripts/issue-labels.py'
         required: false
         type: string
-        # laurigates/claude-plugins#3569 (git-plugin issue-labels.py). Bump by hand
+        # laurigates/claude-plugins#3584 (git-plugin issue-labels.py). Bump by hand
         # when the script changes; Renovate does not track a `with: ref:` pin.
-        default: '2a46797490f5fe50e3f56ccc7818c839e4cf838c'
+        default: '92c522687867db37a1741214f7ecb480c914cfce'
       dry-run:
         description: 'Print what would change and write nothing'
         required: false
