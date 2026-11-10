@@ -195,6 +195,62 @@ Both need the `OPENCODE_API_KEY` secret, which gitops pushes to repos flagged `o
 
 ### Other
 
+- **`reusable-issue-labels.yml`** — keeps issue and PR labels in step with a repository's label taxonomy, with no model. Every decision is `git-plugin/scripts/issue-labels.py` from laurigates/claude-plugins at the commit pinned in the `plugins-ref` input; the vocabulary and who sets and clears each label are in `git-plugin/skills/github-labels/SKILL.md` there and, in short form, in `.rulesync/rules/github-metadata-hygiene.md` here. The caller's event picks the job:
+
+  | Caller event | Job | Does |
+  |---|---|---|
+  | `push` to the default branch | `provision` | Creates, updates or renames the `build:` and `area:` labels that `.github/issue-labels.json` defines. Deletes nothing. No taxonomy file: a notice, exit 0 |
+  | `issues` opened, reopened, edited | `classify-issue` | Adds the type and routing labels the title points at, or with no routing label the paths the body quotes. `edited` is skipped when a bot made the edit (the event's `sender`) |
+  | `issues` closed | `unblock` | Removes `blocked` from each open issue this one was blocking whose `blocked_by` issues are all closed |
+  | `pull_request` opened, synchronize, reopened, edited | `classify-pr` | Adds the type label from the title and a routing label per changed file; `edited` re-classifies after a title change. Skipped for fork PRs, Dependabot, heads matching `skip-heads` (default `release-please--*`) and `pr-labels: false` |
+  | `schedule`, `workflow_dispatch` | `sweep` | `mode: audit` writes the findings to the job summary and to one rolling `Issue label audit` issue; `mode: backfill` classifies open issues that lack a type or routing label, oldest first, at most `max-issues` (25) per run |
+
+  The model stage for issues the classifier leaves unlabelled is not built (#147). Six things not to re-derive:
+  - **Every write uses `github.token`, and that is what prevents a loop.** A label written with it starts no workflow, so neither this workflow nor a caller that listens for label events (merge-method) runs again. A PAT or App token here would make each label write an event
+  - **The calling repository is never checked out.** The only checkout is the script, from laurigates/claude-plugins. The taxonomy is read through the contents API at the default branch and titles and bodies through the API by number, so a pull request cannot change the taxonomy that labels it, and no `run:` body holds an expression. The head branch name reaches the `skip-heads` gate through `env:`
+  - **Additive, and only labels that exist.** The steps send `add` from the script's `classify` output and nothing else: a label whose group (type, or one routing prefix) is still empty on the item and which the repository has. Adding a missing label to an issue through REST would create it. The standard labels (`core:*`, `needs:*`, `blocked`, the type labels) come from laurigates/gitops `labels.tf`; `provision` writes `build:` and `area:` only. No step edits a title or body
+  - **A step writes only when `dry-run` is exactly `false`.** Any other value, an unset one included, prints what would change. For `provision` and `unblock` that is the script's `--dry-run`
+  - **One caller grant, narrower per job.** The caller grants `contents: read`, `issues: write`, `pull-requests: write`. A job that asks for more than the caller grants fails the run at startup on every event, including events that job does not run on, so a new scope here (`id-token: write` for a model stage) breaks every caller until each one grants it
+  - **The audit issue is filed once and commented on only when the findings change.** It is found by exact title among open issues opened by `github-actions[bot]` (`app/github-actions` in `gh issue list --json author`), so an issue anyone else opens with that title is not adopted. A hidden marker holds a hash of the (finding type, issue number) pairs, and a run whose hash equals the latest marker posts nothing. Issue numbers are in a code block, because a linked number would add a cross-reference to every listed issue on each report; the job summary has the links. It is closed by hand, and the next audit with findings files a new one
+
+  Caller (`.github/workflows/issue-labels.yml`). List the `types:` explicitly: a bare `issues:` also starts a run for every label event.
+
+  ```yaml
+  name: Issue labels
+  on:
+    issues:
+      types: [opened, reopened, edited, closed]
+    pull_request:
+      types: [opened, synchronize, reopened, edited]
+    push:
+      branches: [main]
+      paths: [.github/issue-labels.json]
+    schedule:
+      - cron: '17 5 * * 1'
+    workflow_dispatch:
+      inputs:
+        mode:
+          description: 'audit reports label gaps; backfill labels open issues that lack a type or routing label'
+          type: choice
+          options: [audit, backfill]
+          default: audit
+        dry-run:
+          description: 'Print what would change and write nothing'
+          type: boolean
+          default: true
+  permissions:
+    contents: read
+    issues: write
+    pull-requests: write
+  jobs:
+    issue-labels:
+      uses: laurigates/.github/.github/workflows/reusable-issue-labels.yml@main
+      with:
+        mode: ${{ inputs.mode || 'audit' }}
+        dry-run: ${{ inputs.dry-run || false }}
+  ```
+
+  `.github/tests/issue-labels/run.sh` (`just test issue-labels`) checks the parsed workflow for the token, expression, checkout, permission and write-call rules above, evaluates each job and step `if:` and concurrency group over a matrix of event contexts, then runs the extracted step bodies against a stub `gh` and a stand-in for the script. A reusable workflow cannot run in this repository's CI, so what only a caller's run can show is listed in #148
 - **`reusable-bun-ci.yml`** — pull-request gate for bun/TypeScript repos: one `ubuntu-latest` job (setup-bun downloads Bun, so not slim) that installs from `bun.lock` and runs the caller's own typecheck (opt-in), test and build commands, with an optional `coverage` artifact; no secrets, `contents: read`. Commands reach `eval` through `env:`, never `${{ inputs.* }}` in a `run:` body. Concurrency is job-level with a `bun-ci-` prefix, because a called workflow sees the caller's `github.workflow` and an equal group cancels the caller. `.github/tests/bun-ci/run.sh` (`just bun-ci`) runs the extracted steps against stub `bun`/`bunx`/`node`, checks every input is in README's `## Bun CI Workflow Inputs` table with its declared default, and holds a per-file baseline of `${{ inputs.* }}` in run bodies across *every* workflow: lower a count when a file is fixed, never raise one
 - **`reusable-sync-ai-rules.yml`** — syncs AI coding rules from this `.github` repo into calling repos via rulesync, creating a PR with tool-specific configs for Claude Code, Copilot, Antigravity CLI, and Cursor. Pass `app-id` + `APP_PRIVATE_KEY` to open that PR with an App token: `GITHUB_TOKEN` is refused outright in a repo where Actions may not create pull requests (GitHub's default), and a PR it does open triggers no CI. Both rulesync steps run one exact version (`npx rulesync@40.2.0`), never `@latest`: rulesync ships a major almost daily, and every caller runs this workflow at `@main` (`tool-pins`; see `.claude/rules/rulesync.md`)
 - **`reusable-renovate.yml`** — centralized Renovate runner. Auths via a GitHub App token when `app-id` is set (with `APP_PRIVATE_KEY` secret). Without `app-id` the job fails unless the caller sets `allow-github-token: true`: `GITHUB_TOKEN` cannot open a PR in a repo where Actions may not create pull requests, branches it pushes trigger no CI, and the silent fallback ran as a second Renovate beside the owner-wide App runner while staying green. Scopes targets via `repositories` or `autodiscover`/`autodiscover-filter` inputs (default: the calling repo only). `Build Renovate host rules` writes `RENOVATE_HOST_RULES` to `$GITHUB_ENV` with jq from `env:` (the Renovate step must not set it in its own `env:`, which would override it): a ghcr.io rule for container digest lookups, plus an `api.anthropic.com` rule only when the optional `ANTHROPIC_API_KEY` secret is set. That rule passes the key as `token`, which Renovate sends as `Authorization: Bearer` and redacts from logs, and sends the `anthropic-version` header (`ANTHROPIC_VERSION` in the step's `env:`). It sends no `anthropic-workspace-id`, so the key must be one created for a single workspace: the [API overview](https://platform.claude.com/docs/en/api/overview#authentication) marks that header "required with an API key that isn't scoped to a workspace", so lookups with an org-wide key are expected to fail (#140). Renovate's `applyHostRule` filters the headers of every host rule, global ones included, against `allowedHeaders` (default `["X-*"]`) and drops the rest with a `Disallowed hostRules headers` error, which makes the run exit 1, so the same branch also writes `RENOVATE_ALLOWED_HEADERS=["X-*","anthropic-version"]`; an env value overrides an `allowedHeaders` set in the caller's config file. Unset, the step writes only the ghcr.io rule, byte-identical to the old inline value. `renovate-host-rules` runs the extracted step with the secret unset, set and hostile (#135; the same step as ForumViriumHelsinki/.github#201)
