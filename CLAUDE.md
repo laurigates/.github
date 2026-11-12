@@ -71,6 +71,16 @@ Five things not to re-derive:
 
 The PR-phase build's scan is **advisory by default** (`scan-mode: advisory|block|off`) and is not the gate: a CVE published against an unchanged base would otherwise block every unrelated release, and the rebuild path exists precisely when the PR image is not what ships. `scan-mode` is validated at the top of the build job for the same reason `scan-enforcement` is — its `continue-on-error: ${{ inputs.scan-mode != 'block' }}` fails *open*, so an unvalidated `blocking`/`enforce`/`true` would silently downgrade a caller's blocking check to advisory.
 
+#### What a blocked release looks like in a consumer
+
+Read from laurigates/pal-mcp-server's tag-push runs (issue #62). Between v11.0.0 and v11.9.0 the gate blocked 8 of 12 releases, on the promote path (v11.9.0, `Total: 4 (HIGH: 4, CRITICAL: 0)`) and on the rebuild path (v11.8.1, `Total: 11 (HIGH: 8, CRITICAL: 3)`). Three things follow for a caller:
+
+- **A block leaves the git tag and the GitHub Release in place with no image.** `:next-{version}` is the only reference to that build, and `latest` stays on the last release that passed. The job summary's `Publication: BLOCKED` line renders, because the scan step still writes `result=findings` before it fails
+- **Re-running the job cannot clear it.** The re-run scans the image built from the same tag, which carries the same lockfile. The fix is a refreshed lockfile or base image on the default branch and a new patch release
+- **The fix often lands under a hidden commit type.** A Renovate lock refresh is `chore(deps)`, which opens no release PR, so the clean lock stays unpublished until the next `feat` or `fix`. pal-mcp-server cut 11.8.2 and 11.9.1 with a `Release-As:` footer for this reason (`.rulesync/rules/commit-and-release.md`)
+
+The release PR's `build / build` job scans `:next-{version}` before the merge, and its log shows the result. That scan covers the same image the tag run promotes when the build context is unchanged. A lockfile audit on every PR (pip-audit, or `reusable-security-deps.yml`'s osv-scanner job) reports the finding earlier still.
+
 ### Release Automation
 
 - **`reusable-release-please.yml`** — wraps `googleapis/release-please-action`, requires a PAT (`MY_RELEASE_PLEASE_TOKEN`) since GITHUB_TOKEN can't trigger downstream workflows. Carries a **missed-release guard**: when the action reports neither `prs_created` nor `releases_created`, a follow-up step compares `github.event.before...github.sha` via the GitHub compare API and annotates (or fails, per `missed-release-check`) if the range held commits matching `releasable-types`. This exists because release-please's conventional-commit parser can throw on a squash body — repos with `squash_merge_commit_message = PR_BODY` inherit the PR description as the commit body, and a fenced code block there discards *every* commit in the range while the run stays green (issue #40). The guard only catches the all-or-nothing case; the root-cause fix is per-repo `squash_merge_commit_message = COMMIT_MESSAGES` in gitops
