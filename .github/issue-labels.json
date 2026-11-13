@@ -1,7 +1,7 @@
 {
   "$comment": "Label taxonomy read by .github/workflows/issue-labels.yml (git-plugin/scripts/issue-labels.py in laurigates/claude-plugins). area entries own their label's colour and description; core entries replace the script's built-in globs key by key. The reusable workflows are this repository's product, so each family is an area and core:ci is narrowed to the repository's own CI. .github/tests/issue-labels-taxonomy/run.sh checks every glob and scope, and that every reusable workflow and test is routed.",
   "area": {
-    "claude": {
+    "claude-workflows": {
       "description": "Claude-powered workflows: mentions, review, auto-fix, conflict resolution, changelog triage",
       "color": "0e8a16",
       "paths": [
@@ -227,6 +227,7 @@
       ],
       "scopes": [
         "claude-md",
+        "claude",
         "skills",
         "mcp"
       ]
