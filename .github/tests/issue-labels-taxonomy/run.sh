@@ -7,14 +7,19 @@
 # stale entry routes nothing and reports nothing. Assertions:
 #
 #   1. Schema: the rules issue-labels.py's check_taxonomy applies with
-#      for_provision=True. A taxonomy it rejects fails provision and every
-#      classify run.
+#      for_provision=True, and a description on every build and area entry
+#      (the script allows none). A taxonomy the script rejects fails provision
+#      and every classify run.
 #   2. Pattern forms: no `[`, `]`, `{`, `}` or backslash, and `**` only as a
 #      whole path segment. git's glob pathspec and the script's glob_regex
 #      read those forms alike, so check 3 can use git instead of a copy of
 #      the script's matcher.
-#   3. Every glob matches a tracked file (`git ls-files -- ':(glob)<p>'`).
-#   4. Every scope selects one label. An entry's key is one of its scopes;
+#   3. Every glob matches a tracked file as a whole path
+#      (`git ls-files -- ':(glob)<p>'`). A pathspec that names a directory
+#      also lists the files under it, which the script does not match, so
+#      those are dropped first.
+#   4. Every scope selects one label. An entry's key is one of its scopes, as
+#      is the key of a built-in core entry the taxonomy does not override;
 #      scopes compare lowercased with whitespace runs collapsed.
 #   5. Tripwire: every tracked .github/workflows/reusable-*.yml / .yaml,
 #      .github/actions/*/action.yml and .github/tests/*/run.sh is matched by
@@ -69,6 +74,19 @@ def tracked(pattern):
     return {f for f in out.stdout.split("\0") if f}
 
 
+def whole(pattern):
+    """Tracked files the glob matches as whole paths, as the script matches.
+
+    git also lists every file under a directory the pathspec names
+    (':(glob)profile' lists profile/README.md), while the script's glob_regex
+    matches only a path equal to the pattern. Those files are dropped.
+    """
+    files = tracked(pattern)
+    if pattern == "**" or pattern.endswith("/**"):
+        return files
+    return files - tracked(pattern + "/**")
+
+
 def norm(text):
     return " ".join(text.lower().split())
 
@@ -92,6 +110,7 @@ FIELDS = {
     "core": {"paths", "scopes"},
 }
 entries = []  # (where, entry) for every well-formed entry
+renamed = {}  # old label name -> the entry that renames it
 for section, items in tax.items():
     if section.startswith(("$", "_")):
         continue
@@ -125,6 +144,12 @@ for section, items in tax.items():
             old = entry.get("renamed_from")
             check(old is None or (isinstance(old, str) and old.strip()),
                   f"{where}.renamed_from must be a label name or null")
+            if isinstance(old, str) and old.strip():
+                # One label is renamed once: the script rejects a second entry
+                # that names the same old label.
+                first = renamed.setdefault(norm(old), where)
+                check(first == where,
+                      f"{where}.renamed_from: {old.strip()!r} is already renamed by {first}")
         entries.append((where, entry))
 check(entries, f"{path} defines no entries")
 
@@ -144,15 +169,20 @@ for where, g in globs:
     check(all(s == "**" for s in segments),
           f"{where}: glob {g!r} has '**' inside a path segment; use it only as a whole segment")
 
-# 3. Every glob matches a tracked file.
+# 3. Every glob matches a tracked file as a whole path.
 routed = set()
 for where, g in globs:
-    hits = tracked(g)
-    check(hits, f"{where}: glob {g!r} matches no tracked file")
+    hits = whole(g)
+    check(hits, f"{where}: glob {g!r} matches no tracked file as a whole path")
     routed |= hits
 
-# 4. Every scope selects one label.
+# 4. Every scope selects one label. The script's DEFAULT_CORE gives ci, agent,
+# build, quality and docs an entry even when the taxonomy lists none, and an
+# entry's key is one of its scopes.
 owner = {}
+for key in ("ci", "agent", "build", "quality", "docs"):
+    if key not in (tax.get("core") if isinstance(tax.get("core"), dict) else {}):
+        owner.setdefault(key, []).append(f"core.{key} (built in)")
 for where, entry in entries:
     key = where.split(".", 1)[1]
     for scope in {norm(key), *(norm(s) for s in strings(entry, "scopes"))}:
