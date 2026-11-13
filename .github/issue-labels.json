@@ -1,0 +1,254 @@
+{
+  "$comment": "Label taxonomy read by .github/workflows/issue-labels.yml (git-plugin/scripts/issue-labels.py in laurigates/claude-plugins). area entries own their label's colour and description; core entries replace the script's built-in globs key by key. The reusable workflows are this repository's product, so each family is an area and core:ci is narrowed to the repository's own CI. .github/tests/issue-labels-taxonomy/run.sh checks every glob and scope, and that every reusable workflow and test is routed.",
+  "area": {
+    "claude": {
+      "description": "Claude-powered workflows: mentions, review, auto-fix, conflict resolution, changelog triage",
+      "color": "0e8a16",
+      "paths": [
+        ".github/workflows/reusable-claude.yml",
+        ".github/workflows/reusable-claude-review.yml",
+        ".github/workflows/reusable-auto-fix.yml",
+        ".github/workflows/reusable-auto-resolve-conflicts.yml",
+        ".github/workflows/reusable-changelog-review.yml",
+        ".github/tests/claude-*/**",
+        ".github/tests/auto-fix-dedup/**",
+        ".github/tests/auto-resolve-stacked/**",
+        ".github/tests/conflict-mergeable-wait/**",
+        ".github/tests/changelog-review-*/**"
+      ],
+      "scopes": [
+        "reusable-claude",
+        "reusable-claude-review",
+        "claude-review",
+        "reusable-auto-fix",
+        "auto-fix",
+        "reusable-auto-resolve-conflicts",
+        "auto-resolve-conflicts",
+        "reusable-changelog-review",
+        "changelog-review"
+      ]
+    },
+    "analysis": {
+      "description": "Security, quality and accessibility scans",
+      "color": "0e8a16",
+      "paths": [
+        ".github/workflows/reusable-security-*.yml",
+        ".github/workflows/reusable-quality-*.yml",
+        ".github/workflows/reusable-a11y-*.yml",
+        "scripts/check-publish-drift.sh",
+        ".github/tests/actor-guard/**",
+        ".github/tests/analysis-*/**",
+        ".github/tests/changed-files-pathspec/**",
+        ".github/tests/deps-lockfile-gate/**",
+        ".github/tests/event-guard/**",
+        ".github/tests/gitleaks-guard/**",
+        ".github/tests/incremental-rescan/**",
+        ".github/tests/osv-scanner-job/**",
+        ".github/tests/publish-findings/**",
+        ".github/tests/ts-critical-patterns/**"
+      ],
+      "scopes": [
+        "analysis scans",
+        "security-secrets",
+        "reusable-security-secrets",
+        "security-deps",
+        "reusable-security-deps",
+        "security-owasp",
+        "reusable-security-owasp",
+        "quality-typescript",
+        "reusable-quality-typescript",
+        "quality-code-smell",
+        "reusable-quality-code-smell",
+        "quality-async",
+        "reusable-quality-async",
+        "a11y",
+        "gitleaks",
+        "osv-scanner"
+      ]
+    },
+    "release": {
+      "description": "Release automation: release-please, PR titles, merge method, npm publish, image updater",
+      "color": "0e8a16",
+      "paths": [
+        ".github/workflows/reusable-release-please.yml",
+        ".github/workflows/reusable-fix-release-conflicts.yml",
+        ".github/workflows/reusable-clear-autorelease-labels.yml",
+        ".github/workflows/reusable-enforce-conventional-commits.yml",
+        ".github/workflows/reusable-merge-method.yml",
+        ".github/workflows/reusable-npm-publish.yml",
+        ".github/workflows/reusable-auto-merge-image-updater.yml",
+        ".github/actions/squash-message-check/**",
+        ".github/tests/squash-message-check/**",
+        ".github/tests/merge-method/**",
+        ".github/tests/fix-release-conflicts-token-scopes/**",
+        ".github/tests/auto-merge-retry/**",
+        ".github/tests/conflict-mergeable-wait/**"
+      ],
+      "scopes": [
+        "release-please",
+        "reusable-release-please",
+        "fix-release-conflicts",
+        "reusable-fix-release-conflicts",
+        "clear-autorelease-labels",
+        "enforce-conventional-commits",
+        "reusable-enforce-conventional-commits",
+        "merge-method",
+        "reusable-merge-method",
+        "squash-message-check",
+        "npm-publish",
+        "auto-merge-image-updater"
+      ]
+    },
+    "container": {
+      "description": "Container build, vulnerability scan and release",
+      "color": "0e8a16",
+      "paths": [
+        ".github/workflows/reusable-container-*.yml",
+        ".github/actions/scan-image/**",
+        ".github/tests/container-release-tags/**"
+      ],
+      "scopes": [
+        "scan-image",
+        "container-build",
+        "reusable-container-build",
+        "container-release",
+        "reusable-container-release"
+      ]
+    },
+    "opencode": {
+      "description": "OpenCode PR review and mention workflows",
+      "color": "0e8a16",
+      "paths": [
+        ".github/workflows/reusable-opencode*.yml",
+        ".github/tests/opencode-review/**"
+      ],
+      "scopes": [
+        "opencode-review",
+        "reusable-opencode",
+        "reusable-opencode-review"
+      ]
+    },
+    "renovate": {
+      "description": "Reusable Renovate runner and this repository's Renovate config",
+      "color": "0e8a16",
+      "paths": [
+        ".github/workflows/reusable-renovate.yml",
+        "renovate.json",
+        ".github/tests/renovate-*/**"
+      ],
+      "scopes": [
+        "reusable-renovate"
+      ]
+    },
+    "issue-labels": {
+      "description": "Reusable issue-labels workflow",
+      "color": "0e8a16",
+      "paths": [
+        ".github/workflows/reusable-issue-labels.yml",
+        ".github/tests/issue-labels/**"
+      ],
+      "scopes": [
+        "reusable-issue-labels"
+      ]
+    },
+    "rulesync": {
+      "description": "Rule source synced to consumer repos, and the sync workflow",
+      "color": "0e8a16",
+      "paths": [
+        ".rulesync/**",
+        "rulesync.jsonc",
+        ".github/workflows/reusable-sync-ai-rules.yml",
+        ".github/tests/sync-ai-rules-targets/**",
+        ".github/tests/rulesync-ignore/**"
+      ],
+      "scopes": [
+        "sync-ai-rules",
+        "reusable-sync-ai-rules",
+        "rules"
+      ]
+    },
+    "bun-ci": {
+      "description": "Reusable bun and TypeScript CI gate",
+      "color": "0e8a16",
+      "paths": [
+        ".github/workflows/reusable-bun-ci.yml",
+        ".github/tests/bun-ci/**"
+      ],
+      "scopes": [
+        "reusable-bun-ci"
+      ]
+    },
+    "community": {
+      "description": "Default community health files, issue and PR templates, profile page",
+      "color": "0e8a16",
+      "paths": [
+        "CODE_OF_CONDUCT.md",
+        "CONTRIBUTING.md",
+        "SECURITY.md",
+        "SUPPORT.md",
+        "profile/**",
+        ".github/ISSUE_TEMPLATE/**",
+        ".github/PULL_REQUEST_TEMPLATE.md"
+      ],
+      "scopes": [
+        "templates",
+        "profile"
+      ]
+    }
+  },
+  "core": {
+    "ci": {
+      "paths": [
+        ".github/workflows/lint.yml",
+        ".github/workflows/claude.yml",
+        ".github/workflows/merge-method.yml",
+        ".github/workflows/issue-labels.yml",
+        ".github/issue-labels.json",
+        ".github/tests/run.sh",
+        ".github/tests/README.md",
+        ".github/tests/runner/**",
+        ".github/tests/workflow-contract/**",
+        ".github/tests/tool-pins/**",
+        ".github/tests/portable-sed/**",
+        ".github/tests/issue-labels-taxonomy/**"
+      ],
+      "scopes": [
+        "lint",
+        "lint.yml",
+        "tests",
+        "sync"
+      ]
+    },
+    "agent": {
+      "paths": [
+        ".claude/**",
+        ".mcp.json",
+        "CLAUDE.md"
+      ],
+      "scopes": [
+        "claude-md",
+        "skills",
+        "mcp"
+      ]
+    },
+    "build": {
+      "paths": [
+        "justfile",
+        ".editorconfig",
+        ".project-standards.yaml"
+      ],
+      "scopes": [
+        "just",
+        "justfile"
+      ]
+    },
+    "docs": {
+      "paths": [
+        "README.md"
+      ],
+      "scopes": [
+        "readme"
+      ]
+    }
+  }
+}

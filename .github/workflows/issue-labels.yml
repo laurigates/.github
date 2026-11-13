@@ -1,0 +1,54 @@
+name: Issue labels
+
+# Keeps issue labels in step with .github/issue-labels.json, without a model:
+# see reusable-issue-labels.yml for what each event runs and what the workflow
+# guarantees. The taxonomy is read from the default branch.
+#
+# Issues only. `pr-labels: false` and no `pull_request` trigger: whether pull
+# requests are labelled is decided after the mcu-tinkering-lab pilot
+# (laurigates/mcu-tinkering-lab#1066). With the job switched off, a
+# pull_request trigger would only start runs that skip every job. Turning PR
+# labelling on means adding the trigger and removing the input together.
+#
+# No `labeled` / `unlabeled` trigger: the reusable jobs ignore label events,
+# and each one would still start a run.
+#
+# The push paths include this file because provision runs on any push to
+# main. A manual run defaults to `dry-run: true`; every other event writes.
+#
+# `pull-requests: write` is granted although no job here uses it: the
+# reusable workflow's classify-pr job asks for it, and a caller that grants
+# less than any one job asks for fails at startup on every event.
+
+on:
+  issues:
+    types: [opened, reopened, edited, closed]
+  push:
+    branches: [main]
+    paths: [.github/issue-labels.json, .github/workflows/issue-labels.yml]
+  schedule:
+    - cron: '29 5 * * 1'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'audit reports label gaps; backfill labels open issues that lack a type or routing label'
+        type: choice
+        options: [audit, backfill]
+        default: audit
+      dry-run:
+        description: 'Print what would change and write nothing'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  issue-labels:
+    uses: laurigates/.github/.github/workflows/reusable-issue-labels.yml@main
+    with:
+      mode: ${{ inputs.mode || 'audit' }}
+      dry-run: ${{ inputs.dry-run || false }}
+      pr-labels: false
