@@ -75,7 +75,7 @@ jobs:
           echo "shellcheck: clean"
 
       - name: Publish-block drift check
-        run: bash scripts/check-publish-drift.sh 8
+        run: bash scripts/check-publish-drift.sh 7
 
       # This repo commits no generated rule copies, and generate must never
       # run at the root: CLAUDE.md is one of its targets. So the rule sources

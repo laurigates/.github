@@ -136,8 +136,8 @@ for WF in "${workflows[@]}"; do
   esac
 
   # 3. Every step between the guard and the analysis is gated too, so a
-  #    refused event runs nothing that could turn the job red (security-deps'
-  #    setup and audit steps, a checkout with full history, the diff).
+  #    refused event runs nothing that could turn the job red (a checkout
+  #    with full history, the diff).
   if [ "$idx_event" != "-1" ] && [ "$idx_analyze" != "-1" ]; then
     while IFS=$'\t' read -r i sname sif; do
       CASE="$WF_SHORT/pre-analyze[$i]"

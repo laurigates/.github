@@ -172,7 +172,7 @@ test *names:
 
 # Fail if the shared publish block has drifted between analysis workflows
 [group: "validate"]
-publish-drift count="8":
+publish-drift count="7":
     bash scripts/check-publish-drift.sh "{{count}}"
 
 # Run the publish-block renderer against its fixtures
