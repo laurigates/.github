@@ -44,6 +44,7 @@
         ".github/tests/incremental-rescan/**",
         ".github/tests/osv-scanner-job/**",
         ".github/tests/publish-findings/**",
+        ".github/tests/ruff-advisory/**",
         ".github/tests/ts-critical-patterns/**"
       ],
       "scopes": [
@@ -104,7 +105,8 @@
       "paths": [
         ".github/workflows/reusable-container-*.yml",
         ".github/actions/scan-image/**",
-        ".github/tests/container-release-tags/**"
+        ".github/tests/container-release-tags/**",
+        ".github/tests/container-promote-wait/**"
       ],
       "scopes": [
         "scan-image",
