@@ -262,7 +262,8 @@ grep -Fq '**Hits:** 23' "$TMP/run/summary" || fail "summary hit count"
 ok
 
 # Default cap: 10 annotations, the rest named in a notice; the summary keeps all.
-run "$R" 0 ANNOTATION_LIMIT=10
+# ANNOTATION_LIMIT is passed empty, so the 10 is the step's own default.
+run "$R" 0 ANNOTATION_LIMIT=
 eq "$(grep -c '^::warning ' "$S")" 10 "annotation cap"
 has "$S" "::notice::Ruff advisory lint: 13 further hit(s) appear in the job summary only." "cap notice"
 eq "$(grep -c '^| `' "$TMP/run/summary")" 23 "summary lists every hit"
@@ -280,6 +281,13 @@ has "$TMP/run/summary" '| `src/hits.py` | 34 | C901 | evil%  ::error::x \| col |
 jq '.output |= map(if .code == "C901" then .location.row = "34,col=1" else . end)' "$FIXTURE" > "$TMP/shape.json"
 run "$R" 0 STUB_RUFF_FIXTURE="$TMP/shape.json"
 has "$S" "${W}src/hits.py,title=ruff C901::\`branchy\` is too complex (11 > 10)" "non-numeric line dropped"
+
+# Nor is a zero or a negative one: an annotation line is 1 or more.
+for row in 0 -3; do
+  jq --argjson row "$row" '.output |= map(if .code == "C901" then .location.row = $row else . end)' "$FIXTURE" > "$TMP/shape.json"
+  run "$R" 0 STUB_RUFF_FIXTURE="$TMP/shape.json"
+  has "$S" "${W}src/hits.py,title=ruff C901::\`branchy\` is too complex (11 > 10)" "line $row dropped"
+done
 
 # A record for a path outside the checkout, which the step never gave ruff,
 # is not reported. The control appends the same record inside the checkout
