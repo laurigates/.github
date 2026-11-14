@@ -198,7 +198,7 @@ jobs:
           echo "run=true" >> "$GITHUB_OUTPUT"
 
       - name: Checkout repository
-        uses: actions/checkout@v6.1.0
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
         if: steps.gate.outputs.run == 'true'
@@ -207,7 +207,7 @@ jobs:
         id: claude
         if: steps.gate.outputs.run == 'true'
         continue-on-error: true
-        uses: anthropics/claude-code-action@v1.0.268
+        uses: anthropics/claude-code-action@c0949c50a78c1ec8ce2647db36629b870e715d0c # v1.0.268
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           claude_args: >-
@@ -288,7 +288,7 @@ jobs:
 
       - name: Post continuation comment on failure
         if: steps.claude.outcome == 'failure'
-        uses: actions/github-script@v7.1.0
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
         # The same rule for JavaScript: a `'` in the SDK's error text closed a
         # string literal in a script run with the job's github-token.
         env:
