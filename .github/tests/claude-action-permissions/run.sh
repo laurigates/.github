@@ -26,8 +26,9 @@
 #     tag mode on PR/issue events) or sets no `prompt` (mention mode), per
 #     src/modes/detector.ts.
 #
-#     Exempt by that rule: the eight analysis workflows (reusable-a11y-*,
-#     reusable-quality-*, reusable-security-*) and reusable-auto-fix.yml. They
+#     Exempt by that rule: the seven analysis workflows (reusable-a11y-*,
+#     reusable-quality-*, reusable-security-owasp and -secrets) and
+#     reusable-auto-fix.yml. They
 #     pass a `prompt` without `track_progress`, so they run in agent mode, where
 #     the CI server is only attempted when allowedTools names an
 #     `mcp__github_ci__*` tool; none does, so no probe runs and `actions: read`

@@ -60,7 +60,6 @@ reusable-npm-publish.yml 1
 reusable-quality-async.yml 1
 reusable-quality-code-smell.yml 1
 reusable-quality-typescript.yml 1
-reusable-security-deps.yml 2
 reusable-security-owasp.yml 1
 reusable-security-secrets.yml 1'
 

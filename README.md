@@ -43,8 +43,13 @@ Call these from any repo using `uses: laurigates/.github/.github/workflows/<name
 | Workflow | Description |
 |----------|-------------|
 | `reusable-security-secrets.yml` | Detect leaked secrets and credentials |
-| `reusable-security-deps.yml` | Dependency vulnerability audit |
 | `reusable-security-owasp.yml` | OWASP Top 10 static analysis |
+
+### Security (no model)
+
+| Workflow | Description |
+|----------|-------------|
+| `reusable-security-deps.yml` | Dependency vulnerability audit with osv-scanner: each advisory group and its CVSS score in the job summary and as annotations; outputs `vulnerabilities` and `critical` (CVSS 7.0 or higher); `fail-on-high` fails the run on a critical one. Needs no secret |
 
 ### Quality (Claude-powered)
 

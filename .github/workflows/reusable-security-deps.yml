@@ -1,773 +1,96 @@
 name: Dependency Security Audit (Reusable)
 
 # Triggers: call this from a `pull_request` workflow. That is the only event
-# with a diff range, so the only one that audits just the lockfiles a change
-# touched; workflow_dispatch and schedule audit every lockfile present. push,
-# and every other event anthropics/claude-code-action rejects, is refused
-# green with a notice and audits nothing (laurigates/.github#63).
+# with a diff range, so the only one that skips a PR whose change touches no
+# lockfile; every other event (push, workflow_dispatch, schedule) scans every
+# lockfile and manifest present.
+#
+# The Claude dependency analysis (the `audit` job) was removed in #94; the
+# osv-scanner job below is the whole workflow. The inputs it no longer reads
+# and CLAUDE_CODE_OAUTH_TOKEN stay declared, as no-ops, because a caller that
+# passes an input or secret this workflow does not declare fails at startup.
 on:
   workflow_call:
     inputs:
       package-manager:
-        description: 'Package manager to audit (npm, bun, pnpm, yarn, pip, cargo)'
+        description: 'Deprecated, ignored since the Claude analysis was removed (#94); osv-scanner reads every lockfile it recognises'
         required: false
         type: string
         default: 'npm'
       max-turns:
-        description: 'Maximum Claude analysis turns'
+        description: 'Deprecated, ignored since the Claude analysis was removed (#94)'
         required: false
         type: number
         default: 50
       model:
-        description: 'Claude model to use'
+        description: 'Deprecated, ignored since the Claude analysis was removed (#94)'
         required: false
         type: string
-        default: 'claude-opus-5-5'
+        default: ''
       effort:
-        description: "Claude effort level, passed as --effort. Set to '' to omit the flag"
+        description: 'Deprecated, ignored since the Claude analysis was removed (#94)'
         required: false
         type: string
         default: 'low'
       allowed-bots:
-        description: "Comma-separated bot usernames allowed to trigger analysis, or '*' for any bot. Defaults to '*' because dependency PRs are bot-authored and re-runs replay the original bot-sender event"
+        description: 'Deprecated, ignored since the Claude analysis was removed (#94); osv-scanner runs for every actor'
         required: false
         type: string
         default: '*'
       use-sticky-comment:
-        description: "Forwarded to claude-code-action's use_sticky_comment. This workflow publishes findings to the job summary and file annotations, never a PR comment"
+        description: 'Deprecated, ignored since the Claude analysis was removed (#94)'
         required: false
         type: boolean
         default: true
       max-budget-usd:
-        description: 'Maximum spend per run in USD (0 = no budget limit)'
+        description: 'Deprecated, ignored since the Claude analysis was removed (#94)'
         required: false
         type: number
-        # Non-zero by default: an unbounded budget lets a retry loop burn
-        # indefinitely. Observed 32 turns / $2.30 on one run, most of it the
-        # model retrying a tool call it was never permitted to make.
         default: 5
       timeout-minutes:
-        description: 'Job timeout in minutes'
+        description: 'Deprecated, ignored since the Claude analysis was removed (#94); the osv-scanner job has its own 10-minute timeout'
         required: false
         type: number
         default: 30
       max-diff-lines:
-        description: 'Skip Claude analysis when the total PR diff exceeds this many lines (0 disables the gate)'
+        description: 'Deprecated, ignored since the Claude analysis was removed (#94)'
         required: false
         type: number
         default: 3000
       fail-on-high:
-        description: 'Fail workflow if high/critical vulnerabilities found'
+        description: 'Fail the workflow if osv-scanner reports an advisory group at CVSS 7.0 or higher'
         required: false
         type: boolean
         default: false
     outputs:
       vulnerabilities:
-        description: 'Total vulnerabilities found'
-        value: ${{ jobs.audit.outputs.count }}
+        description: 'Advisory groups osv-scanner found; empty when nothing was audited'
+        value: ${{ jobs.osv-scanner.outputs.vulnerabilities }}
       critical:
-        description: 'Critical/High severity vulnerabilities'
-        value: ${{ jobs.audit.outputs.critical }}
+        description: 'Advisory groups at CVSS 7.0 or higher; empty when nothing was audited'
+        value: ${{ jobs.osv-scanner.outputs.critical }}
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
-        required: true
+        description: 'Deprecated, ignored since the Claude analysis was removed (#94)'
+        required: false
 
 permissions:
   contents: read
-  pull-requests: write
-  id-token: write
 
 jobs:
-  audit:
-    runs-on: ubuntu-latest
-    timeout-minutes: ${{ inputs.timeout-minutes }}
-    outputs:
-      count: ${{ steps.publish.outputs.count_total_vulnerabilities }}
-      critical: ${{ steps.publish.outputs.count_critical_high }}
-    steps:
-      # anthropics/claude-code-action v1 throws `Unsupported event type` for
-      # any event outside the `switch (context.eventName)` in its
-      # src/github/context.ts (lines 170-251 when this list was taken; @v1
-      # floats, so re-check there before adding an event). Without this step
-      # a push ran the action into that throw and failed red in a way that
-      # reads like a finding (laurigates/.github#63). Every step up to the
-      # analysis compares `supported == 'true'`, so an unset output fails
-      # closed. The step only decides: the shared 'Report that nothing was
-      # scanned' step publishes the notice and the job-summary line.
-      - name: Check trigger is supported
-        id: event
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-        run: |
-          set -euo pipefail
-          case "${EVENT_NAME:-}" in
-            issues | issue_comment | pull_request | pull_request_target | pull_request_review | pull_request_review_comment | workflow_dispatch | repository_dispatch | schedule | workflow_run)
-              echo "supported=true" >> "$GITHUB_OUTPUT"
-              ;;
-            *)
-              { echo "supported=false"; echo "unsupported=${EVENT_NAME:-unknown}"; } >> "$GITHUB_OUTPUT"
-              echo "Trigger '${EVENT_NAME:-unknown}' is rejected by anthropics/claude-code-action; skipping everything up to the analysis."
-              ;;
-          esac
-
-      # claude-code-action refuses a bot actor that allowed-bots does not
-      # list ("Workflow initiated by non-human actor"), and the refusal
-      # failed this job red on every Renovate PR without Claude running. This
-      # step applies the action's rule first: a login ending in [bot] is a
-      # bot, names compare lowercase with the [bot] suffix and surrounding
-      # spaces dropped, and '*' admits every bot. A refused actor skips
-      # everything up to the analysis, and the shared 'Report that nothing
-      # was scanned' step says why. The action itself decides by account
-      # type, so a bot whose login lacks the suffix still reaches it.
-      # The PR author gets the same rule: the action checks only the actor,
-      # so a human reopening or pushing to a bot's PR (the claude-config-sync
-      # App's, which touches only .claude/** and .mcp.json) would otherwise
-      # run Claude on it (laurigates/gitops#341).
-      - name: Check actor is allowed
-        id: actor
-        if: steps.event.outputs.supported == 'true'
-        env:
-          ACTOR: ${{ github.actor }}
-          AUTHOR: ${{ github.event.pull_request.user.login }}
-          ALLOWED_BOTS: ${{ inputs.allowed-bots }}
-        run: |
-          set -euo pipefail
-          trim() { local s="$1"; s="${s#"${s%%[![:space:]]*}"}"; printf '%s' "${s%"${s##*[![:space:]]}"}"; }
-          # allowed <login>: true for a login without the [bot] suffix (an
-          # empty one included: no PR author outside a PR event), and for a
-          # bot that allowed-bots lists.
-          allowed() {
-            local login name bot bots
-            login="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
-            name="${login%\[bot\]}"
-            if [ "$name" = "$login" ]; then return 0; fi
-            if [ "$(trim "${ALLOWED_BOTS:-}")" = '*' ]; then return 0; fi
-            IFS=, read -r -a bots <<<"$(printf '%s' "${ALLOWED_BOTS:-}" | tr '[:upper:]' '[:lower:]')"
-            for bot in "${bots[@]}"; do
-              bot="$(trim "$bot")"
-              bot="${bot%\[bot\]}"
-              if [ -n "$bot" ] && [ "$bot" = "$name" ]; then return 0; fi
-            done
-            return 1
-          }
-          # A login is [A-Za-z0-9-] plus the suffix; anything else is dropped
-          # before it reaches GITHUB_OUTPUT or a workflow command.
-          shown() { printf '%s' "$1" | tr -cd 'A-Za-z0-9_.[]-'; }
-          if ! allowed "${ACTOR:-}"; then
-            { echo "allowed=false"; echo "refused=$(shown "${ACTOR:-}")"; } >> "$GITHUB_OUTPUT"
-            echo "Actor '$(shown "${ACTOR:-}")' is a bot that allowed-bots does not list; skipping everything up to the analysis."
-          elif ! allowed "${AUTHOR:-}"; then
-            { echo "allowed=false"; echo "refused_author=$(shown "${AUTHOR:-}")"; } >> "$GITHUB_OUTPUT"
-            echo "PR author '$(shown "${AUTHOR:-}")' is a bot that allowed-bots does not list; skipping everything up to the analysis."
-          else
-            echo "allowed=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Checkout repository
-        if: steps.event.outputs.supported == 'true' && steps.actor.outputs.allowed == 'true'
-        uses: actions/checkout@v4.4.0
-        with:
-          fetch-depth: 0
-
-      - name: Check for lockfile changes
-        id: changed
-        if: steps.event.outputs.supported == 'true' && steps.actor.outputs.allowed == 'true'
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          BASE_REF: ${{ github.base_ref }}
-          MAX_DIFF_LINES: ${{ inputs.max-diff-lines }}
-        run: |
-          LOCKFILES="package-lock.json bun.lock bun.lockb pnpm-lock.yaml yarn.lock Cargo.lock requirements.txt poetry.lock Pipfile.lock uv.lock pyproject.toml"
-          CHANGED=""
-
-          if [ "$EVENT_NAME" = "pull_request" ]; then
-            for lockfile in $LOCKFILES; do
-              if git diff --name-only "origin/$BASE_REF...HEAD" | grep -q "$lockfile"; then
-                CHANGED="$CHANGED $lockfile"
-              fi
-            done
-          else
-            for lockfile in $LOCKFILES; do
-              if [ -f "$lockfile" ]; then
-                CHANGED="$CHANGED $lockfile"
-              fi
-            done
-          fi
-
-          # Only pull_request events have a base ref to diff against; the gate is inert otherwise
-          if [ "$EVENT_NAME" = "pull_request" ]; then
-            # numstat prints '-' for binary files; awk sums those as 0
-            DIFF_LINES=$(git diff --numstat "origin/$BASE_REF...HEAD" 2>/dev/null | awk '{s+=$1+$2} END {print s+0}' || true)
-          else
-            DIFF_LINES=0
-          fi
-
-          echo "lockfiles=$CHANGED" >> $GITHUB_OUTPUT
-          echo "diff_lines=$DIFF_LINES" >> $GITHUB_OUTPUT
-          if [ "$MAX_DIFF_LINES" -gt 0 ] && [ "$DIFF_LINES" -gt "$MAX_DIFF_LINES" ]; then
-            echo "skip=true" >> $GITHUB_OUTPUT
-          else
-            echo "skip=false" >> $GITHUB_OUTPUT
-          fi
-          if [ -n "$CHANGED" ]; then
-            echo "has_lockfiles=true" >> $GITHUB_OUTPUT
-          else
-            echo "has_lockfiles=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Diff-size skip notice
-        if: steps.event.outputs.supported == 'true' && steps.changed.outputs.skip == 'true' && steps.actor.outputs.allowed == 'true'
-        run: |
-          MSG="Dependency Security Audit: skipping Claude analysis — PR diff ${{ steps.changed.outputs.diff_lines }} lines exceeds max-diff-lines ${{ inputs.max-diff-lines }}"
-          echo "::notice::$MSG"
-          echo "$MSG" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Setup Node.js
-        if: steps.event.outputs.supported == 'true' && contains(fromJSON('["npm", "bun", "pnpm", "yarn"]'), inputs.package-manager) && steps.actor.outputs.allowed == 'true'
-        uses: actions/setup-node@v4.4.0
-        with:
-          node-version: '20.20.2'
-
-      - name: Setup Bun
-        if: steps.event.outputs.supported == 'true' && inputs.package-manager == 'bun' && steps.actor.outputs.allowed == 'true'
-        uses: oven-sh/setup-bun@v1.2.2
-
-      - name: Setup Python
-        if: steps.event.outputs.supported == 'true' && inputs.package-manager == 'pip' && steps.actor.outputs.allowed == 'true'
-        uses: actions/setup-python@v5.6.0
-        with:
-          python-version: '3.15.2'
-
-      - name: Setup Rust
-        if: steps.event.outputs.supported == 'true' && inputs.package-manager == 'cargo' && steps.actor.outputs.allowed == 'true'
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Run audit command
-        id: audit-cmd
-        if: steps.event.outputs.supported == 'true' && steps.actor.outputs.allowed == 'true'
-        continue-on-error: true
-        # stderr goes to audit-stderr.log, not into audit-results.json.
-        # pip-audit prints its summary line to stderr on every run, and npm,
-        # bun and cargo print their errors there, so with `2>&1` the results
-        # file was not JSON. 'Count audit vulnerabilities' parses it.
-        env:
-          PACKAGE_MANAGER: ${{ inputs.package-manager }}
-        run: |
-          case "$PACKAGE_MANAGER" in
-            npm)
-              npm audit --json > audit-results.json 2> audit-stderr.log || true
-              ;;
-            bun)
-              # bun audit reads bun.lock natively (Bun >=1.2.15); no install needed.
-              # npm audit ENOLOCKs here since the repo has no package-lock.json.
-              bun audit --json > audit-results.json 2> audit-stderr.log || true
-              ;;
-            pnpm)
-              pnpm audit --json > audit-results.json 2> audit-stderr.log || true
-              ;;
-            yarn)
-              yarn audit --json > audit-results.json 2> audit-stderr.log || true
-              ;;
-            pip)
-              # A bare `pip-audit` audits the runner's own environment, not
-              # the project. Audit the requirements file, else the project.
-              pip install pip-audit > /dev/null || { echo "::error::pip-audit failed to install"; exit 1; }
-              if [ -f requirements.txt ]; then
-                pip-audit -r requirements.txt --format json > audit-results.json 2> audit-stderr.log || true
-              elif [ -f pyproject.toml ]; then
-                pip-audit --format json . > audit-results.json 2> audit-stderr.log || true
-              else
-                echo "::warning::package-manager is pip, but there is no requirements.txt or pyproject.toml to audit"
-              fi
-              ;;
-            cargo)
-              # An install failure used to be discarded, and its error text
-              # reached Claude as "audit results".
-              cargo install --locked cargo-audit > /dev/null || { echo "::error::cargo-audit failed to install"; exit 1; }
-              cargo audit --json > audit-results.json 2> audit-stderr.log || true
-              ;;
-          esac
-
-          if [ -f audit-results.json ]; then
-            echo "results<<EOF" >> $GITHUB_OUTPUT
-            cat audit-results.json | head -c 10000 >> $GITHUB_OUTPUT
-            echo "EOF" >> $GITHUB_OUTPUT
-          fi
-
-      # Any non-empty audit output used to reach Claude: a report with zero
-      # vulnerabilities, and the error text of an audit that never ran (npm
-      # ENOLOCK). This step reads the vulnerability count from the report
-      # each manager prints (npm 11, pnpm 10, yarn 1, bun 1.4, pip-audit 2.10
-      # and cargo-audit 0.22; real output is in the deps-lockfile-gate
-      # fixtures), and Claude runs only when it is above 0. A failed audit
-      # step, empty output, output that is not JSON, and JSON with no count
-      # (an error object) fail the job instead of reaching the model. No
-      # file at all skips: only the pip branch writes none, after a warning.
-      - name: Count audit vulnerabilities
-        id: audit-count
-        if: steps.event.outputs.supported == 'true' && steps.actor.outputs.allowed == 'true' && steps.changed.outputs.has_lockfiles == 'true' && steps.changed.outputs.skip != 'true'
-        env:
-          PACKAGE_MANAGER: ${{ inputs.package-manager }}
-          AUDIT_OUTCOME: ${{ steps.audit-cmd.outcome }}
-        run: |
-          set -euo pipefail
-          RESULTS=audit-results.json
-          fail() {
-            echo "::error::Dependency Security Audit: $1. The audit failed, so nothing was sent to Claude."
-            # The prefix keeps an output line from being read as a workflow command.
-            if [ -s "$RESULTS" ]; then
-              echo "First 2000 bytes of $RESULTS:"
-              head -c 2000 "$RESULTS" | sed 's/^/  | /'
-              echo
-            fi
-            if [ -s audit-stderr.log ]; then
-              echo "Last 20 lines of the audit's stderr:"
-              tail -n 20 audit-stderr.log | sed 's/^/  | /'
-            fi
-            exit 1
-          }
-          if [ "${AUDIT_OUTCOME:-}" != success ]; then
-            fail "the audit command step ended '${AUDIT_OUTCOME:-unset}'"
-          fi
-          if [ ! -e "$RESULTS" ]; then
-            echo "The audit wrote no $RESULTS; skipping the analysis."
-            exit 0
-          fi
-          [ -s "$RESULTS" ] || fail "$PACKAGE_MANAGER audit printed nothing on stdout"
-          # yarn 1 prints one JSON value per line; -s reads them as one array.
-          jqr() {
-            if [ "$PACKAGE_MANAGER" = yarn ]; then jq -r -s "$1" "$RESULTS"; else jq -r "$1" "$RESULTS"; fi
-          }
-          jqr empty > /dev/null 2>&1 || fail "$RESULTS is not valid JSON"
-          case "$PACKAGE_MANAGER" in
-            npm | pnpm)
-              # npm's counts carry a total; pnpm's do not.
-              FILTER='.metadata.vulnerabilities | [to_entries[] | select(.key != "total") | .value] | add' ;;
-            yarn)
-              FILTER='[.[] | select(type == "object" and .type == "auditSummary")] | if length == 1 then [.[0].data.vulnerabilities[]] | add else null end' ;;
-            bun)
-              # One key per vulnerable package, each an array of advisories.
-              FILTER='if type == "object" and all(.[]; type == "array") then [.[] | length] | add // 0 else null end' ;;
-            pip)
-              FILTER='if (.dependencies | type) == "array" then [.dependencies[] | .vulns[]?] | length else null end' ;;
-            cargo)
-              FILTER='.vulnerabilities.count' ;;
-            *)
-              fail "no vulnerability count is defined for package-manager '$PACKAGE_MANAGER'" ;;
-          esac
-          COUNT="$(jqr "try ($FILTER) catch null" 2> /dev/null)" || COUNT=""
-          case "$COUNT" in
-            '' | *[!0-9]*) fail "$RESULTS carries no vulnerability count in the shape $PACKAGE_MANAGER audit prints" ;;
-          esac
-          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
-          echo "The audit reports $COUNT vulnerabilities."
-
-      - name: Claude Dependency Analysis
-        id: analyze
-        # has_lockfiles was computed and never read, so Claude ran on every
-        # PR (an audit error message also counts as results), lockfile or not.
-        # The count gate is numeric: a skipped count step leaves the output
-        # empty, which compares as 0.
-        if: steps.audit-cmd.outputs.results != '' && steps.audit-count.outputs.count > 0 && steps.changed.outputs.has_lockfiles == 'true' && steps.changed.outputs.skip != 'true' && steps.event.outputs.supported == 'true' && steps.actor.outputs.allowed == 'true'
-        # Failure here is classified by the 'Classify analysis outcome' step
-        # below rather than failing the job outright.
-        continue-on-error: true
-        uses: anthropics/claude-code-action@v1.0.268
-        with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          # Dependency PRs are bot-authored (Renovate, release-please). On a
-          # re-run GitHub replays the original pull_request event whose sender
-          # is the bot, so the action's human-actor guard blocks it without
-          # this. Audit-and-comment is read-only with a fixed prompt — safe.
-          allowed_bots: ${{ inputs.allowed-bots }}
-          use_sticky_comment: ${{ inputs.use-sticky-comment }}
-          claude_args: >-
-            --model ${{ inputs.model }}
-            ${{ inputs.effort != '' && format('--effort {0}', inputs.effort) || '' }}
-            --max-turns ${{ inputs.max-turns }}
-            ${{ inputs.max-budget-usd > 0 && format('--max-budget-usd {0}', inputs.max-budget-usd) || '' }}
-            --json-schema '{"type":"object","properties":{"total_vulnerabilities":{"type":"integer","description":"Total vulnerabilities found"},"critical_high":{"type":"integer","description":"Critical and high severity vulnerabilities"},"findings":{"type":"array","description":"Every issue found, most severe first","items":{"type":"object","properties":{"file":{"type":"string","description":"The lockfile or manifest that declares the vulnerable package"},"line":{"type":"integer"},"severity":{"type":"string","enum":["Critical","High","Medium","Low"]},"category":{"type":"string","description":"Package, version and advisory id, e.g. lodash@4.17.20 - GHSA-35jh-r3h4-6jhm"},"description":{"type":"string"},"remediation":{"type":"string"}},"required":["file","severity","category","description"]}}},"required":["total_vulnerabilities","critical_high","findings"]}'
-          prompt: |
-            Analyze the dependency security audit results for this project.
-
-            ## Package Manager
-            ${{ inputs.package-manager }}
-
-            ## Audit Results
-            ```json
-            ${{ steps.audit-cmd.outputs.results }}
-            ```
-
-            ## Changed Lockfiles
-            ${{ steps.changed.outputs.lockfiles }}
-
-            ## Analysis Instructions
-
-            For each vulnerability report:
-            - **Package** - Affected package name and version
-            - **Severity** - Critical / High / Moderate / Low
-            - **CVE/GHSA** - Identifier if available
-            - **Description** - Brief explanation of the vulnerability
-            - **Fixed Version** - Version that resolves the issue
-            - **Recommendation** - Upgrade command or action needed
-
-            Prioritize: Critical → High → Moderate → Low
-
-            Check transitive dependencies — identify the direct dep that pulls in vulnerable transitive deps.
-
-            ## Reporting
-
-            Report everything through the structured output fields -- that is
-            the only channel that reaches a human:
-
-            - total_vulnerabilities: all findings
-            - critical_high: critical plus high severity only
-            - findings: one entry per issue, most severe first, each with
-              file, line, severity, category, description and remediation.
-              category is the package with its advisory id; severity is Critical,
-              High, Medium or Low.
-
-            Every issue you count must also appear in findings. A count with
-            no matching entry is reported as an unreliable scan.
-
-            The workflow renders `findings` into the job summary and into file
-            annotations on the PR's Files tab. Do NOT try to post a PR comment
-            or use any GitHub write tool -- you have no permission to do so,
-            the attempt will be denied, and the finding will be lost. An issue
-            you report only in prose is an issue nobody will ever read.
-
-            npm's ladder has no Medium: map its `Moderate` to Medium.
-
-      # ---- BEGIN shared publish block (checked by scripts/check-publish-drift.sh) ----
-      # Findings reach humans through the job summary and file annotations,
-      # never a PR comment: the action is granted no comment tool, so asking
-      # Claude to post one gave it no tool to post with, and the findings
-      # were discarded (laurigates/.github#47). Both channels work with the
-      # permissions the job holds.
-      #
-      # Guard is `outcome != 'skipped'`, not `== 'success'`: a failed run can
-      # still carry findings. The action sets its `structured_output` output
-      # only on a clean success, so the block reads the last `result` message
-      # in the action's execution file instead, which recovers the payload
-      # from a result flagged is_error and from a success result the action
-      # rejects for overrunning --max-turns. An `error_*` result (max turns,
-      # budget) normally carries none and degrades below. Gating on success
-      # would discard exactly the findings that cost the most to produce.
-      #
-      # `steps.analyze` is the analysis STEP. Several of these workflows also
-      # name their JOB `analyze`; jobs and steps are separate namespaces, so
-      # this resolves to the step.
-      - name: Publish findings
-        id: publish
-        if: ${{ !cancelled() && steps.analyze.outcome != 'skipped' }}
-        env:
-          # A PATH, not the payload (laurigates/.github#61): an env string of
-          # 131072 bytes or more (MAX_ARG_STRLEN) fails the execve of this
-          # step's own shell with E2BIG before line 1 runs, and interpolating
-          # the payload into the script body is a shell injection. The file
-          # is the action's transcript, a JSON array of SDK messages.
-          EXECUTION_FILE: ${{ steps.analyze.outputs.execution_file }}
-          ANALYZE_OUTCOME: ${{ steps.analyze.outcome }}
-          TITLE: 'Dependency Security Audit'
-          BLOCKING_SEVERITIES: 'Critical,High'
-          COUNT_KEYS: 'total_vulnerabilities,critical_high'
-        run: |
-          set -euo pipefail
-          # GitHub discards a step summary over 1 MiB, silently. Cap below it.
-          # This is the real ceiling on rendered output: the payload travels
-          # as a file, never as an env or argv string, so the kernel's
-          # per-string MAX_ARG_STRLEN no longer bounds it.
-          SUMMARY_MAX_BYTES=900000
-          # GitHub surfaces at most 10 annotations per level per step and 50
-          # per job (actions/toolkit docs/problem-matchers.md); the summary
-          # always carries the complete list.
-          ANNOTATION_LIMIT=10
-
-          # The payload is the last `result` message's structured_output,
-          # extracted to a file once. The transcript also holds every tool
-          # result, so only that field is selected and nothing else of it is
-          # printed. `|| :` because an unreadable transcript must reach the
-          # degrade branch below, not abort the step under `set -e`.
-          PAYLOAD="$RUNNER_TEMP/publish-findings-input.json"
-          : > "$PAYLOAD"
-          if [ -n "${EXECUTION_FILE:-}" ] && [ -f "$EXECUTION_FILE" ]; then
-            jq -c 'if type == "array" then [.[] | objects | select(.type == "result")] | last | .structured_output // empty else empty end' "$EXECUTION_FILE" > "$PAYLOAD" 2>/dev/null || : > "$PAYLOAD"
-          fi
-
-          # jq exits 0 on empty input, so an unguarded run would publish
-          # nothing and say nothing -- the exact silence this block ends.
-          #
-          # `findings` is shape-checked here rather than inside each jq
-          # program: a non-array there aborts jq under `set -e` and takes the
-          # summary, the annotations AND the outputs down with it. Degrading
-          # to this branch reports the failure and still emits zeroed counts.
-          # It also writes `degraded=true`: zeroed counts skip every severity
-          # gate, so `Classify analysis outcome` fails a run whose analysis
-          # step SUCCEEDED (the action had a structured_output) but whose
-          # findings this block could not read. Only the success path writes
-          # `degraded=false`, so a step that aborted leaves it unset, which the
-          # verdict treats the same as `true`.
-          if [ ! -s "$PAYLOAD" ] || ! jq -e 'type == "object" and ((.findings // []) | type) == "array"' "$PAYLOAD" >/dev/null 2>&1; then
-            if [ -z "${EXECUTION_FILE:-}" ] || [ ! -f "$EXECUTION_FILE" ]; then
-              WHY="the action exposed no execution file"
-            else
-              WHY="absent, unparseable, or 'findings' not an array"
-            fi
-            MSG="$TITLE: the analysis step reported '${ANALYZE_OUTCOME}' and produced no usable structured output ($WHY), so no findings could be published."
-            echo "::warning::$MSG"
-            printf '## %s\n\n%s\n' "$TITLE" "$MSG" >> "$GITHUB_STEP_SUMMARY"
-            { printf 'blocking=0\nitemised=0\ndegraded=true\n'
-              printf '%s\n' "${COUNT_KEYS:-}" | tr ',' '\n' | sed '/^$/d;s/^/count_/;s/$/=0/'
-            } >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          if [ "$ANALYZE_OUTCOME" != "success" ]; then
-            MSG="$TITLE: the analysis step reported '${ANALYZE_OUTCOME}'; the findings below may be incomplete."
-            echo "::warning::$MSG"
-            printf '%s\n\n' "$MSG" >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-          # Counts render from whatever top-level numbers this workflow's
-          # schema declares, so this block stays byte-identical across every
-          # analysis workflow and the drift check can compare it.
-          # `sev as $s | $b | index($s)`: inside index(), the input is $b, so
-          # a bare `$b | index(sev)` silently reads $b.severity. Verified.
-          jq -r --arg title "$TITLE" --arg blocking "${BLOCKING_SEVERITIES:-}" '
-            def sev: .severity // "Unrated";
-            ($blocking | split(",") | map(select(length > 0))) as $b
-            | def rank: sev as $s | if ($b | index($s)) then 0 else 1 end;
-              ((.findings // []) | map(select(type == "object")) | sort_by(rank)) as $f
-            | "## \($title)", "",
-              (to_entries | map(select(.value | type == "number"))
-                | map("**\(.key | gsub("_"; " ")):** \(.value)")
-                | if length == 0 then "_No counts reported._" else join(" · ") end),
-              "",
-              (if ($f | length) == 0 then "No findings reported.", ""
-               else ($f | map(
-                 "### \(sev) — \(.category // "Uncategorised")", "",
-                 (if (.file // "") != "" then "`\(.file | ltrimstr("./"))\(if .line then ":\(.line)" else "" end)`", "" else empty end),
-                 (.description // "_no description supplied_"), "",
-                 (if (.remediation // "") != "" then "**Remediation:** \(.remediation)", "" else empty end)
-               ) | .[])
-               end)
-          ' "$PAYLOAD" > "$RUNNER_TEMP/publish-findings-summary.md"
-
-          if [ "$(wc -c < "$RUNNER_TEMP/publish-findings-summary.md")" -gt "$SUMMARY_MAX_BYTES" ]; then
-            head -c "$SUMMARY_MAX_BYTES" "$RUNNER_TEMP/publish-findings-summary.md" >> "$GITHUB_STEP_SUMMARY"
-            printf '\n\n_Summary truncated at %s bytes; remaining findings omitted._\n' "$SUMMARY_MAX_BYTES" >> "$GITHUB_STEP_SUMMARY"
-            echo "::warning::$TITLE: job summary truncated at $SUMMARY_MAX_BYTES bytes."
-          else
-            cat "$RUNNER_TEMP/publish-findings-summary.md" >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-          # File annotations render on the PR's Files tab with no comment
-          # permission. Payloads MUST be escaped: an unescaped newline splits
-          # the annotation, an unescaped % corrupts it, and an unescaped comma
-          # in the path breaks property parsing. `severity` is escaped along
-          # with the rest -- the schema's enum is a request to the model, not
-          # a constraint the runner applies, so a newline in it would emit a
-          # second line that GitHub parses as its own workflow command.
-          # `line` is type-checked rather than escaped: a string there injects
-          # further annotation properties (`line=1,col=9,endLine=99`), and jq
-          # truthiness admits `line=0`, which GitHub does not accept as an
-          # anchor.
-          jq -r --arg blocking "${BLOCKING_SEVERITIES:-}" --argjson limit "$ANNOTATION_LIMIT" '
-            def esc: tostring | gsub("%"; "%25") | gsub("\r"; "%0D") | gsub("\n"; "%0A");
-            def sev: .severity // "Unrated";
-            ($blocking | split(",") | map(select(length > 0))) as $b
-            | def rank: sev as $s | if ($b | index($s)) then 0 else 1 end;
-              ((.findings // []) | map(select(type == "object")) | sort_by(rank)) as $f
-            | ($f[:$limit][]
-               | (sev as $s | if ($b | index($s)) then "error" else "warning" end) as $lvl
-               | (if (.file // "") != "" then " file=\(.file | ltrimstr("./") | esc | gsub(","; "%2C"))\(if ((.line | type) == "number" and .line > 0) then ",line=\(.line)" else "" end)" else "" end) as $loc
-               | "::\($lvl)\($loc)::[\(sev | esc)] [\(.category // "Uncategorised" | esc)] \(.description // "no description" | esc)"),
-              (if ($f | length) > $limit then "::notice::\(($f | length) - $limit) further finding(s) appear in the job summary only." else empty end)
-          ' "$PAYLOAD"
-
-          # $GITHUB_OUTPUT is a `key=value` file, so a newline inside a count
-          # opens a second line: `total_issues` of "0\nblocking=0" would
-          # overwrite the blocking count a caller gates on. Counts are
-          # type-checked rather than escaped, because a count that is not a
-          # number is not a count.
-          jq -r --arg blocking "${BLOCKING_SEVERITIES:-}" --arg keys "${COUNT_KEYS:-}" '
-            . as $root
-            | def sev: .severity // "Unrated";
-              ($blocking | split(",") | map(select(length > 0))) as $b
-            | ((.findings // []) | map(select(type == "object"))) as $f
-            | "blocking=\($f | map(select(sev as $s | $b | index($s))) | length)",
-              "itemised=\($f | length)",
-              "degraded=false",
-              (($keys | split(",") | map(select(length > 0)) | .[]) | "count_\(.)=\(if ($root[.] | type) == "number" then $root[.] else 0 end)")
-          ' "$PAYLOAD" >> "$GITHUB_OUTPUT"
-
-      # A check that never ran reports 'pass'. Without this the green tick on
-      # a PR that matched no files is indistinguishable from a clean scan.
-      #
-      # `!failure()` as well as `!cancelled()`: a failed checkout or file-list
-      # step also leaves `analyze` skipped, and on that red job the message
-      # below would assert nothing matched, which is not what happened. The
-      # reason is passed in rather than inferred, because the gate that skips
-      # the analysis is not the same one in every workflow.
-      - name: Report that nothing was scanned
-        if: ${{ !cancelled() && !failure() && steps.analyze.outcome == 'skipped' }}
-        env:
-          TITLE: 'Dependency Security Audit'
-          SKIPPED_FOR_SIZE: ${{ steps.changed.outputs.skip }}
-          UNSUPPORTED_EVENT: ${{ steps.event.outputs.unsupported }}
-          REFUSED_ACTOR: ${{ steps.actor.outputs.refused }}
-          REFUSED_AUTHOR: ${{ steps.actor.outputs.refused_author }}
-          UNCHANGED_SINCE_CLEAN: ${{ steps.changed.outputs.unchanged }}
-          NOTHING_SCANNED_REASON: 'no lockfile changed, the audit reported no vulnerabilities, or the audit wrote no output'
-        run: |
-          set -euo pipefail
-          if [ -n "${UNSUPPORTED_EVENT:-}" ]; then
-            REASON="this workflow does not support the '$UNSUPPORTED_EVENT' trigger (anthropics/claude-code-action rejects it); call it from pull_request"
-          elif [ -n "${REFUSED_ACTOR:-}" ]; then
-            REASON="the actor '$REFUSED_ACTOR' is a bot that allowed-bots does not list, and anthropics/claude-code-action refuses it"
-          elif [ -n "${REFUSED_AUTHOR:-}" ]; then
-            REASON="the PR author '$REFUSED_AUTHOR' is a bot that allowed-bots does not list, so its PR is not analysed whoever triggered the run"
-          elif [ "${SKIPPED_FOR_SIZE:-false}" = "true" ]; then
-            REASON="the PR diff exceeded max-diff-lines, so the diff-size gate skipped the analysis"
-          elif [ "${UNCHANGED_SINCE_CLEAN:-}" = "true" ]; then
-            REASON="no PR file in the configured patterns changed since the previous head, which was scanned clean"
-          else
-            REASON="${NOTHING_SCANNED_REASON:-the analysis step did not run}"
-          fi
-          MSG="$TITLE: no analysis ran — $REASON. This check is green because nothing was scanned, not because nothing was found."
-          echo "::notice::$MSG"
-          printf '## %s\n\n%s\n' "$TITLE" "$MSG" >> "$GITHUB_STEP_SUMMARY"
-      # ---- END shared publish block ----
-
-      # The analysis step runs with continue-on-error, because the action
-      # fails it whenever --json-schema is set and a run that otherwise
-      # succeeded returns no structured_output (anthropics/claude-code-action
-      # base-action/src/run-claude-sdk.ts). Emission is not deterministic:
-      # the same SHA has produced it on one attempt and not the next
-      # (laurigates/.github#65).
-      # This step decides from Claude's own final `result` message, which the
-      # action writes to execution_file before that check and exposes on the
-      # failure path too, whether the job should go red:
-      #   success, is_error false, no structured_output -> warning, green
-      #   anything else that failed the analysis step    -> error, red
-      # A step that SUCCEEDED is red too when `Publish findings` reports
-      # `degraded` as anything but 'false'. Under --json-schema the action
-      # fails the step unless it had a structured_output, so a success that
-      # publish could not read is a read failure on this side (a reshaped
-      # transcript from the floating @v1, an unset execution_file), and its
-      # zeroed counts would otherwise skip every severity gate.
-      # Two edges, both deliberate:
-      # error_max_structured_output_retries (the model failed to produce
-      # schema-valid output) is red, like every other non-success subtype;
-      # and a success run with no structured_output is green even when it
-      # overran --max-turns (the action's own overrun check), because this
-      # step does not compare num_turns with max-turns.
-      # Outside the shared publish block on purpose, so the block stays
-      # byte-identical to the copies it is drift-checked against.
-      - name: Classify analysis outcome
-        id: verdict
-        if: ${{ !cancelled() && steps.analyze.outcome != 'skipped' }}
-        env:
-          EXECUTION_FILE: ${{ steps.analyze.outputs.execution_file }}
-          ANALYZE_OUTCOME: ${{ steps.analyze.outcome }}
-          PUBLISH_DEGRADED: ${{ steps.publish.outputs.degraded }}
-          TITLE: 'Dependency Security Audit'
-        run: |
-          set -euo pipefail
-          fail() {
-            echo "::error::$TITLE: $1"
-            printf '%s: %s\n' "$TITLE" "$1" >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          }
-
-          # A step that succeeded is classified by what publish read. Fail
-          # closed: only an explicit 'false' means its findings were published.
-          if [ "$ANALYZE_OUTCOME" = "success" ]; then
-            if [ "${PUBLISH_DEGRADED:-}" != "false" ]; then
-              fail "the analysis step succeeded, so the action had Claude's structured output, but the publish step could not read the findings from its execution file; the severity gates saw zeroed counts and cannot pass this run. The publish step's warning names the cause."
-            fi
-            exit 0
-          fi
-
-          if [ -z "${EXECUTION_FILE:-}" ] || [ ! -s "$EXECUTION_FILE" ]; then
-            fail "the analysis step reported '${ANALYZE_OUTCOME}' and left no execution file, so Claude produced no result. The cause is in the analysis step's log."
-          fi
-
-          # The file is a JSON array of SDK messages; the last `result`
-          # message is Claude's own account of how the run ended.
-          if ! RESULT="$(jq -c '[.[]? | objects | select(.type == "result")] | last // empty' "$EXECUTION_FILE" 2>/dev/null)"; then
-            fail "the analysis step reported '${ANALYZE_OUTCOME}' and its execution file is not a JSON array of SDK messages."
-          fi
-          if [ -z "$RESULT" ]; then
-            fail "the analysis step reported '${ANALYZE_OUTCOME}' and Claude never sent a result message (the SDK run was cut short). The cause is in the analysis step's log."
-          fi
-
-          # Every value interpolated into a workflow command is escaped: the
-          # SDK's error strings can carry newlines, and a newline would end
-          # the annotation and start a new command. `word` maps an empty
-          # value to 'unknown': tab is IFS whitespace, so `read` collapses
-          # an empty @tsv field and would shift every later field left.
-          read -r SUBTYPE IS_ERROR TURNS HAS_OUTPUT < <(printf '%s' "$RESULT" | jq -r '
-            def word: tostring | gsub("[^A-Za-z0-9_.-]"; "_") | if . == "" then "unknown" else . end;
-            [(.subtype // "unknown" | word), (.is_error == true), (.num_turns // "unknown" | word),
-             (has("structured_output") and .structured_output != null)] | @tsv')
-          ERRORS="$(printf '%s' "$RESULT" | jq -r '
-            (.errors // []) | map(tostring) | join("; ") | .[:500]
-            | gsub("%"; "%25") | gsub("\r"; "%0D") | gsub("\n"; "%0A")')"
-
-          if [ "$SUBTYPE" = "success" ] && [ "$IS_ERROR" = "false" ]; then
-            if [ "$HAS_OUTPUT" = "false" ]; then
-              MSG="$TITLE: Claude finished the analysis ($TURNS turns) but returned no structured output, so this run has no verdict and nothing was published. The job is not failed for a missing report; re-run it to get one."
-              echo "::warning::$MSG"
-              printf '%s\n' "$MSG" >> "$GITHUB_STEP_SUMMARY"
-              exit 0
-            fi
-            fail "Claude finished the analysis ($TURNS turns) with structured output, but the action failed the step anyway; the findings above were published from its execution file and may be incomplete. The analysis step's log names the reason (a run over --max-turns is one)."
-          fi
-
-          case "$SUBTYPE" in
-            error_max_turns)
-              fail "Claude stopped at the max-turns limit after $TURNS turns without finishing, so the scan is incomplete. Raise max-turns or narrow file-patterns." ;;
-            error_max_budget_usd)
-              fail "Claude stopped at the max-budget-usd ceiling after $TURNS turns without finishing, so the scan is incomplete. Raise max-budget-usd." ;;
-            success)
-              fail "Claude's result reported is_error, so the run errored without producing a real result.${ERRORS:+ Errors: $ERRORS}" ;;
-            *)
-              fail "Claude's run ended with result subtype '$SUBTYPE' after $TURNS turns.${ERRORS:+ Errors: $ERRORS}" ;;
-          esac
-
-      # Numeric comparison, never `!= '0'`: GitHub coerces the empty string a
-      # skipped publish step leaves behind to 0 for `>`, so this cannot fire on
-      # a PR that scanned nothing. It also carries no `always()`, so a failure
-      # upstream skips it rather than masking the real error. The analysis
-      # step is continue-on-error, so that failure is the Classify step's
-      # exit 1: keep this gate after it.
-      - name: Check for critical/high issues
-        if: inputs.fail-on-high && (steps.publish.outputs.blocking > 0 || steps.publish.outputs.count_critical_high > 0)
-        env:
-          BLOCKING: ${{ steps.publish.outputs.blocking }}
-          REPORTED: ${{ steps.publish.outputs.count_critical_high }}
-        run: |
-          set -euo pipefail
-          if [ "${BLOCKING:-0}" -gt 0 ]; then
-            echo "::error::Dependency audit: ${BLOCKING} critical/high finding(s) — annotated on the Files tab, full detail in the job summary."
-          else
-            echo "::error::Dependency audit reported ${REPORTED} critical/high vulnerabilities but itemised none of them. The scan did not establish anything; re-run it."
-          fi
-          exit 1
-
-  # Deterministic dependency audit beside the Claude analysis above.
   # osv-scanner reads the lockfiles and manifests it recognises
   # (package-lock.json, bun.lock, pnpm-lock.yaml, yarn.lock, Cargo.lock,
   # poetry.lock, uv.lock, requirements.txt, ...) and reports each known
-  # advisory with its CVSS score, which is what the Claude step restates from
-  # an audit tool's JSON. Like the Claude step, on a pull_request it runs only
-  # when a lockfile changed, and fails only when fail-on-high is set.
+  # advisory with its CVSS score. On a pull_request it runs only when a
+  # lockfile changed, and it fails only when fail-on-high is set.
   osv-scanner:
     runs-on: ubuntu-slim
     timeout-minutes: 10
     permissions:
       contents: read
+    outputs:
+      vulnerabilities: ${{ steps.scan.outputs.vulnerabilities }}
+      critical: ${{ steps.scan.outputs.critical }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -793,7 +116,10 @@ jobs:
 
       # osv-scanner exits 0 with no advisories, 1 with some, and 128 when it
       # finds no package source at all; anything else is a failed scan.
+      # The step writes the vulnerabilities/critical outputs only after a scan
+      # ran, so both are empty when nothing was audited.
       - name: Scan dependencies
+        id: scan
         env:
           EVENT_NAME: ${{ github.event_name }}
           BASE_REF: ${{ github.base_ref }}
@@ -840,6 +166,14 @@ jobs:
             | sort_by(-(.score // 0))' "$out" > "$RUNNER_TEMP/osv-rows.json"
           total="$(jq length "$RUNNER_TEMP/osv-rows.json")"
           high="$(jq '[.[] | select((.score // 0) >= 7)] | length' "$RUNNER_TEMP/osv-rows.json")"
+          # Both counts reach $GITHUB_OUTPUT and the shell's -gt tests, so
+          # anything but a plain integer (a newline would write a second
+          # key=value line) fails the step before either use.
+          if ! [[ "$total" =~ ^[0-9]+$ && "$high" =~ ^[0-9]+$ ]]; then
+            echo "::error::osv-scanner: the advisory counts are not integers; nothing was published."
+            exit 1
+          fi
+          { echo "vulnerabilities=${total}"; echo "critical=${high}"; } >> "$GITHUB_OUTPUT"
           {
             echo "## Dependency audit (osv-scanner)"
             echo ""

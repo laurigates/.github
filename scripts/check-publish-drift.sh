@@ -5,7 +5,7 @@
 # the ref a consumer pinned the reusable workflow to, because `uses:` does not
 # accept expressions -- so `laurigates/.github/.github/actions/...@main` would
 # execute at floating main even for a consumer who pinned by SHA, and one bad
-# push would break the renderer in eight workflows portfolio-wide with no way
+# push would break the renderer in seven workflows portfolio-wide with no way
 # to stage it. A script under .github/scripts/ is not an option either: these
 # jobs run actions/checkout with no `repository:`, so the workspace is the
 # CALLER's, not this repo's. Colocating the renderer with the schema it
@@ -19,7 +19,7 @@ cd "$(git rev-parse --show-toplevel)"
 
 BEGIN='      # ---- BEGIN shared publish block'
 END='      # ---- END shared publish block ----'
-expected="${1:-8}"
+expected="${1:-7}"
 # `[ "$found" -ne "$expected" ]` errors rather than fails on a non-integer,
 # and an errored condition inside `if` does not trip `set -e` -- so a
 # mistyped argument would skip the count assertion and still exit 0.
