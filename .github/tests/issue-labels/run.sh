@@ -628,11 +628,14 @@ case "$*" in
   "api --paginate repos/o/r/issues/"*"/comments?per_page=100 "*) printf '%s\n' "${STUB_COMMENTS:-}" ;;
   "api repos/o/r/issues/"*" --jq .body // \"\"") printf '%s\n' "${STUB_ISSUE_BODY:-}" ;;
   # STUB_TAXONOMY: present (default), absent (the 404 gh prints, as in
-  # cli/cli pkg/cmd/api/api.go: "gh: <message> (HTTP <code>)"), or error.
+  # cli/cli pkg/cmd/api/api.go: "gh: <message> (HTTP <code>)"), forbidden
+  # (403), unauthorized (401), or error (502).
   "api repos/o/r/contents/"*)
     case "${STUB_TAXONOMY:-present}" in
       present) ;;
       absent) echo 'gh: Not Found (HTTP 404)' >&2; exit 1 ;;
+      forbidden) echo 'gh: API rate limit exceeded for installation ID 12345. (HTTP 403)' >&2; exit 1 ;;
+      unauthorized) echo 'gh: Bad credentials (HTTP 401)' >&2; exit 1 ;;
       *) echo 'gh: Server Error (HTTP 502)' >&2; exit 1 ;;
     esac
     ;;
@@ -1183,6 +1186,16 @@ is "gh calls" "$LOG" "$TAX_READ"
 has "$OUT" '::error title=Issue labels::'
 has "$OUT" 'HTTP 502'
 is "summary" "$SUMMARY" ""
+# Nor is any other 4xx: a 403 (rate limit) or 401 must not read as "no file".
+for mode_code in forbidden:403 unauthorized:401; do
+  CASE="report-taxonomy-read-${mode_code%%:*}"
+  report "$AUDIT" DRY_RUN=false STUB_TAXONOMY="${mode_code%%:*}" STUB_ISSUE_LIST="$OURS_40"
+  rc_is 1
+  is "gh calls" "$LOG" "$TAX_READ"
+  has "$OUT" '::error title=Issue labels::'
+  has "$OUT" "HTTP ${mode_code#*:}"
+  is "summary" "$SUMMARY" ""
+done
 
 # ---- Sweep: backfill
 backfill() { # [VAR=value ...]; the audit result is $BACKFILL_AUDIT, else $AUDIT
