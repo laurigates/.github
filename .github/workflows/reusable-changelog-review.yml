@@ -483,7 +483,7 @@ jobs:
 
       - name: Triage changelog into a tracking issue
         id: triage
-        uses: anthropics/claude-code-action@v1.0.268
+        uses: anthropics/claude-code-action@v1.0.271
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # The agent only reads with it (`gh issue list`); every write happens
