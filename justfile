@@ -225,6 +225,11 @@ changelog-usage workflow=".github/workflows/reusable-changelog-review.yml":
 container-release-tags:
     bash .github/tests/container-release-tags/run.sh
 
+# Run reusable-container-release.yml's promote-wait step against stub gh, docker and a fake clock
+[group: "validate"]
+container-promote-wait:
+    bash .github/tests/container-promote-wait/run.sh
+
 # Run reusable-bun-ci.yml's extracted steps against stub bun, and the repo-wide inline-input baseline
 [group: "validate"]
 bun-ci:
