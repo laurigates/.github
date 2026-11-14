@@ -1,0 +1,55 @@
+import pprint
+
+
+class Widget:
+    def method(self, a, b, c, d):
+        return a
+
+
+def too_many(a, b, c, d, e):
+    return a
+
+
+def smells(x):
+    if x == 42:
+        print("hi")
+    pprint.pprint(x)
+    try:
+        x()
+    except ValueError:
+        pass
+    for _ in range(3):
+        try:
+            x()
+        except OSError:
+            continue
+    # x = compute(1, 2)
+    # TODO: fix this
+    # TODO(owner): tracked in https://example.invalid/issues/1
+    # FIXME: broken
+    print(x)  # noqa: T201
+    return x
+
+
+def branchy(a):
+    if a == 1:
+        return 1
+    elif a == 2:
+        return 2
+    elif a == 3:
+        return 3
+    elif a == 4:
+        return 4
+    elif a == 5:
+        return 5
+    elif a == 6:
+        return 6
+    elif a == 7:
+        return 7
+    elif a == 8:
+        return 8
+    elif a == 9:
+        return 9
+    elif a == 10:
+        return 10
+    return 0
