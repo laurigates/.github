@@ -214,7 +214,8 @@ while IFS= read -r f; do
   while IFS=$'\t' read -r ln ref; do
     [ -n "$ln" ] || continue
     uses_total=$((uses_total + 1))
-    if grep -qiE '^laurigates/\.github/\.github/(workflows|actions)/[A-Za-z0-9._/-]+@main$' <<<"$ref" \
+    # GitHub compares the owner and path without case; the ref must be exactly main.
+    if { [[ $ref == *@main ]] && grep -qiE '^laurigates/\.github/\.github/(workflows|actions)/[A-Za-z0-9._/-]+@main$' <<<"$ref"; } \
       || grep -qE '^\./' <<<"$ref"; then
       pass
       continue
@@ -224,7 +225,7 @@ while IFS= read -r f; do
       continue
     fi
     raw="$(sed -n "${ln}p" "$f")"
-    if grep -qE "uses:[[:space:]]*[\"']?${ref//./\\.}[\"']?[[:space:]]+#[[:space:]]*v?[0-9]+(\.[0-9]+)*([^0-9A-Za-z]|$)" <<<"$raw"; then
+    if grep -qE "uses:[[:space:]]*[\"']?${ref//./\\.}[\"']?[[:space:]]+#[[:space:]]+v[0-9]+(\.[0-9]+)*([^0-9A-Za-z]|$)" <<<"$raw"; then
       pass
     else
       fail "$f:$ln: uses $ref has no '# vX.Y.Z' version comment after the SHA"

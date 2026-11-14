@@ -58,7 +58,8 @@ fixture no-result.json "[$INIT,$ASSIST]"
 fixture not-json.txt 'Error: this is not JSON'
 fixture empty.json ''
 # The action's transcript in a shape this workflow does not read: an object
-# wrapping the messages. A floating @v1 could ship it, and the step still
+# wrapping the messages. A newer release of the action could ship it, and the
+# step still
 # reports success because the action itself found the structured_output.
 fixture reshaped.json "{\"messages\":[$INIT,{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"num_turns\":12,\"structured_output\":{\"total_issues\":2,\"critical_issues\":2,\"findings\":[{\"severity\":\"Critical\",\"category\":\"A03\",\"description\":\"sqli\"}]}}]}"
 

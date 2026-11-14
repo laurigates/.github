@@ -565,8 +565,8 @@ jobs:
       # `degraded` as anything but 'false'. Under --json-schema the action
       # fails the step unless it had a structured_output, so a success that
       # publish could not read is a read failure on this side (a reshaped
-      # transcript from the floating @v1, an unset execution_file), and its
-      # zeroed counts would otherwise skip every severity gate.
+      # transcript from a newer release of the action, an unset execution_file),
+      # and its zeroed counts would otherwise skip every severity gate.
       # Two edges, both deliberate:
       # error_max_structured_output_retries (the model failed to produce
       # schema-valid output) is red, like every other non-success subtype;
