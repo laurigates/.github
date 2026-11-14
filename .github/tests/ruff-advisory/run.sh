@@ -15,14 +15,18 @@
 #     an unchanged file with hits, a deleted file, a symlink and a non-.py
 #     file are not, and only the changed .py files reach ruff;
 #   - a parse error (`invalid-syntax`) is not reported as a hit;
-#   - paths and messages with %, CR, LF, `,` or `:` are escaped, a leading
-#     dash reaches ruff after `--`, and every stdout line is one command;
+#   - paths and messages with %, CR, LF, `,` or `:` are escaped, a pipe in a
+#     summary cell is escaped, a leading dash reaches ruff after `--`, and
+#     every stdout line is one command;
+#   - a record for a path outside the checkout is dropped, against a control
+#     record inside it that is reported;
+#   - ruff runs with exactly the three pinned --config values;
 #   - $GITHUB_OUTPUT holds exactly the fixed keys with numeric counts;
 #   - the annotation cap and its notice;
 #   - no download without a changed .py file; a checksum mismatch and an
-#     unreadable pull-request range fail; a failed download, a ruff crash
-#     and non-JSON output warn and stay green, with ruff's stderr fenced
-#     by stop-commands;
+#     unreadable pull-request range fail; a failed download, a ruff crash,
+#     non-JSON output and a non-zero exit with valid JSON warn and stay
+#     green, with ruff's stderr fenced by stop-commands;
 #   - workflow_dispatch diffs HEAD~1, and with no HEAD~1 scans nothing;
 #   - the step is wired: id, if:, env bindings, no `${{` in the body, and it
 #     runs between the `changed` step and the analysis.
@@ -100,6 +104,10 @@ grep -Fq -- "--config 'lint.pylint.max-args = 4'" <<<"$BODY" || fail "step does 
 ok
 grep -Fq 'more than 4 parameters' <<<"$BLOCK" || fail "prompt does not state more than 4 parameters"
 ok
+# TD003 reports TODO, FIXME and XXX (the fixture records all three), so the
+# prompt must name all three.
+grep -Fq '`TD003`: a TODO, FIXME or XXX comment' <<<"$BLOCK" || fail "prompt does not name the three tags TD003 reports"
+ok
 grep -Fq -- '--isolated' <<<"$BODY" || fail "step does not ignore the caller's ruff configuration"
 ok
 
@@ -110,7 +118,10 @@ printf '%s\n' "$BODY" > "$TMP/step.sh"
 
 # Stub ruff: logs its argv, then replays the recorded output for the files
 # it was given. STUB_RUFF_MODE=crash prints a workflow command to stderr and
-# exits 2; =garbage prints text that is not JSON.
+# exits 2; =garbage prints text that is not JSON; =jsonfail prints the replay,
+# valid JSON, and exits 2. STUB_RUFF_EXTRA names a JSON array of records
+# appended to the replay unfiltered, with @ROOT@ in a filename replaced by
+# the checkout, so a record whose path the step was not given reaches it.
 PKG="$TMP/pkg/ruff-x86_64-unknown-linux-gnu"
 mkdir -p "$PKG"
 cat > "$PKG/ruff" <<'SH'
@@ -128,9 +139,12 @@ for a in "$@"; do
   if $seen; then files+=("$a"); elif [ "$a" = "--" ]; then seen=true; fi
 done
 root="$(pwd -P)/"
-printf '%s\0' "${files[@]}" | jq -sR --arg root "$root" --slurpfile fx "$STUB_RUFF_FIXTURE" '
+extra="${STUB_RUFF_EXTRA:-/dev/null}"
+printf '%s\0' "${files[@]}" | jq -sR --arg root "$root" --slurpfile fx "$STUB_RUFF_FIXTURE" --slurpfile extra "$extra" '
   (split("\u0000") | map(select(length > 0)) | map($root + .)) as $files
-  | [$fx[0].output[] | .filename |= sub("^@ROOT@/"; $root) | select(.filename as $f | $files | index([$f]))]'
+  | [$fx[0].output[] | .filename |= sub("^@ROOT@/"; $root) | select(.filename as $f | $files | index([$f]))]
+    + [($extra[0] // [])[] | .filename |= sub("^@ROOT@/"; $root)]'
+if [ "${STUB_RUFF_MODE:-}" = jsonfail ]; then exit 2; fi
 SH
 chmod +x "$PKG/ruff"
 tar -czf "$TMP/good.tgz" -C "$TMP/pkg" ruff-x86_64-unknown-linux-gnu
@@ -205,6 +219,12 @@ grep -Fxq -- "$SELECT" <<<"$(awk 'prev == "--select" { print } { prev = $0 }' <<
 ok
 grep -Fxq -- 'json' <<<"$(awk 'prev == "--output-format" { print } { prev = $0 }' <<<"$ARGS")" || fail "ruff not run with --output-format json"
 ok
+# The pinned settings, read from ruff's argv. Without check-typed-exception,
+# S110 and S112 do not fire on a typed `except X: pass`, and Claude has been
+# told to leave those ids alone, so neither would report it.
+eq "$(awk 'prev == "--config" { print } { prev = $0 }' <<<"$ARGS" | LC_ALL=C sort | tr '\n' '|')" \
+  "lint.flake8-bandit.check-typed-exception = true|lint.mccabe.max-complexity = 10|lint.pylint.max-args = 4|" \
+  "ruff --config values"
 
 has "$S" "${W}-dash.py,line=1,title=ruff T201::\`print\` found" "leading-dash file"
 has "$S" "${W}src/100%25%2Ca%3Ab.py,line=1,title=ruff T201::\`print\` found" "% , : escaped in path"
@@ -218,6 +238,7 @@ has "$S" "${W}src/hits.py,line=24,title=ruff S112::\`try\`-\`except\`-\`continue
 has "$S" "${W}src/hits.py,line=26,title=ruff ERA001::Found commented-out code" "ERA001"
 has "$S" "${W}src/hits.py,line=27,title=ruff TD003::Missing issue link for this TODO" "TD003 TODO"
 has "$S" "${W}src/hits.py,line=29,title=ruff TD003::Missing issue link for this TODO" "TD003 FIXME"
+has "$S" "${W}src/hits.py,line=58,title=ruff TD003::Missing issue link for this TODO" "TD003 XXX"
 has "$S" "${W}src/hits.py,line=34,title=ruff C901::\`branchy\` is too complex (11 > 10)" "C901"
 hasnt "$S" "src/hits.py,line=30," "noqa line"
 hasnt "$S" "old.py" "unchanged file with hits"
@@ -227,39 +248,53 @@ hasnt "$S" "invalid-syntax" "parse error code"
 hasnt "$S" "gone.py" "deleted file"
 hasnt "$S" "link.py" "symlink"
 hasnt "$S" "skip.js" "non-.py file"
-eq "$(grep -c '^::warning ' "$S")" 22 "warning count"
+eq "$(grep -c '^::warning ' "$S")" 23 "warning count"
 hasnt "$S" "::notice::" "no cap notice under the limit"
 eq "$(grep -vc '^::' "$S" || true)" 0 "every stdout line is a workflow command"
 eq "$(cut -d= -f1 "$O" | LC_ALL=C sort | tr '\n' ' ')" "hit_count hits " "output keys"
-has "$O" "hit_count=22" "hit_count"
+has "$O" "hit_count=23" "hit_count"
 has "$O" "hits=true" "hits"
 grep -Fq '| `src/hits.py` | 34 | C901 | '"'"'branchy'"'"' is too complex (11 > 10) |' "$TMP/run/summary" || { cat "$TMP/run/summary" >&2; fail "summary row"; }
 ok
 grep -Fq '| `src/new line.py` | 1 |' "$TMP/run/summary" || fail "summary does not flatten a newline in a path"
 ok
-grep -Fq '**Hits:** 22' "$TMP/run/summary" || fail "summary hit count"
+grep -Fq '**Hits:** 23' "$TMP/run/summary" || fail "summary hit count"
 ok
 
 # Default cap: 10 annotations, the rest named in a notice; the summary keeps all.
 run "$R" 0 ANNOTATION_LIMIT=10
 eq "$(grep -c '^::warning ' "$S")" 10 "annotation cap"
-has "$S" "::notice::Ruff advisory lint: 12 further hit(s) appear in the job summary only." "cap notice"
-eq "$(grep -c '^| `' "$TMP/run/summary")" 22 "summary lists every hit"
+has "$S" "::notice::Ruff advisory lint: 13 further hit(s) appear in the job summary only." "cap notice"
+eq "$(grep -c '^| `' "$TMP/run/summary")" 23 "summary lists every hit"
 
-# A hostile message, derived from a real record: escaped, one line.
-jq '.output |= map(if .code == "C901" then .message = "evil%\r\n::error::x" else . end)' "$FIXTURE" > "$TMP/hostile.json"
+# A hostile message, derived from a real record: escaped, one line, and a
+# pipe cannot add a column to the summary table.
+jq '.output |= map(if .code == "C901" then .message = "evil%\r\n::error::x | col" else . end)' "$FIXTURE" > "$TMP/hostile.json"
 run "$R" 0 STUB_RUFF_FIXTURE="$TMP/hostile.json"
-has "$S" "${W}src/hits.py,line=34,title=ruff C901::evil%25%0D%0A::error::x" "hostile message escaped"
+has "$S" "${W}src/hits.py,line=34,title=ruff C901::evil%25%0D%0A::error::x | col" "hostile message escaped"
 eq "$(grep -vc '^::' "$S" || true)" 0 "hostile message stays one command"
 hasnt "$TMP/run/summary" $'evil%\r' "summary flattens CR"
+has "$TMP/run/summary" '| `src/hits.py` | 34 | C901 | evil%  ::error::x \| col |' "summary escapes a pipe in a cell"
 
-# A record with a non-numeric line, or a path outside the checkout, is not
-# anchored to a line / not reported.
-jq '.output |= map(if .code == "C901" then .location.row = "34,col=1" elif .code == "T203" then .filename = "/etc/passwd" else . end)' "$FIXTURE" > "$TMP/shape.json"
+# A record with a non-numeric line is not anchored to a line.
+jq '.output |= map(if .code == "C901" then .location.row = "34,col=1" else . end)' "$FIXTURE" > "$TMP/shape.json"
 run "$R" 0 STUB_RUFF_FIXTURE="$TMP/shape.json"
 has "$S" "${W}src/hits.py,title=ruff C901::\`branchy\` is too complex (11 > 10)" "non-numeric line dropped"
-hasnt "$S" "T203" "path outside the checkout"
-has "$O" "hit_count=21" "hit_count without the outside path"
+
+# A record for a path outside the checkout, which the step never gave ruff,
+# is not reported. The control appends the same record inside the checkout
+# and shows that an appended record does reach the annotations.
+jq '[.output[] | select(.code == "C901") | .filename = "/etc/passwd"]' "$FIXTURE" > "$TMP/outside.json"
+jq '[.output[] | select(.code == "C901") | .filename = "@ROOT@/src/extra.py"]' "$FIXTURE" > "$TMP/inside.json"
+[ "$(jq length "$TMP/outside.json")" = 1 ] || fail "outside.json does not hold one record"
+ok
+run "$R" 0 STUB_RUFF_EXTRA="$TMP/inside.json"
+has "$S" "${W}src/extra.py,line=34,title=ruff C901::\`branchy\` is too complex (11 > 10)" "control: an appended record inside the checkout is reported"
+has "$O" "hit_count=24" "control hit_count"
+run "$R" 0 STUB_RUFF_EXTRA="$TMP/outside.json"
+hasnt "$S" "passwd" "path outside the checkout annotated"
+hasnt "$TMP/run/summary" "passwd" "path outside the checkout in the summary"
+has "$O" "hit_count=23" "hit_count without the outside path"
 
 # A checksum mismatch fails and runs nothing.
 run "$R" 1 RUFF_SHA256="$(printf '0%.0s' {1..64})"
@@ -288,9 +323,19 @@ grep -q '^::warning::Ruff advisory lint: ruff exited 0 or wrote output that is n
 ok
 has "$O" "hits=false" "garbage hits"
 
+# A non-zero exit with valid JSON on stdout is still a ruff failure: under
+# --exit-zero a hit exits 0, so its output is not reported.
+run "$R" 0 STUB_RUFF_MODE=jsonfail
+jq -se 'length == 1 and (.[0] | type == "array" and length > 0)' "$TMP/run/ruff-raw.json" > /dev/null || fail "jsonfail: the stub did not write valid JSON"
+ok
+grep -q '^::warning::Ruff advisory lint: ruff exited 123 ' "$S" || { cat "$S" >&2; fail "jsonfail warning"; }
+ok
+hasnt "$S" "$W" "jsonfail: no hit annotated"
+has "$O" "hit_count=0" "jsonfail hit_count"
+
 # workflow_dispatch diffs HEAD~1: the same files, the same hits.
 run "$R" 0 EVENT_NAME=workflow_dispatch BASE_REF=
-has "$O" "hit_count=22" "workflow_dispatch hit_count"
+has "$O" "hit_count=23" "workflow_dispatch hit_count"
 
 # No changed .py file: nothing downloaded, zero counts.
 git -C "$R" update-ref refs/remotes/origin/main HEAD

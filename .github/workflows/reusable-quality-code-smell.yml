@@ -281,8 +281,13 @@ jobs:
       # the prompt lists exactly these ids as not to report or count, and
       # .github/tests/ruff-advisory/run.sh fails when the two differ.
       # `--isolated` ignores the calling repository's ruff configuration,
-      # which the pull request controls and which could deselect a rule
-      # Claude has been told to leave alone; `# noqa` comments still apply.
+      # which the pull request controls. The command-line --select and
+      # --config already override its select, ignore and thresholds; they do
+      # not override per-file-ignores, exclude with force-exclude,
+      # dummy-variable-rgx (exempts PLR0913 arguments) or
+      # pylint.allow-magic-value-types (exempts PLR2004 literals), each of
+      # which drops hits Claude has been told to leave alone. `# noqa`
+      # comments still apply.
       # The thresholds are pinned for the same reason the prompt states
       # them. It lists the PR's files itself rather than reading
       # steps.changed.outputs.files: that list is narrowed on a push after a
@@ -490,7 +495,7 @@ jobs:
             - `PLR2004`: a numeric literal other than 0, 1 or -1 in a comparison
             - `S110`, `S112`: an `except` clause whose body is only `pass` or only `continue`
             - `T201`, `T203`: `print()` and `pprint()` calls
-            - `TD003`: a TODO or FIXME comment without an issue link
+            - `TD003`: a TODO, FIXME or XXX comment without an issue link
             - `ERA001`: commented-out code
             Every other smell below in a `.py` file, and every smell in a file that is not `.py`, is still yours to report.
 
