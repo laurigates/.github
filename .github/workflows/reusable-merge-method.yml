@@ -50,10 +50,10 @@ on:
         description: 'laurigates/claude-plugins commit that provides git-plugin/scripts/pr-merge-method.py'
         required: false
         type: string
-        # laurigates/claude-plugins main on 2026-11-13 (git-plugin pr-merge-method.py
-        # with rule 8 leaving convention files and merge=union paths out of its
-        # overlap count, claude-plugins#3373). Bump by hand when the rule table
-        # changes; Renovate does not track a `with: ref:` pin.
+        # A laurigates/claude-plugins commit. renovate.json proposes the head of
+        # its main in a weekly "claude-plugins plugins-ref" PR (#109); before
+        # merging one, re-read the KEY=VALUE lines the publish step reads from
+        # pr-merge-method.py (STATUS, METHOD, OVERRIDE, RULE, REASON, ...).
         default: 'b47840019d190aa9afa1fd8d6d42ddd584a45641'
 
 permissions:
