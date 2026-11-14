@@ -27,28 +27,17 @@ Apply at creation time, and backfill gaps when commenting on or reviewing existi
 | Type label | Match the linked issue's labels; add a type label if missing |
 | Linked issue | Reference the issue being addressed with `Closes #N` (or `Fixes #N`) in the PR body |
 
-**Self-review guard:** GitHub rejects a review request for the PR's own author with HTTP 422. Check the author first, and request reviewers in a separate `gh` call from the other metadata so one rejection does not fail the whole update.
+**Self-review guard:** requesting a review from the PR's author fails with HTTP 422. Check the author first, and request reviewers in a `gh` call separate from the other metadata, so one rejection does not fail the whole update.
 
-### Label conventions
+### Labels
 
-| Label | When |
-|-------|------|
-| `bug` | Defect or broken behavior |
-| `enhancement` | New feature or improvement to existing feature |
-| `chore` | Maintenance, dependency updates, refactoring |
-| `docs` | Documentation changes |
-| `security` | Security-related fixes or improvements |
-| `refactor` | Code restructure with no behavior change |
+Check the repo's labels with `gh label list --limit 500` before applying (the default page of 30 makes a later label read as missing). Do not invent labels.
 
-Check available labels with `gh label list --limit 500` before applying (the default page is 30 labels, so one past it reads as missing) — do not invent labels that don't exist in the repo.
-
-### Label prefixes
-
-A repo that uses the prefix taxonomy keeps its `build:` and `area:` names in `.github/issue-labels.json`. An issue there carries one type label and at least one routing label (`build:`, `area:` or `core:`).
+A repo using the prefix taxonomy keeps its `build:` and `area:` names in `.github/issue-labels.json`; an issue there carries one type label and at least one routing label (`build:`, `area:` or `core:`).
 
 | Label | Says |
 |-------|------|
-| A type label (table above) | The kind of change. One per issue or PR |
+| A type label (listed under Issues) | The kind of change. One per issue or PR |
 | `build:<name>` | The build it belongs to in a monorepo: one firmware, app or package among several |
 | `area:<name>` | A toolchain or subsystem that cuts across builds |
 | `core:<name>` | Repo machinery: CI, quality gates, agent config, build system, shared components, docs upkeep |
