@@ -86,21 +86,23 @@ assert_has_file() {
 }
 
 # reusable-quality-typescript.yml's `tscritical` step (the deterministic
-# TypeScript pattern scan) also binds FILE_PATTERNS but writes no file list;
-# .github/tests/ts-critical-patterns covers it.
+# TypeScript pattern scan) and reusable-quality-code-smell.yml's `ruff` step
+# also bind FILE_PATTERNS but write no file list;
+# .github/tests/ts-critical-patterns and .github/tests/ruff-advisory cover
+# them.
 found=0
 for WF in .github/workflows/reusable-*.yml .github/workflows/reusable-*.yaml; do
   [ -f "$WF" ] || continue
-  n="$(yq '[.jobs.*.steps[] | select(.env.FILE_PATTERNS != null and .id != "tscritical")] | length' "$WF")"
+  n="$(yq '[.jobs.*.steps[] | select(.env.FILE_PATTERNS != null and .id != "tscritical" and .id != "ruff")] | length' "$WF")"
   [ "$n" -gt 0 ] || continue
   found=$((found + 1))
   WF_SHORT="$(basename "$WF")"
   CASE="$WF_SHORT/extract"
   ok
   [ "$n" = 1 ] || { fail "expected one step binding FILE_PATTERNS, found $n"; continue; }
-  yq '[.jobs.*.steps[] | select(.env.FILE_PATTERNS != null and .id != "tscritical")] | .[0].run' "$WF" > "$work/step.sh"
+  yq '[.jobs.*.steps[] | select(.env.FILE_PATTERNS != null and .id != "tscritical" and .id != "ruff")] | .[0].run' "$WF" > "$work/step.sh"
   # shellcheck disable=SC2016 # a literal ${{, not a shell expansion
-  yq -r '[.jobs.*.steps[] | select(.env.FILE_PATTERNS != null and .id != "tscritical")] | .[0].env | to_entries | .[]
+  yq -r '[.jobs.*.steps[] | select(.env.FILE_PATTERNS != null and .id != "tscritical" and .id != "ruff")] | .[0].env | to_entries | .[]
          | select((.value | tostring) | test("\$\{\{") | not) | .key + "\t" + (.value | tostring)' "$WF" > "$work/literal-env"
   ok
   [ -s "$work/step.sh" ] || { fail "empty run: body"; continue; }

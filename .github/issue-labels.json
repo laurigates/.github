@@ -45,6 +45,7 @@
         ".github/tests/incremental-rescan/**",
         ".github/tests/osv-scanner-job/**",
         ".github/tests/publish-findings/**",
+        ".github/tests/ruff-advisory/**",
         ".github/tests/ts-critical-patterns/**"
       ],
       "scopes": [

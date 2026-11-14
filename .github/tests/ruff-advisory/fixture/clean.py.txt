@@ -1,0 +1,5 @@
+LIMIT = 3
+
+
+def within(values):
+    return [v for v in values if v < LIMIT]
