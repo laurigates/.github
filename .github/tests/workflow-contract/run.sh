@@ -19,6 +19,10 @@
 #      `uses: laurigates/.github/.github/actions/<name>@<ref>` names a
 #      directory here holding an action.yml. The owner is matched
 #      case-insensitively and the value may be quoted.
+#   4. Every `uses:` in a tracked workflow or composite action is pinned to a
+#      full 40-hex commit SHA with a version comment (`@<sha> # v6.1.0`),
+#      except this repo's own workflows and actions at @main and local `./`
+#      actions (issue #154). Tag, branch and short-SHA refs fail.
 #
 # Reads the shipped files directly with yq and python3 (both on ubuntu-slim).
 # Every scan asserts it found something before its per-item checks, so an
@@ -183,6 +187,51 @@ while IFS= read -r name; do
 done <<EOF
 $actions
 EOF
+
+# ------------------------------------------------------------ 4. SHA pins
+# Every `uses:` in a tracked workflow or composite action is
+# owner/repo[/path]@<40 hex> followed on the same line by a version comment
+# (`# v6.1.0`), because a tag or branch can be moved by its owner and these
+# workflows run in every caller at @main (issue #154). Exempt: this repo's own
+# workflows and actions at @main, which consumers and this repo call at @main
+# by design, and local `./` actions. A `docker://` reference is not exempt.
+# yq finds each `uses:` value and its line, so a value in an odd YAML form is
+# still found; the version comment is read from that raw line, since YAML
+# drops comments.
+pinned_files="$(git ls-files '.github/workflows/*.yml' '.github/workflows/*.yaml' \
+  '.github/actions/*/action.yml' '.github/actions/*/action.yaml')"
+n_wf="$(grep -c '^\.github/workflows/' <<<"$pinned_files" || true)"
+n_act="$(grep -c '^\.github/actions/' <<<"$pinned_files" || true)"
+if [ "$n_wf" -gt 0 ] && [ "$n_act" -gt 0 ]; then
+  pass
+else
+  fail "SHA-pin scan found $n_wf tracked workflow(s) and $n_act composite action(s); expected at least one of each"
+fi
+uses_total=0
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  rows="$(yq '.. | select(tag == "!!map" and has("uses")) | .uses | [line, .] | @tsv' "$f")"
+  while IFS=$'\t' read -r ln ref; do
+    [ -n "$ln" ] || continue
+    uses_total=$((uses_total + 1))
+    if grep -qiE '^laurigates/\.github/\.github/(workflows|actions)/[A-Za-z0-9._/-]+@main$' <<<"$ref" \
+      || grep -qE '^\./' <<<"$ref"; then
+      pass
+      continue
+    fi
+    if ! grep -qE '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(/[^@[:space:]]+)?@[0-9a-f]{40}$' <<<"$ref"; then
+      fail "$f:$ln: uses $ref is not pinned to a full 40-hex commit SHA"
+      continue
+    fi
+    raw="$(sed -n "${ln}p" "$f")"
+    if grep -qE "uses:[[:space:]]*[\"']?${ref//./\\.}[\"']?[[:space:]]+#[[:space:]]*v?[0-9]+(\.[0-9]+)*([^0-9A-Za-z]|$)" <<<"$raw"; then
+      pass
+    else
+      fail "$f:$ln: uses $ref has no '# vX.Y.Z' version comment after the SHA"
+    fi
+  done <<<"$rows"
+done <<<"$pinned_files"
+if [ "$uses_total" -gt 0 ]; then pass; else fail "SHA-pin scan found no uses: values (yq query broken)"; fi
 
 if [ "$failures" -gt 0 ]; then
   echo "FAIL: workflow-contract ($failures of $assertions assertion(s) failed)"
