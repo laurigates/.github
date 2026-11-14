@@ -55,7 +55,11 @@ name: Issue Labels (Reusable)
 #     writes only when the value is exactly `false`.
 #   - A repository with no taxonomy file still gets classify, unblock and
 #     sweep: the script's built-in core: globs apply. Provision then does
-#     nothing and says so in a notice.
+#     nothing and says so in a notice. The audit report leaves out its
+#     missing_routing findings, since it has no build: or area: label an
+#     issue could take; backfill still takes them as candidates. Only a 404
+#     from the contents API means "no file"; any other failed read fails the
+#     report step.
 #
 # The rolling audit issue is found by its exact title ("Issue label audit")
 # among open issues that github-actions[bot] opened, so an issue someone else
@@ -516,12 +520,37 @@ jobs:
           AUDIT_TITLE: Issue label audit
           AUDIT_LABELS: ${{ inputs.audit-labels }}
           ASSIGNEE: ${{ github.repository_owner }}
+          TAXONOMY_PATH: ${{ inputs.taxonomy-path }}
           AUDIT: ${{ runner.temp }}/audit.json
         run: |
           set -euo pipefail
           if ! jq -e '(.findings | type == "array") and (.counts | type == "object")' "$AUDIT" >/dev/null 2>&1; then
             echo "::error title=Issue labels::the audit result is missing or malformed; nothing was reported"
             exit 1
+          fi
+
+          # 0. Without a taxonomy file the repository defines no build: or area:
+          # labels, so an issue about the product itself has no routing label
+          # it could take (#152). Its missing_routing findings stay out of the
+          # summary, the report and the marker; backfill reads the unfiltered
+          # result. Only a 404 means "no file": any other failed read fails the
+          # step before anything is reported, so a transient error can neither
+          # drop findings nor change the marker.
+          dropped=0
+          if jq -e 'any(.findings[]; .type == "missing_routing")' "$AUDIT" >/dev/null; then
+            if err="$(gh api "repos/$REPO/contents/$TAXONOMY_PATH" --silent 2>&1)"; then
+              :
+            elif grep -q 'HTTP 404' <<<"$err"; then
+              dropped="$(jq '[.findings[] | select(.type == "missing_routing")] | length' "$AUDIT")"
+              jq '.findings |= map(select(.type != "missing_routing")) | del(.counts.missing_routing)' "$AUDIT" \
+                >"$RUNNER_TEMP/audit-report.json"
+              AUDIT="$RUNNER_TEMP/audit-report.json"
+              echo "No taxonomy file at $TAXONOMY_PATH: $dropped missing_routing finding(s) left out of the report."
+            else
+              printf '%s\n' "$err"
+              echo "::error title=Issue labels::reading the taxonomy file failed, and only a 404 means there is none; nothing was reported"
+              exit 1
+            fi
           fi
           total="$(jq '.findings | length' "$AUDIT")"
           open="$(jq -r '.open_issues' "$AUDIT")"
@@ -533,6 +562,10 @@ jobs:
             echo
             echo "$open open issue(s), $total finding(s). needs-stale-days: $NEEDS_STALE_DAYS."
             echo
+            if [ "$dropped" -gt 0 ]; then
+              echo "There is no taxonomy file at \`$TAXONOMY_PATH\`, so $dropped missing_routing finding(s) are left out: such a repository has no build: or area: label an issue could take. Backfill still classifies those issues."
+              echo
+            fi
             echo "| Finding | Count |"
             echo "|---|---|"
             jq -r '.counts | to_entries[] | "| `\(.key)` | \(.value) |"' "$AUDIT"
