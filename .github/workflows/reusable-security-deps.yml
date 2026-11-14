@@ -7,8 +7,9 @@ name: Dependency Security Audit (Reusable)
 #
 # The Claude dependency analysis (the `audit` job) was removed in #94; the
 # osv-scanner job below is the whole workflow. The inputs it no longer reads
-# and CLAUDE_CODE_OAUTH_TOKEN stay declared, as no-ops, because a caller that
-# passes an input or secret this workflow does not declare fails at startup.
+# and CLAUDE_CODE_OAUTH_TOKEN stay declared, as no-ops: GitHub's workflow
+# syntax reference says that a caller passing an input or a secret the called
+# workflow does not specify "results in an error".
 on:
   workflow_call:
     inputs:
