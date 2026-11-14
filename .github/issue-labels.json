@@ -39,7 +39,6 @@
         ".github/tests/actor-guard/**",
         ".github/tests/analysis-*/**",
         ".github/tests/changed-files-pathspec/**",
-        ".github/tests/deps-lockfile-gate/**",
         ".github/tests/event-guard/**",
         ".github/tests/gitleaks-guard/**",
         ".github/tests/incremental-rescan/**",

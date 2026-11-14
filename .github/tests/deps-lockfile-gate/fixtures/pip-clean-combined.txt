@@ -1,2 +1,0 @@
-No known vulnerabilities found
-{"dependencies": [{"name": "six", "version": "1.16.0", "vulns": []}], "fixes": []}

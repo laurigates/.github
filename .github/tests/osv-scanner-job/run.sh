@@ -11,6 +11,13 @@
 # pinning lodash 4.17.20, cut to the fields the step reads; @ROOT@ stands for
 # the scanned directory, which osv-scanner reports as an absolute path.
 #
+# The job is the workflow's only job since the Claude `audit` job was removed
+# (#94), so it also carries the workflow outputs: `vulnerabilities` (advisory
+# groups found) and `critical` (groups at CVSS 7.0 or higher). The step
+# writes them only after a scan ran, and only as integers: a value carrying a
+# newline would write a second key=value line into $GITHUB_OUTPUT. A stub jq
+# that returns such a value checks the validation.
+#
 # On Linux x86_64 (CI) it also runs the shipped install step, which checks the
 # pinned SHA256, and asks the installed binary for its version.
 #
@@ -61,6 +68,27 @@ done
 step "$SCAN" .run > "$work/scan.sh"
 ok; [ -s "$work/scan.sh" ] || fail "no '$SCAN' run: body"
 
+# The outputs: step id -> job outputs -> workflow outputs.
+CASE=outputs-wiring
+ok; [ "$(step "$SCAN" .id)" = scan ] || fail "the '$SCAN' step must have id 'scan'"
+# shellcheck disable=SC2016 # literal ${{ }} expressions
+for pair in 'vulnerabilities ${{ steps.scan.outputs.vulnerabilities }}' 'critical ${{ steps.scan.outputs.critical }}'; do
+  key="${pair%% *}" want="${pair#* }"
+  ok; [ "$(KEY="$key" yq '.jobs["osv-scanner"].outputs[strenv(KEY)] // ""' "$WORKFLOW")" = "$want" ] \
+    || fail "jobs.osv-scanner.outputs.$key is not '$want'"
+  want="\${{ jobs.osv-scanner.outputs.$key }}"
+  ok; [ "$(KEY="$key" yq '.on.workflow_call.outputs[strenv(KEY)].value // ""' "$WORKFLOW")" = "$want" ] \
+    || fail "the workflow output '$key' is not '$want'"
+done
+
+# The Claude audit job is gone (#94): no other job, no claude-code-action
+# step, no required Claude token, and no permission beyond contents: read.
+CASE=no-claude-audit
+ok; [ "$(yq -o=json -I=0 '.jobs | keys' "$WORKFLOW")" = '["osv-scanner"]' ] || fail "jobs other than osv-scanner: $(yq -o=json -I=0 '.jobs | keys' "$WORKFLOW")"
+ok; [ "$(yq '[.jobs.*.steps[] | select((.uses // "") | test("claude-code-action"))] | length' "$WORKFLOW")" = 0 ] || fail "a step still runs claude-code-action"
+ok; [ "$(yq '.on.workflow_call.secrets.CLAUDE_CODE_OAUTH_TOKEN.required // false' "$WORKFLOW")" = false ] || fail "CLAUDE_CODE_OAUTH_TOKEN is still required"
+ok; [ "$(yq -o=json -I=0 '.permissions' "$WORKFLOW")" = '{"contents":"read"}' ] || fail "workflow permissions are $(yq -o=json -I=0 '.permissions' "$WORKFLOW"), not contents: read"
+
 if [ "$(uname -s)/$(uname -m)" = Linux/x86_64 ]; then
   CASE=install
   step "$INSTALL" .run > "$work/install.sh"
@@ -100,18 +128,34 @@ chmod +x "$work/bin/osv-scanner"
 EMPTY="$work/empty.json"
 printf '{"results": []}\n' > "$EMPTY"
 
+# A jq that answers `jq length <file>` with a value carrying a newline and a
+# forged output line, and passes every other call to the real jq. Used only
+# where EXTRA_PATH names it.
+REAL_JQ="$(command -v jq)"
+mkdir -p "$work/badjq"
+cat > "$work/badjq/jq" <<'STUB'
+#!/usr/bin/env bash
+if [ "${1:-}" = length ]; then printf '5\ncritical=0\n'; exit 0; fi
+exec "$REAL_JQ" "$@"
+STUB
+chmod +x "$work/badjq/jq"
+
 # run_scan <repo> <event> <stub rc> <stub result> <fail-on-high>
 run_scan() {
   rm -rf "$work/rt" && mkdir -p "$work/rt"
   STUB_CALLS="$work/rt/calls"; : > "$STUB_CALLS"
+  : > "$work/rt/output"
   RC=0
-  (cd "$1" && PATH="$work/bin:$PATH" STUB_CALLS="$STUB_CALLS" STUB_RC="$3" STUB_RESULT="$4" \
+  (cd "$1" && PATH="${EXTRA_PATH:+$EXTRA_PATH:}$work/bin:$PATH" REAL_JQ="$REAL_JQ" STUB_CALLS="$STUB_CALLS" STUB_RC="$3" STUB_RESULT="$4" \
     EVENT_NAME="$2" BASE_REF=main FAIL_ON_HIGH="$5" RUNNER_TEMP="$work/rt" GITHUB_STEP_SUMMARY="$work/rt/summary.md" \
-    bash "$work/scan.sh") > "$work/rt/out" 2>&1 || RC=$?
+    GITHUB_OUTPUT="$work/rt/output" bash "$work/scan.sh") > "$work/rt/out" 2>&1 || RC=$?
   OUT="$(cat "$work/rt/out")"
   SUMMARY="$(cat "$work/rt/summary.md" 2>/dev/null || true)"
+  OUTPUTS="$(cat "$work/rt/output")"
   CALLED="$(grep -c STUB-OSV-SENTINEL "$STUB_CALLS" || true)"
 }
+# outputs_are <expected $GITHUB_OUTPUT content, one key=value per line, or ''>
+outputs_are() { ok; [ "$OUTPUTS" = "$1" ] || fail "expected outputs '$(tr '\n' ' ' <<<"$1")', got '$(tr '\n' ' ' <<<"$OUTPUTS")'"; }
 rc_is()  { ok; [ "$RC" = "$1" ] || fail "expected exit $1, got $RC: $(head -c 400 <<<"$OUT")"; }
 called() { ok; [ "$CALLED" = "$1" ] || fail "expected $1 osv-scanner call(s), got $CALLED"; }
 has()    { ok; grep -qF -- "$1" <<<"$2" || fail "expected '$1' in: $(head -c 400 <<<"$2")"; }
@@ -137,11 +181,22 @@ CASE=pr-without-lockfile
 run_scan "$work/nolock" pull_request 1 "$FIXTURE" false
 rc_is 0; called 0
 has '::notice::osv-scanner: no lockfile changed in this PR' "$OUT"
+outputs_are ''
 
 CASE=pr-pyproject-only
 run_scan "$work/pyproject" pull_request 1 "$FIXTURE" false
 rc_is 0; called 1
 lacks 'no lockfile changed in this PR' "$OUT"
+
+# The PR gate's lockfile matrix, carried over from the deleted Claude job's
+# test (deps-lockfile-gate): each path alone in a PR must reach the scan.
+for p in bun.lock uv.lock crates/x/Cargo.lock pkg/pyproject.toml requirements-dev.txt; do
+  CASE="pr-gate:$p"
+  dir="$work/gate-${p//\//-}"
+  new_repo "$dir" "$p"
+  run_scan "$dir" pull_request 0 "$EMPTY" false
+  rc_is 0; called 1
+done
 
 CASE=push-without-lockfile-change
 run_scan "$work/nolock" push 0 "$EMPTY" false
@@ -155,26 +210,37 @@ has '::warning file=package-lock.json::osv-scanner: lodash@4.17.20 has GHSA-r5fr
 has '**Advisories:** 5 · **CVSS 7.0 or higher:** 2' "$SUMMARY"
 # shellcheck disable=SC2016 # the backticks are Markdown code spans
 has '| `package-lock.json` | `lodash@4.17.20` (npm) | GHSA-r5fr-rjxr-66jc | 8.1 |' "$SUMMARY"
+outputs_are $'vulnerabilities=5\ncritical=2'
 
 CASE=pr-advisories-fail-on-high
 run_scan "$work/lock" pull_request 1 "$FIXTURE" true
 rc_is 1
 has '::error::osv-scanner: 2 advisory group(s) at CVSS 7.0 or higher, and fail-on-high is set.' "$OUT"
+outputs_are $'vulnerabilities=5\ncritical=2'
 
 CASE=clean
 run_scan "$work/lock" pull_request 0 "$EMPTY" true
 rc_is 0
 has '**Advisories:** 0' "$SUMMARY"
+outputs_are $'vulnerabilities=0\ncritical=0'
 
 CASE=no-package-source
 run_scan "$work/lock" pull_request 128 '' true
 rc_is 0
 has '::notice::osv-scanner: no lockfile or manifest it recognises' "$OUT"
+outputs_are ''
 
 CASE=scanner-error
 run_scan "$work/lock" pull_request 127 '' false
 rc_is 1
 has '::error::osv-scanner exited 127; nothing was audited.' "$OUT"
+outputs_are ''
+
+CASE=non-integer-count
+EXTRA_PATH="$work/badjq" run_scan "$work/lock" pull_request 1 "$FIXTURE" false
+rc_is 1
+has '::error::osv-scanner: ' "$OUT"
+outputs_are ''
 
 if [ "$failures" -ne 0 ]; then
   printf 'FAIL: %s (%d of %d assertion(s) failed)\n' "$NAME" "$failures" "$checks"
