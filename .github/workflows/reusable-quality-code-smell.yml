@@ -275,6 +275,188 @@ jobs:
           echo "$FILES" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
+      # Python smells a linter finds deterministically, reported by ruff
+      # instead of Claude (laurigates/.github#96, the shape #83 gave
+      # reusable-quality-typescript.yml). RUFF_SELECT is the whole contract:
+      # the prompt lists exactly these ids as not to report or count, and
+      # .github/tests/ruff-advisory/run.sh fails when the two differ.
+      # `--isolated` ignores the calling repository's ruff configuration,
+      # which the pull request controls. The command-line --select and
+      # --config already override its select, ignore and thresholds; they do
+      # not override per-file-ignores, exclude with force-exclude,
+      # dummy-variable-rgx (exempts PLR0913 arguments) or
+      # pylint.allow-magic-value-types (exempts PLR2004 literals), each of
+      # which drops hits Claude has been told to leave alone. `# noqa`
+      # comments still apply.
+      # The thresholds are pinned for the same reason the prompt states
+      # them. It lists the PR's files itself rather than reading
+      # steps.changed.outputs.files: that list is narrowed on a push after a
+      # clean scan and capped at file-limit, and a hit in an unchanged file
+      # must still be reported on every head, since Claude no longer sees it.
+      # Advisory: a hit is a warning annotation and never fails the job, and
+      # a download failure or a ruff crash is a warning too. Only an
+      # unreadable PR diff range and a checksum mismatch fail it.
+      # RUFF_VERSION and RUFF_SHA256 change together; the hash is the
+      # release's ruff-x86_64-unknown-linux-gnu.tar.gz.sha256 asset. ruff
+      # is downloaded only when a changed .py file matches file-patterns.
+      - name: Ruff advisory lint
+        id: ruff
+        if: steps.event.outputs.supported == 'true' && steps.actor.outputs.allowed == 'true'
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          FILE_PATTERNS: ${{ inputs.file-patterns }}
+          GIT_GLOB_PATHSPECS: '1'
+          RUFF_VERSION: '0.17.4'
+          RUFF_SHA256: '3ab2b34aeacdbc1ea5c529cdbda3e05792633d587228123fd09f3b5a0facb27a'
+          RUFF_SELECT: 'C901,ERA001,PLR0913,PLR2004,S110,S112,T201,T203,TD003'
+        run: |
+          set -euo pipefail
+          TITLE='Ruff advisory lint'
+          # GitHub shows at most 10 warning annotations per step; the job
+          # summary carries every hit.
+          LIMIT="${ANNOTATION_LIMIT:-10}"
+          case "$LIMIT" in '' | *[!0-9]*) echo "::error::$TITLE: ANNOTATION_LIMIT is not a number"; exit 1 ;; esac
+          SUMMARY_ROWS_MAX=500
+          zero() { printf 'hit_count=0\nhits=false\n' >> "$GITHUB_OUTPUT"; }
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            RANGE="origin/$BASE_REF...HEAD"
+          else
+            RANGE="HEAD~1"
+          fi
+          # workflow_dispatch or schedule on a repository with one commit has
+          # no HEAD~1. The `changed` step scans nothing there and stays
+          # green; do the same. A pull request whose base cannot be read
+          # still fails below.
+          if [ "$EVENT_NAME" != "pull_request" ] && ! git rev-parse -q --verify 'HEAD~1^{commit}' >/dev/null; then
+            echo "::notice::$TITLE: HEAD has no parent commit; nothing to scan."
+            zero
+            exit 0
+          fi
+          LIST="$RUNNER_TEMP/ruff-changed"
+          PYLIST="$RUNNER_TEMP/ruff-files"
+          set -f
+          # Unquoted on purpose: space-separated pathspecs, unglobbed. `-z`
+          # because git C-quotes a path with a newline or non-ASCII byte in
+          # the plain listing.
+          # shellcheck disable=SC2086
+          if ! git diff -z --name-only "$RANGE" -- $FILE_PATTERNS > "$LIST"; then
+            echo "::error::$TITLE: could not list the changed files in $RANGE"
+            exit 1
+          fi
+          set +f
+          : > "$PYLIST"
+          NFILES=0
+          while IFS= read -r -d '' f; do
+            # Deleted in the PR, or a symlink that could point outside the
+            # checkout: nothing to lint.
+            case "$f" in *.py) ;; *) continue ;; esac
+            if [ ! -f "$f" ] || [ -L "$f" ]; then continue; fi
+            printf '%s\0' "$f" >> "$PYLIST"
+            NFILES=$((NFILES + 1))
+          done < "$LIST"
+          if [ "$NFILES" -eq 0 ]; then
+            echo "$TITLE: no changed .py file matches file-patterns; ruff not run."
+            zero
+            exit 0
+          fi
+
+          TGZ="$RUNNER_TEMP/ruff.tar.gz"
+          BIN="$RUNNER_TEMP/ruff-bin"
+          mkdir -p "$BIN"
+          if ! curl -fsSL --retry 3 -o "$TGZ" \
+               "https://github.com/astral-sh/ruff/releases/download/${RUFF_VERSION}/ruff-x86_64-unknown-linux-gnu.tar.gz"; then
+            echo "::warning::$TITLE: could not download ruff ${RUFF_VERSION}; the $NFILES changed .py file(s) were not linted, and Claude does not report the ruff rules."
+            printf '## %s\n\nruff %s could not be downloaded; %s changed .py file(s) were not linted.\n\n' "$TITLE" "$RUFF_VERSION" "$NFILES" >> "$GITHUB_STEP_SUMMARY"
+            zero
+            exit 0
+          fi
+          if ! echo "${RUFF_SHA256}  $TGZ" | sha256sum -c --quiet -; then
+            echo "::error::$TITLE: the ruff ${RUFF_VERSION} download does not match RUFF_SHA256; refusing to run it."
+            exit 1
+          fi
+          tar -xzf "$TGZ" -C "$BIN" --strip-components=1 ruff-x86_64-unknown-linux-gnu/ruff
+
+          # --exit-zero, so a hit exits 0 and anything else non-zero is a
+          # ruff failure (xargs reports one as 123). Paths go after `--` so
+          # a file named `-x.py` is not read as an option.
+          RAW="$RUNNER_TEMP/ruff-raw.json"
+          ERR="$RUNNER_TEMP/ruff-stderr"
+          rc=0
+          xargs -0 -r "$BIN/ruff" check --isolated --no-cache --exit-zero --output-format json \
+            --select "$RUFF_SELECT" \
+            --config 'lint.mccabe.max-complexity = 10' \
+            --config 'lint.pylint.max-args = 4' \
+            --config 'lint.flake8-bandit.check-typed-exception = true' \
+            -- < "$PYLIST" > "$RAW" 2> "$ERR" || rc=$?
+          # xargs may run ruff more than once, so RAW is one JSON array per
+          # run. Anything else is not ruff output this step can read.
+          if [ "$rc" -ne 0 ] || ! jq -se 'length > 0 and all(type == "array")' "$RAW" >/dev/null 2>&1; then
+            echo "::warning::$TITLE: ruff exited $rc or wrote output that is not JSON arrays; no ruff hits are reported for this run. Its stderr follows."
+            # stderr names files, which the PR controls: stop workflow
+            # commands while it is printed.
+            token="ruff-$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+            echo "::stop-commands::$token"
+            cat "$ERR"
+            echo "::$token::"
+            printf '## %s\n\nruff exited %s; no hits are reported for this run.\n\n' "$TITLE" "$rc" >> "$GITHUB_STEP_SUMMARY"
+            zero
+            exit 0
+          fi
+
+          # Ruff's output is untrusted at this boundary: a message quotes the
+          # source (PLR2004 quotes the literal) and a path is whatever the PR
+          # named. Only the selected codes count (a parse error arrives as
+          # `invalid-syntax`); the path must sit under the checkout and is
+          # made relative; the line must be a positive number. Annotation
+          # text escapes % CR LF, and a property value also , and : (as
+          # actions/toolkit escapeProperty does).
+          HITS="$RUNNER_TEMP/ruff-hits.json"
+          jq -s --arg root "$(pwd -P)/" --arg sel "$RUFF_SELECT" '
+            ($sel | split(",")) as $s
+            | [ add[] | objects
+                | select((.code | type) == "string" and (.code as $c | any($s[]; . == $c)))
+                | select((.filename | type) == "string" and (.filename | startswith($root)))
+                | { file: (.filename | ltrimstr($root)),
+                    line: (if (.location | type) == "object" then .location.row else null end
+                           | if type == "number" and . >= 1 then floor else null end),
+                    code: .code,
+                    message: (.message | tostring) } ]
+            | sort_by(.file, (.line // 0), .code)
+          ' "$RAW" > "$HITS"
+          COUNT="$(jq 'length' "$HITS")"
+          case "$COUNT" in '' | *[!0-9]*) echo "::error::$TITLE: internal error, hit count is not a number"; exit 1 ;; esac
+
+          jq -r --argjson limit "$LIMIT" '
+            def esc: tostring | gsub("%"; "%25") | gsub("\r"; "%0D") | gsub("\n"; "%0A");
+            def prop: esc | gsub(","; "%2C") | gsub(":"; "%3A");
+            .[:$limit][]
+            | "::warning file=\(.file | prop)\(if .line then ",line=\(.line)" else "" end),title=\("ruff \(.code)" | prop)::\(.message | esc)"
+          ' "$HITS"
+          if [ "$COUNT" -gt "$LIMIT" ]; then
+            echo "::notice::$TITLE: $((COUNT - LIMIT)) further hit(s) appear in the job summary only."
+          fi
+
+          {
+            printf '## %s\n\n' "$TITLE"
+            printf 'ruff %s checked %s changed .py file(s) for %s. **Hits:** %s\n\n' "$RUFF_VERSION" "$NFILES" "$RUFF_SELECT" "$COUNT"
+            if [ "$COUNT" -gt 0 ]; then
+              printf '| File | Line | Rule | Message |\n|---|---|---|---|\n'
+              # A markdown table cell: no newline, no pipe, no backtick.
+              jq -r --argjson max "$SUMMARY_ROWS_MAX" '
+                def cell: tostring | gsub("[\r\n]"; " ") | gsub("\\|"; "\\|") | gsub("`"; "'"'"'");
+                .[:$max][] | "| `\(.file | cell)` | \(.line // "") | \(.code | cell) | \(.message | cell) |"
+              ' "$HITS"
+              if [ "$COUNT" -gt "$SUMMARY_ROWS_MAX" ]; then
+                printf '\n_%s further hit(s) omitted._\n' "$((COUNT - SUMMARY_ROWS_MAX))"
+              fi
+            fi
+            printf '\n'
+          } >> "$GITHUB_STEP_SUMMARY"
+          HAS=false
+          if [ "$COUNT" -gt 0 ]; then HAS=true; fi
+          printf 'hit_count=%s\nhits=%s\n' "$COUNT" "$HAS" >> "$GITHUB_OUTPUT"
+
       - name: Diff-size skip notice
         if: steps.event.outputs.supported == 'true' && steps.changed.outputs.skip == 'true' && steps.actor.outputs.allowed == 'true'
         run: |
@@ -306,6 +488,16 @@ jobs:
             ## Files to analyze
             ${{ steps.changed.outputs.files }}
             ${{ steps.changed.outputs.truncated == 'true' && 'NOTE: the analyzed file list was truncated — say so in the description of your first finding.' || '' }}
+
+            The workflow's ruff step already reports these ruff rules in the changed `.py` files; in a `.py` file you must not report or count what they cover:
+            - `C901`: cyclomatic complexity over 10
+            - `PLR0913`: a function definition with more than 4 parameters, not counting `self` or `cls`
+            - `PLR2004`: a numeric literal other than 0, 1 or -1 in a comparison
+            - `S110`, `S112`: an `except` clause whose body is only `pass` or only `continue`
+            - `T201`, `T203`: `print()` and `pprint()` calls
+            - `TD003`: a TODO, FIXME or XXX comment without an issue link
+            - `ERA001`: commented-out code
+            Every other smell below in a `.py` file, and every smell in a file that is not `.py`, is still yours to report.
 
             ## Complexity Smells (High Severity)
             - Functions over 50 lines / single responsibility violations

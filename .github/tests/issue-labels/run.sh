@@ -26,8 +26,11 @@
 # a malformed result applies nothing, an absent taxonomy is not a provision
 # failure, the audit issue is filed once and commented on only when the
 # findings change, only an audit issue github-actions[bot] opened is adopted,
-# a failed label listing still assigns the new issue, and backfill stops at
-# max-issues. Bodies run under `bash -e`, as Actions runs them.
+# a failed label listing still assigns the new issue, a repository with no
+# taxonomy file (a 404) gets the report it would get without missing_routing
+# findings while backfill still classifies those issues, any other failed
+# taxonomy read fails the report step, and backfill stops at max-issues.
+# Bodies run under `bash -e`, as Actions runs them.
 #
 # Usage: bash .github/tests/issue-labels/run.sh [workflow]
 set -euo pipefail
@@ -624,6 +627,18 @@ case "$*" in
   "label list "*) [ "${STUB_LABEL_LIST_FAIL:-0}" = 0 ] || exit 1; printf '%s\n' "${STUB_LABELS:-[]}" ;;
   "api --paginate repos/o/r/issues/"*"/comments?per_page=100 "*) printf '%s\n' "${STUB_COMMENTS:-}" ;;
   "api repos/o/r/issues/"*" --jq .body // \"\"") printf '%s\n' "${STUB_ISSUE_BODY:-}" ;;
+  # STUB_TAXONOMY: present (default), absent (the 404 gh prints, as in
+  # cli/cli pkg/cmd/api/api.go: "gh: <message> (HTTP <code>)"), forbidden
+  # (403), unauthorized (401), or error (502).
+  "api repos/o/r/contents/"*)
+    case "${STUB_TAXONOMY:-present}" in
+      present) ;;
+      absent) echo 'gh: Not Found (HTTP 404)' >&2; exit 1 ;;
+      forbidden) echo 'gh: API rate limit exceeded for installation ID 12345. (HTTP 403)' >&2; exit 1 ;;
+      unauthorized) echo 'gh: Bad credentials (HTTP 401)' >&2; exit 1 ;;
+      *) echo 'gh: Server Error (HTTP 502)' >&2; exit 1 ;;
+    esac
+    ;;
 esac
 exit 0
 EOF
@@ -947,8 +962,16 @@ report() { # <audit content> [VAR=value ...]
   printf '%s\n' "$1" >"$work/audit.json"
   shift
   run "$work/report.sh" AUDIT="$work/audit.json" SERVER_URL=https://example.test RUN_ID=99 NEEDS_STALE_DAYS=30 \
-    AUDIT_TITLE='Issue label audit' AUDIT_LABELS='chore, core:quality' ASSIGNEE=o "$@"
+    AUDIT_TITLE='Issue label audit' AUDIT_LABELS='chore, core:quality' ASSIGNEE=o TAXONOMY_PATH="$TAX" "$@"
+  cp "$work/audit.json" "$work/audit-after-report.json"
 }
+# AUDIT without its missing_routing findings, as a with-taxonomy run would see
+# a repository whose issues all carry a routing label.
+AUDIT_NO_ROUTING="$(jq -c '.findings |= map(select(.type != "missing_routing")) | .counts.missing_routing = 0' <<<"$AUDIT")"
+AUDIT_ONLY_ROUTING="$(jq -c '.findings |= map(select(.type == "missing_routing"))
+  | .counts |= with_entries(.value = (if .key == "missing_routing" then 2 else 0 end))' <<<"$AUDIT")"
+TAX_READ="api repos/o/r/contents/$TAX --silent"
+bodyfile() { sed -n 's/^BODYFILE //p' <<<"$LOG"; }
 LABELS_CHORE_ONLY='[{"name": "bug"}, {"name": "Chore"}]'
 
 CASE=report-clean
@@ -984,6 +1007,12 @@ writes_are 3
 lacks "$LOG" '/issues/8'
 MARKER="$(sed -nE 's/^BODYFILE <!-- (issue-labels-audit: [0-9a-f]{12}) -->$/\1/p' <<<"$LOG")"
 ok; [ -n "$MARKER" ] || fail "the filed body carries no findings marker"
+# With a taxonomy file, missing_routing findings are reported as before.
+has "$LOG" "$TAX_READ"
+has "$LOG" 'BODYFILE #9  missing_routing'
+has "$LOG" 'BODYFILE | `missing_routing` | 2 |'
+has "$SUMMARY" '[#9](https://example.test/o/r/issues/9) | `missing_routing`'
+lacks "$SUMMARY" 'no taxonomy file'
 
 CASE=report-no-audit-labels-in-repo
 report "$AUDIT" DRY_RUN=false STUB_LABELS='[{"name": "bug"}]'
@@ -1086,6 +1115,88 @@ report '{"status": "ERROR", "reason": "gh api failed"}' DRY_RUN=false
 rc_is 1
 no_gh_calls
 
+# ---- Sweep: report, repository without a taxonomy file (#152)
+# An audit with no missing_routing finding does not read the taxonomy at all.
+CASE=report-no-routing-findings
+report "$AUDIT_NO_ROUTING" DRY_RUN=false STUB_LABELS="$LABELS_CHORE_ONLY" STUB_TAXONOMY=error
+rc_is 0
+lacks "$LOG" 'contents/'
+BODY_NO_ROUTING="$(bodyfile)"
+ok; [ -n "$BODY_NO_ROUTING" ] || fail "no body was filed"
+
+# Without the file, the report is the one a repository with no missing_routing
+# finding gets: same rows, same counts, same marker.
+CASE=report-no-taxonomy
+report "$AUDIT" DRY_RUN=false STUB_LABELS="$LABELS_CHORE_ONLY" STUB_TAXONOMY=absent
+rc_is 0
+has "$LOG" "$TAX_READ"
+has "$LOG" 'issue create --repo o/r --title Issue label audit --body-file'
+is "filed body" "$(bodyfile)" "$BODY_NO_ROUTING"
+lacks "$LOG" 'missing_routing'
+has "$LOG" 'BODYFILE #3  missing_type'
+has "$LOG" 'BODYFILE #5  missing_type'
+lacks "$LOG" "$MARKER"
+lacks "$SUMMARY" '| `missing_routing`'
+lacks "$SUMMARY" '[#9]'
+has "$SUMMARY" '[#3](https://example.test/o/r/issues/3) | `missing_type`'
+has "$SUMMARY" "no taxonomy file at \`$TAX\`"
+has "$SUMMARY" '12 open issue(s), 3 finding(s)'
+# The audit result the backfill step reads is left as the script wrote it.
+ok; cmp -s <(printf '%s\n' "$AUDIT") "$work/audit-after-report.json" || fail "the report step changed the audit result file"
+
+# An open audit issue whose latest marker is the no-routing set gets no comment.
+CASE=report-no-taxonomy-existing-unchanged
+NR_MARKER="$(sed -nE 's/^<!-- (issue-labels-audit: [0-9a-f]{12}) -->$/\1/p' <<<"$BODY_NO_ROUTING")"
+report "$AUDIT" DRY_RUN=false STUB_TAXONOMY=absent STUB_ISSUE_LIST="$OURS_40" STUB_ISSUE_BODY="first report <!-- $NR_MARKER -->"
+rc_is 0
+writes_are 0
+has "$OUT" 'nothing posted'
+
+# Only missing_routing findings and no taxonomy: nothing to report, no issue.
+CASE=report-no-taxonomy-only-routing
+report "$AUDIT_ONLY_ROUTING" DRY_RUN=false STUB_TAXONOMY=absent STUB_ISSUE_LIST="$OURS_40"
+rc_is 0
+is "gh calls" "$LOG" "$TAX_READ"
+has "$OUT" 'No findings'
+has "$SUMMARY" '12 open issue(s), 0 finding(s)'
+# ... and the same audit with a taxonomy file still files it.
+CASE=report-taxonomy-only-routing
+report "$AUDIT_ONLY_ROUTING" DRY_RUN=false STUB_LABELS="$LABELS_CHORE_ONLY"
+rc_is 0
+has "$LOG" 'issue create --repo o/r --title Issue label audit --body-file'
+has "$LOG" 'BODYFILE #9  missing_routing'
+
+CASE=report-no-taxonomy-dry-run
+report "$AUDIT" DRY_RUN=true STUB_TAXONOMY=absent
+rc_is 0
+writes_are 0
+has "$OUT" "would file an issue titled 'Issue label audit'"
+has "$OUT" '#3  missing_type'
+lacks "$OUT" '#9  missing_routing'
+lacks "$OUT" '| `missing_routing`'
+has "$OUT" 'No taxonomy file at'
+
+# A failed read that is not a 404 is not "no taxonomy": the step fails before
+# writing the summary or calling anything else, so no finding is dropped and
+# the marker cannot change on a transient error.
+CASE=report-taxonomy-read-fails
+report "$AUDIT" DRY_RUN=false STUB_TAXONOMY=error STUB_ISSUE_LIST="$OURS_40"
+rc_is 1
+is "gh calls" "$LOG" "$TAX_READ"
+has "$OUT" '::error title=Issue labels::'
+has "$OUT" 'HTTP 502'
+is "summary" "$SUMMARY" ""
+# Nor is any other 4xx: a 403 (rate limit) or 401 must not read as "no file".
+for mode_code in forbidden:403 unauthorized:401; do
+  CASE="report-taxonomy-read-${mode_code%%:*}"
+  report "$AUDIT" DRY_RUN=false STUB_TAXONOMY="${mode_code%%:*}" STUB_ISSUE_LIST="$OURS_40"
+  rc_is 1
+  is "gh calls" "$LOG" "$TAX_READ"
+  has "$OUT" '::error title=Issue labels::'
+  has "$OUT" "HTTP ${mode_code#*:}"
+  is "summary" "$SUMMARY" ""
+done
+
 # ---- Sweep: backfill
 backfill() { # [VAR=value ...]; the audit result is $BACKFILL_AUDIT, else $AUDIT
   printf '%s\n' "${BACKFILL_AUDIT:-$AUDIT}" >"$work/audit.json"
@@ -1107,6 +1218,15 @@ STDIN {"labels":["bug"]}
 api -X POST repos/o/r/issues/9/labels --input - --silent
 STDIN {"labels":["core:ci"]}'
 has "$SUMMARY" '3 candidate(s) lack a type or routing label; 3 classified (max-issues: 25); 2 with labels to add.'
+
+# Backfill reads the taxonomy through the script only: a repository without the
+# file still has its missing_routing issues (#9 here) classified.
+CASE=backfill-no-taxonomy
+backfill DRY_RUN=false MAX_ISSUES=25 STUB_TAXONOMY=absent
+rc_is 0
+has "$PY" "classify --repo o/r --issue 9 --taxonomy-path $TAX"
+lacks "$LOG" 'contents/'
+has "$LOG" 'api -X POST repos/o/r/issues/9/labels --input - --silent'
 
 CASE=backfill-capped
 backfill DRY_RUN=false MAX_ISSUES=2
