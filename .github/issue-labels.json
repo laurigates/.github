@@ -105,7 +105,8 @@
       "paths": [
         ".github/workflows/reusable-container-*.yml",
         ".github/actions/scan-image/**",
-        ".github/tests/container-release-tags/**"
+        ".github/tests/container-release-tags/**",
+        ".github/tests/container-promote-wait/**"
       ],
       "scopes": [
         "scan-image",

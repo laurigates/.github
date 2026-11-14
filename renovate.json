@@ -1,8 +1,8 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "description": [
-    "Repository config for laurigates/.github. The owner-wide Renovate runner supplies everything else; this file only adds tracking of the Claude model IDs pinned as workflow_call input defaults (#135).",
-    "The lookup needs the runner to pass ANTHROPIC_API_KEY to reusable-renovate.yml, which then authenticates api.anthropic.com; the key must be scoped to one workspace (see the secret's description there). Without it the lookup fails and the pins are not updated; nothing else changes."
+    "Repository config for laurigates/.github. The owner-wide Renovate runner supplies everything else; this file adds tracking of two kinds of workflow_call input default: the Claude model IDs (#135) and the plugins-ref commits of laurigates/claude-plugins (#109).",
+    "The Claude model lookup needs the runner to pass ANTHROPIC_API_KEY to reusable-renovate.yml, which then authenticates api.anthropic.com; the key must be scoped to one workspace (see the secret's description there). Without it the lookup fails and the pins are not updated; nothing else changes."
   ],
   "customManagers": [
     {
@@ -14,6 +14,18 @@
       ],
       "datasourceTemplate": "custom.claude-models",
       "versioningTemplate": "regex:^{{{depName}}}-(?<major>\\d+)-(?<minor>\\d+)$"
+    },
+    {
+      "customType": "regex",
+      "description": "The plugins-ref input defaults: the laurigates/claude-plugins commit whose git-plugin script reusable-merge-method.yml and reusable-issue-labels.yml run (#109). git-refs follows the head of main, so every claude-plugins commit is a candidate, not only changes to those scripts.",
+      "managerFilePatterns": ["/^\\.github/workflows/[^/]+\\.ya?ml$/"],
+      "matchStrings": [
+        "\\n[ \\t]+plugins-ref:[ \\t]*\\n(?:[ \\t]+(?:#|description:|required:|type:)[^\\n]*\\n)*[ \\t]+default:[ \\t]*[\"']?(?<currentDigest>[0-9a-f]{40})\\b"
+      ],
+      "currentValueTemplate": "main",
+      "depNameTemplate": "laurigates/claude-plugins",
+      "packageNameTemplate": "https://github.com/laurigates/claude-plugins",
+      "datasourceTemplate": "git-refs"
     }
   ],
   "customDatasources": {
@@ -31,6 +43,13 @@
       "description": "A model change alters review behaviour and cost for every caller, so it gets its own PR instead of riding in a grouped dependency update.",
       "matchDatasources": ["custom.claude-models"],
       "groupName": "Claude model IDs"
+    },
+    {
+      "description": "The plugins-ref pins move with every claude-plugins commit, so they get one PR a week of their own. Saturday falls inside the runner's weekend branch-creation window. A bump still needs a read of what the workflow steps parse from the script's output.",
+      "matchDatasources": ["git-refs"],
+      "matchDepNames": ["laurigates/claude-plugins"],
+      "groupName": "claude-plugins plugins-ref",
+      "schedule": ["* * * * 6"]
     }
   ]
 }
