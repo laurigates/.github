@@ -47,6 +47,10 @@ Use the issue templates provided in each repository. Include:
 - Expected vs actual behavior
 - Relevant environment details
 
+Labels are applied by the maintainer and by automation; you do not need to add
+them. What each label means, including `needs:decision` and `blocked`, is in
+[Issue Labels](https://github.com/laurigates/.github/blob/main/docs/issue-labels.md).
+
 ## Questions
 
 For questions about a specific project, open an issue in that repository.
