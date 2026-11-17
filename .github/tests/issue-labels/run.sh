@@ -484,6 +484,8 @@ def running(ctx):
 G = "github__event__"
 CASES = [
     ("push to the default branch", context("push"), {"provision"}),
+    ("push to the default branch, provision false", context("push", inputs__provision=False), set()),
+    ("issue opened, provision false", context("issues", "opened", inputs__provision=False), {"classify-issue"}),
     ("push to another branch", context("push", github__ref="refs/heads/feat/x"), set()),
     ("push to main where the default is trunk", context("push", **{G + "repository__default_branch": "trunk"}), set()),
     ("push to trunk, the default", context("push", github__ref="refs/heads/trunk", **{G + "repository__default_branch": "trunk"}), {"provision"}),
@@ -625,6 +627,11 @@ case "$*" in
     ;;
   "issue create "*) [ "${STUB_CREATE_FAIL:-0}" = 0 ] || exit 1; echo "https://example.test/o/r/issues/77" ;;
   "label list "*) [ "${STUB_LABEL_LIST_FAIL:-0}" = 0 ] || exit 1; printf '%s\n' "${STUB_LABELS:-[]}" ;;
+  # STUB_OWNER_TYPE: what users/<owner> reports (User by default); fail = an API error.
+  "api users/"*" --jq .type")
+    [ "${STUB_OWNER_TYPE:-User}" != fail ] || { echo 'gh: Server Error (HTTP 502)' >&2; exit 1; }
+    printf '%s\n' "${STUB_OWNER_TYPE:-User}"
+    ;;
   "api --paginate repos/o/r/issues/"*"/comments?per_page=100 "*) printf '%s\n' "${STUB_COMMENTS:-}" ;;
   "api repos/o/r/issues/"*" --jq .body // \"\"") printf '%s\n' "${STUB_ISSUE_BODY:-}" ;;
   # STUB_TAXONOMY: present (default), absent (the 404 gh prints, as in
@@ -1109,6 +1116,34 @@ has "$OUT" '::warning title=Issue labels::listing the repository'"'"'s labels fa
 lacks "$LOG" '/labels --input'
 has "$LOG" 'api -X POST repos/o/r/issues/77/assignees --input - --silent'
 writes_are 2
+
+# Who the new audit issue is assigned to (#177). An empty audit-assignee
+# assigns the owner only when users/<owner> reports a user account.
+CASE=report-assignee-owner-user
+report "$AUDIT" DRY_RUN=false ASSIGNEE= OWNER=o
+rc_is 0
+has "$LOG" 'api users/o --jq .type'
+has "$LOG" 'STDIN {"assignees":["o"]}'
+CASE=report-assignee-owner-org
+report "$AUDIT" DRY_RUN=false ASSIGNEE= OWNER=o STUB_OWNER_TYPE=Organization
+rc_is 0
+has "$OUT" '::notice title=Issue labels::the repository owner o is not a user account (Organization)'
+lacks "$LOG" '/assignees'
+CASE=report-assignee-owner-lookup-fails
+report "$AUDIT" DRY_RUN=false ASSIGNEE= OWNER=o STUB_OWNER_TYPE=fail
+rc_is 0
+has "$OUT" 'is not a user account (lookup failed)'
+lacks "$LOG" '/assignees'
+CASE=report-assignee-none
+report "$AUDIT" DRY_RUN=false ASSIGNEE=none OWNER=o
+rc_is 0
+lacks "$LOG" 'api users/'
+lacks "$LOG" '/assignees'
+CASE=report-assignee-explicit
+report "$AUDIT" DRY_RUN=false ASSIGNEE=alice OWNER=o STUB_OWNER_TYPE=Organization
+rc_is 0
+lacks "$LOG" 'api users/'
+has "$LOG" 'STDIN {"assignees":["alice"]}'
 
 CASE=report-malformed-audit
 report '{"status": "ERROR", "reason": "gh api failed"}' DRY_RUN=false
