@@ -76,7 +76,7 @@ RUNNER = re.compile(
 )
 scan = sorted(set(
     workflows
-    + ["justfile", "README.md", "CLAUDE.md"]
+    + ["justfile", "README.md", "CLAUDE.md"] + glob.glob("docs/*.md")
     + glob.glob(".claude/rules/*.md") + glob.glob(".claude/skills/*.md") + glob.glob(".rulesync/rules/*.md")
     + glob.glob("scripts/*") + glob.glob(".github/tests/*/run.sh") + glob.glob(".github/tests/README.md")
 ))
