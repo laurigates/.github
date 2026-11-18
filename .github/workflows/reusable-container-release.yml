@@ -640,32 +640,53 @@ jobs:
           echo "Publishing ${SOURCE} to ${#TAG_ARGS[@]} tag(s)..."
           docker buildx imagetools create "${TAG_ARGS[@]}" "$SOURCE"
 
-      # buildx re-assembles the index on `imagetools create`. If it did not
-      # reproduce the source content, the published tags would resolve to a
-      # different digest and the gate would have been about a different image.
-      # Assert it rather than assume it — this doubles as proof that the
-      # provenance/SBOM attestations attached on the rebuild path survived the
-      # retag. Every tag, not just the first: metadata-action's flavor.latest
+      # When the candidate is an index (the rebuild path, which attaches
+      # attestations), `imagetools create` re-assembles it and the published
+      # tags resolve to the candidate digest itself. When the candidate is a
+      # single image manifest (the PR-phase build pushes with provenance and
+      # SBOM off), buildx wraps it in a NEW index with its own digest (#180).
+      # So a tag passes when it resolves to the scanned digest, or to an index
+      # whose only entry is the scanned digest; anything else means the gate
+      # was about a different image. The index is read by digest, not by tag,
+      # so the content checked is the content whose digest was compared.
+      # Every tag, not just the first: metadata-action's flavor.latest
       # default emits `:latest` on a non-prerelease semver ref, and that tag
-      # appears nowhere in the `tags:` input list above.
+      # appears nowhere in the `tags:` input list above. All tags must resolve
+      # to one digest, written as the `digest` output for signing.
       - name: Verify every published tag resolves to the scanned digest
+        id: verify
         env:
           TAGS: ${{ steps.meta.outputs.tags }}
           EXPECTED: ${{ steps.candidate.outputs.digest }}
         run: |
           set -euo pipefail
           CHECKED=0
+          PUBLISHED=""
           while IFS= read -r tag; do
             [ -n "$tag" ] || continue
             GOT=$(docker buildx imagetools inspect "$tag" | grep -m1 '^Digest:' | awk '{print $2}')
             if [ "$GOT" != "$EXPECTED" ]; then
-              echo "::error::${tag} resolves to ${GOT:-<nothing>}, not the scanned digest ${EXPECTED} — the gate did not cover what shipped"
+              if [ -z "$GOT" ] || ! docker buildx imagetools inspect --raw "${tag%:*}@${GOT}" \
+                | jq -e --arg e "$EXPECTED" '
+                    (.mediaType == "application/vnd.oci.image.index.v1+json"
+                     or .mediaType == "application/vnd.docker.distribution.manifest.list.v2+json")
+                    and ([.manifests[]?.digest] == [$e])' >/dev/null; then
+                echo "::error::${tag} resolves to ${GOT:-<nothing>}, which is neither the scanned digest ${EXPECTED} nor an index holding only it — the gate did not cover what shipped"
+                exit 1
+              fi
+              echo "ok: ${tag} -> index ${GOT} wrapping ${EXPECTED}"
+            else
+              echo "ok: ${tag} -> ${EXPECTED}"
+            fi
+            if [ -n "$PUBLISHED" ] && [ "$GOT" != "$PUBLISHED" ]; then
+              echo "::error::${tag} resolves to ${GOT}, but an earlier tag resolves to ${PUBLISHED}"
               exit 1
             fi
+            PUBLISHED="$GOT"
             CHECKED=$((CHECKED + 1))
-            echo "ok: ${tag} -> ${EXPECTED}"
           done <<< "$TAGS"
           [ "$CHECKED" -gt 0 ] || { echo "::error::Verified 0 tags"; exit 1; }
+          echo "digest=${PUBLISHED}" >> "$GITHUB_OUTPUT"
 
       # ---- Container signing (keyless / Sigstore) -----------------------------
       # After the gate, not before it. The previous ordering signed and
@@ -680,9 +701,16 @@ jobs:
         env:
           COSIGN_YES: "true"
           TARGET: ${{ steps.candidate.outputs.ref }}
+          PUBLISHED: ${{ steps.verify.outputs.digest }}
         run: |
           set -euo pipefail
           cosign sign "$TARGET"
+          # A promoted single-manifest candidate is published inside a new
+          # index (#180). `cosign verify <tag>` resolves the tag to that index,
+          # so sign it too; its only entry is the digest signed above.
+          if [ -n "$PUBLISHED" ] && [ "${TARGET%@*}@${PUBLISHED}" != "$TARGET" ]; then
+            cosign sign "${TARGET%@*}@${PUBLISHED}"
+          fi
           echo "signed=true" >> "$GITHUB_OUTPUT"
 
       # Opting out of the gate must not also drop the signal. In warn mode the
