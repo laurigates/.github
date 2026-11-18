@@ -136,7 +136,7 @@ on:
         # A laurigates/claude-plugins commit. renovate.json proposes the head of
         # its main in a weekly "claude-plugins plugins-ref" PR (#109); before
         # merging one, re-read what the steps parse from issue-labels.py's output.
-        default: '92c522687867db37a1741214f7ecb480c914cfce'
+        default: '6a1fa8907f5ba77df4003c53de8cd7fa3ad78655'
       dry-run:
         description: 'Print what would change and write nothing'
         required: false

@@ -54,7 +54,7 @@ on:
         # its main in a weekly "claude-plugins plugins-ref" PR (#109); before
         # merging one, re-read the KEY=VALUE lines the publish step reads from
         # pr-merge-method.py (STATUS, METHOD, OVERRIDE, RULE, REASON, ...).
-        default: 'b47840019d190aa9afa1fd8d6d42ddd584a45641'
+        default: '6a1fa8907f5ba77df4003c53de8cd7fa3ad78655'
 
 permissions:
   checks: write
