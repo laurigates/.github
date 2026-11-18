@@ -10,7 +10,7 @@
 #
 # Part 2 pins reusable-bun-ci.yml's static contract: permissions, secrets,
 # pinning, concurrency, the setup-bun inputs, and the documented input set
-# (every declared input is a row of README.md's "## Bun CI Workflow Inputs"
+# (every declared input is a row of docs/bun-ci.md's "## Bun CI Workflow Inputs"
 # table, with the declared default in its Default column).
 #
 # Part 3 EXTRACTS each step of the shipped reusable-bun-ci.yml with yq — its
@@ -173,26 +173,27 @@ expect_eq "declared inputs" \
 expect_eq "install defaults to a frozen lockfile" 'bun install --frozen-lockfile' "$(wf '.on.workflow_call.inputs["install-command"].default')"
 expect_eq "typecheck is opt-in" '' "$(wf '.on.workflow_call.inputs["typecheck-command"].default')"
 
-# Documentation: every declared input is a row of README.md's Bun CI inputs
+# Documentation: every declared input is a row of docs/bun-ci.md's inputs
 # table, and the row's Default column is the declared default ('' for empty).
-doc_section=$(awk '/^## Bun CI Workflow Inputs/{on=1; next} on && /^##/{exit} on' README.md)
-[ -n "$doc_section" ] || fail "README.md has no '## Bun CI Workflow Inputs' section"
+DOC=docs/bun-ci.md
+doc_section=$(awk '/^## Bun CI Workflow Inputs/{on=1; next} on && /^##/{exit} on' "$DOC")
+[ -n "$doc_section" ] || fail "$DOC has no '## Bun CI Workflow Inputs' section"
 doc_rows=0
 for input in $(wf '.on.workflow_call.inputs | keys | .[]'); do
   doc_rows=$((doc_rows + 1))
   # Here-string, not `printf | grep -q`: grep -q exits on the first match and,
   # under pipefail, printf's SIGPIPE fails the pipeline intermittently.
   row=$(grep -F "| \`$input\` |" <<<"$doc_section" || true)
-  [ -n "$row" ] || fail "input '$input' is not documented in README.md (## Bun CI Workflow Inputs)"
+  [ -n "$row" ] || fail "input '$input' is not documented in $DOC (## Bun CI Workflow Inputs)"
   pass
   default=$(K="$input" yq '.on.workflow_call.inputs[strenv(K)].default' "$WF")
   [ -n "$default" ] || default="''"
   # Columns: | Input | Type | Default | Description |
   documented=$(awk -F' [|] ' '{ print $3 }' <<<"$row")
-  expect_eq "README default for '$input'" "\`$default\`" "$documented"
+  expect_eq "documented default for '$input'" "\`$default\`" "$documented"
 done
 [ "$doc_rows" -gt 0 ] || fail "no inputs read from $WF"
-grep -Fq '`reusable-bun-ci.yml`' README.md || fail "README.md does not list reusable-bun-ci.yml"
+grep -Fq '`reusable-bun-ci.yml`' docs/workflows.md || fail "docs/workflows.md does not list reusable-bun-ci.yml"
 pass
 
 # ---------------------------------------------------------------------------
