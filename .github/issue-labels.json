@@ -106,7 +106,8 @@
         ".github/workflows/reusable-container-*.yml",
         ".github/actions/scan-image/**",
         ".github/tests/container-release-tags/**",
-        ".github/tests/container-promote-wait/**"
+        ".github/tests/container-promote-wait/**",
+        ".github/tests/container-release-verify/**"
       ],
       "scopes": [
         "scan-image",
