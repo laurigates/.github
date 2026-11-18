@@ -5,7 +5,8 @@ name: Issue Labels (Reusable)
 #
 #   push to the default branch       provision: create, update or rename the
 #                                    build: and area: labels the taxonomy file
-#                                    defines. Deletes nothing.
+#                                    defines. Deletes nothing. Skipped when
+#                                    `provision` is false.
 #   issues opened/reopened/edited    classify-issue: add the type and routing
 #                                    labels the title (and, with no routing
 #                                    label, the paths quoted in the body) point
@@ -172,6 +173,16 @@ on:
         required: false
         type: string
         default: 'chore,core:quality'
+      audit-assignee:
+        description: "GitHub user assigned to a newly filed audit issue. Empty assigns the repository owner when it is a user account (an organization cannot be assigned); 'none' assigns nobody"
+        required: false
+        type: string
+        default: ''
+      provision:
+        description: 'Create, update and rename the taxonomy labels on a push to the default branch. Set false when the labels are managed elsewhere, such as Terraform'
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -182,6 +193,7 @@ jobs:
   provision:
     name: Provision build and area labels
     if: >-
+      inputs.provision &&
       github.event_name == 'push' &&
       github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     # ubuntu-slim: one stdlib python3 script plus `gh` API calls, in every job.
@@ -520,7 +532,8 @@ jobs:
           NEEDS_STALE_DAYS: ${{ inputs.needs-stale-days }}
           AUDIT_TITLE: Issue label audit
           AUDIT_LABELS: ${{ inputs.audit-labels }}
-          ASSIGNEE: ${{ github.repository_owner }}
+          ASSIGNEE: ${{ inputs.audit-assignee }}
+          OWNER: ${{ github.repository_owner }}
           TAXONOMY_PATH: ${{ inputs.taxonomy-path }}
           AUDIT: ${{ runner.temp }}/audit.json
         run: |
@@ -673,8 +686,22 @@ jobs:
             jq -c '{labels: .}' <<<"$want" | gh api -X POST "repos/$REPO/issues/$issue/labels" --input - --silent \
               || echo "::warning title=Issue labels::adding labels to #$issue failed"
           fi
-          if [ -n "${ASSIGNEE:-}" ]; then
-            jq -nc --arg a "$ASSIGNEE" '{assignees: [$a]}' | gh api -X POST "repos/$REPO/issues/$issue/assignees" --input - --silent \
+          # The assignee: the audit-assignee input, else the repository owner
+          # when it is a user account. An organization login cannot be
+          # assigned, and the API would leave the issue unassigned (#177).
+          assignee="${ASSIGNEE:-}"
+          if [ "$assignee" = none ]; then
+            assignee=""
+          elif [ -z "$assignee" ]; then
+            owner_type="$(gh api "users/$OWNER" --jq .type 2>/dev/null)" || owner_type=""
+            if [ "$owner_type" = User ]; then
+              assignee="$OWNER"
+            else
+              echo "::notice title=Issue labels::the repository owner $OWNER is not a user account (${owner_type:-lookup failed}); #$issue is left unassigned. Set the audit-assignee input to assign someone"
+            fi
+          fi
+          if [ -n "$assignee" ]; then
+            jq -nc --arg a "$assignee" '{assignees: [$a]}' | gh api -X POST "repos/$REPO/issues/$issue/assignees" --input - --silent \
               || echo "::warning title=Issue labels::assigning #$issue failed"
           fi
 
