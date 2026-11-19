@@ -77,6 +77,24 @@ workflow get labels applied and checked from their taxonomy file:
 
 The workflow's file header lists which event runs which job.
 
+## Enriching a terse issue
+
+Repositories that also call
+[`reusable-issue-enrich.yml`](../.github/workflows/reusable-issue-enrich.yml)
+let the owner file an issue with a short title and a line or two of text.
+Claude then rewrites it into What, Why, Context, Acceptance and Open questions
+sections, using the repository's code, docs and open issues as context, and
+labels it. The original title and body are kept in a collapsed block at the
+end of the new body.
+
+- It runs only on issues the repository owner opens. Other people's issues
+  are left alone.
+- If the owner edits the issue while Claude is drafting, the rewrite is
+  dropped and the owner's version stays.
+- Labels: the classifier runs again on the rewritten text, then Claude's
+  proposals fill type and routing groups that are still empty. Claude never
+  sets `needs:` labels or `blocked`.
+
 ## Adding a `build:` or `area:` label
 
 Add an entry to `.github/issue-labels.json` in the repository: the label name,

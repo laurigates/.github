@@ -1,0 +1,389 @@
+name: Issue Enrich (Reusable)
+
+# Rewrites a terse issue the repository owner opened into a structured one,
+# using the calling repository's code and docs as context, then labels it.
+# The owner's original title and body are kept in a collapsed block at the end
+# of the new body.
+#
+#   issues opened, by the owner      enrich: Claude reads the issue, the
+#                                    checkout, the open issues and the label
+#                                    list, and writes three files: title.txt,
+#                                    body.md and labels.json (or skip.txt when
+#                                    the issue needs no rewrite).
+#                                    publish: validates those files, edits the
+#                                    issue once, then adds labels: first what
+#                                    issue-labels.py classify derives from the
+#                                    enriched text, then the model's proposals
+#                                    that issue-labels.py validate accepts for
+#                                    groups still empty.
+#
+# This is the model stage #147 planned, built as its own file so that the
+# deterministic reusable-issue-labels.yml keeps its narrower caller grant.
+#
+# What the workflow guarantees:
+#
+#   - Only issues the repository owner opened (`author_association` OWNER),
+#     never a bot's, and never one whose body already carries the
+#     `<!-- issue-enrich` marker. Other people's issues are left alone.
+#   - The agent writes, bash publishes. The enrich job's token can read
+#     contents and issues and nothing else, the agent's tools are Read, Grep,
+#     Glob and Write, and its only directory outside the checkout is
+#     $RUNNER_TEMP/issue-enrich (never $RUNNER_TEMP itself, which holds the
+#     runner's GITHUB_ENV and GITHUB_PATH files). The files leave that job as
+#     an artifact; the publish job, which runs no repository code and no
+#     model, holds `issues: write`.
+#   - The owner's edits win. publish compares the issue's current title and
+#     body with the event payload and edits nothing when they differ, so an
+#     edit made while the agent ran is never overwritten.
+#   - Labels: `needs:` labels and `blocked` are removed from the model's
+#     proposals before validation, since the set-and-clear rules give those to
+#     an agent that stops on a specific step and says why. validate keeps a
+#     name only when it is a type or routing label the repository has and its
+#     group is still empty.
+#   - `dry-run: true` prints the new title, body and labels and writes
+#     nothing. A step writes only when the value is exactly `false`.
+#
+# Limits:
+#
+#   - An edit made with GITHUB_TOKEN fires no `issues: edited` event, so
+#     reusable-issue-labels.yml's classify-issue runs only on the original
+#     text (on `opened`). This workflow runs classify again on the enriched
+#     text for that reason. Both are additive, so whichever runs first wins a
+#     group.
+#   - Issues created with GITHUB_TOKEN fire no `issues` event and are never
+#     enriched.
+#
+# Permissions: the caller grants `contents: read`, `issues: write` and
+# `id-token: write`, and passes CLAUDE_CODE_OAUTH_TOKEN. A caller that grants
+# less than a job asks for fails at startup.
+#
+# Example caller (.github/workflows/issue-enrich.yml):
+#
+#   name: Issue enrich
+#   on:
+#     issues:
+#       types: [opened]
+#   permissions:
+#     contents: read
+#     issues: write
+#     id-token: write
+#   jobs:
+#     issue-enrich:
+#       uses: laurigates/.github/.github/workflows/reusable-issue-enrich.yml@main
+#       secrets:
+#         CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+on:
+  workflow_call:
+    inputs:
+      model:
+        description: 'Claude model for the enrich run'
+        required: false
+        type: string
+        default: 'claude-opus-5-5'
+      effort:
+        description: 'Claude effort level for the enrich run'
+        required: false
+        type: string
+        default: 'low'
+      max-turns:
+        description: 'Max turns for the enrich run'
+        required: false
+        type: number
+        default: 30
+      instructions:
+        description: 'Extra guidance appended to the prompt, such as the title style or sections the repository uses'
+        required: false
+        type: string
+        default: ''
+      taxonomy-path:
+        description: 'Path of the label taxonomy (JSON) in the calling repository, read from its default branch'
+        required: false
+        type: string
+        default: '.github/issue-labels.json'
+      plugins-ref:
+        description: 'laurigates/claude-plugins commit that provides git-plugin/scripts/issue-labels.py'
+        required: false
+        type: string
+        # A laurigates/claude-plugins commit. renovate.json proposes the head of
+        # its main in a weekly "claude-plugins plugins-ref" PR (#109); before
+        # merging one, re-read what the steps parse from issue-labels.py's output.
+        default: '6a1fa8907f5ba77df4003c53de8cd7fa3ad78655'
+      dry-run:
+        description: 'Print what would change and write nothing'
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+  issues: write
+  id-token: write
+
+jobs:
+  enrich:
+    name: Draft the enriched issue
+    if: >-
+      github.event_name == 'issues' && github.event.action == 'opened' &&
+      github.event.issue.author_association == 'OWNER' &&
+      github.event.issue.user.type != 'Bot' &&
+      github.event.sender.type != 'Bot' &&
+      !contains(github.event.issue.body || '', '<!-- issue-enrich')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: read
+      id-token: write
+    concurrency:
+      group: issue-enrich-${{ github.repository }}-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Gather the issue, open issues and labels
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          case "${NUMBER:-}" in '' | *[!0-9]*) echo "::error title=Issue enrich::the event carries no usable issue number"; exit 1 ;; esac
+          ctx="$RUNNER_TEMP/issue-enrich"
+          mkdir -p "$ctx/out"
+          gh api "repos/$REPO/issues/$NUMBER" --jq '{number, title, body: (.body // "")}' >"$ctx/issue.json"
+          gh issue list --repo "$REPO" --state open --limit 300 --json number,title,labels \
+            --jq '.[] | "#\(.number)\t\(.title)\t\([.labels[].name] | join(","))"' >"$ctx/open-issues.tsv"
+          gh label list --repo "$REPO" --limit 500 --json name,description >"$ctx/labels.json"
+          echo "issue #$NUMBER, $(wc -l <"$ctx/open-issues.tsv") open issue(s), $(jq length "$ctx/labels.json") label(s)"
+
+      - name: Draft the enriched issue
+        id: enrich
+        uses: anthropics/claude-code-action@8a29bc6f0ae11a363721054b6739feba6adabe57 # v1.0.273
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Read-only: this job's token holds contents: read and issues: read.
+          # Every write happens in the publish job.
+          github_token: ${{ github.token }}
+          # One flag per line: laurigates/claude-plugins'
+          # scripts/check-workflow-model.sh matches `--model`/`--effort`
+          # anchored at line start inside a folded scalar.
+          claude_args: >-
+            --model ${{ inputs.model }}
+            --effort ${{ inputs.effort }}
+            --max-turns ${{ inputs.max-turns }}
+            --allowedTools "Read,Grep,Glob,Write"
+            --disallowedTools "Bash,WebFetch,WebSearch"
+            --add-dir ${{ runner.temp }}/issue-enrich
+          prompt: |
+            You are improving a GitHub issue the repository owner filed in a hurry. The current directory is a checkout of the repository. Turn the issue into one the owner would have written with more time: keep their intent, ground it in this repository, and add nothing they did not ask for.
+
+            ## Inputs (read these; do not fetch anything else)
+
+            - `${{ runner.temp }}/issue-enrich/issue.json`: the issue's number, title and body.
+            - `${{ runner.temp }}/issue-enrich/open-issues.tsv`: open issues, one per line: number, title, labels.
+            - `${{ runner.temp }}/issue-enrich/labels.json`: the repository's labels, with descriptions.
+            - The checkout: start with `CLAUDE.md`, `AGENTS.md` or `README.md` if present, then look up the files, workflows or modules the issue concerns with Glob, Grep and Read.
+
+            ## What to write
+
+            Write these files into `${{ runner.temp }}/issue-enrich/out/` and nowhere else:
+
+            1. `title.txt`: one line, at most 120 characters. Follow the title style the open issues use (for example `[Feature] component: summary`).
+            2. `body.md`: the new body in GitHub Markdown, with these sections where they have content:
+               - `## What`: the change or problem, in two to five sentences.
+               - `## Why`: the motivation the owner gave or clearly implied.
+               - `## Context`: the files, workflows or functions it touches, as repository paths you have confirmed exist, and related open issues as `#N` (only ones from open-issues.tsv that are really related).
+               - `## Acceptance`: a short checklist (`- [ ]`) of observable outcomes.
+               - `## Open questions`: anything you had to guess. Put a guess here, never state it as fact elsewhere.
+               Do not include the original text or any HTML comment; the workflow appends both.
+            3. `labels.json`: `{"labels": [{"name": "<label>", "evidence": "<why>"}]}` with at most one type label (bug, enhancement, chore, docs, security, refactor) and any routing labels (`build:`, `area:`, `core:`) that fit. Use only names from labels.json. Do not propose `needs:` labels or `blocked`.
+
+            If the issue is already clear and complete, write `skip.txt` with one line saying why, plus `labels.json`, and no `title.txt` or `body.md`.
+
+            ## Style
+
+            Plain, direct and concise. Short sentences. No praise, no filler, no closing summary. Write as the owner, not about them. Do not promise timelines or assign anyone.
+
+            ${{ inputs.instructions }}
+
+      - name: Record the run's cost
+        if: always() && steps.enrich.outputs.execution_file != ''
+        continue-on-error: true
+        env:
+          EXECUTION_FILE: ${{ steps.enrich.outputs.execution_file }}
+        run: |
+          set -euo pipefail
+          jq -r '[.[] | objects | select(.type == "result")] | last // {}
+            | "Enrich run: \(.subtype // "no result"), \(.num_turns // "?") turn(s), $\(.total_cost_usd // "?")"' \
+            "$EXECUTION_FILE" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the draft
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: issue-enrich-${{ github.event.issue.number }}
+          path: ${{ runner.temp }}/issue-enrich/out
+          if-no-files-found: error
+          retention-days: 3
+
+  publish:
+    name: Publish the enriched issue
+    needs: enrich
+    # ubuntu-slim: bash, jq, gh and one stdlib python3 script.
+    runs-on: ubuntu-slim
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    concurrency:
+      group: issue-enrich-publish-${{ github.repository }}-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    steps:
+      - name: Download the draft
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: issue-enrich-${{ github.event.issue.number }}
+          path: ${{ runner.temp }}/issue-enrich
+
+      - name: Fetch the labelling script
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          repository: laurigates/claude-plugins
+          ref: ${{ inputs.plugins-ref }}
+          path: .issue-labels
+          sparse-checkout: git-plugin/scripts/issue-labels.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Edit the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.issue.number }}
+          DRY_RUN: ${{ inputs.dry-run }}
+          DRAFT: ${{ runner.temp }}/issue-enrich
+        run: |
+          set -euo pipefail
+          case "${NUMBER:-}" in '' | *[!0-9]*) echo "::error title=Issue enrich::the event carries no usable issue number"; exit 1 ;; esac
+          marker='<!-- issue-enrich: v1 -->'
+
+          if [ -f "$DRAFT/skip.txt" ]; then
+            reason="$(head -c 300 "$DRAFT/skip.txt" | tr -d '\r' | head -n 1)"
+            echo "The agent left #$NUMBER as written: $reason"
+            echo "Left #$NUMBER as written: $reason" >>"$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # The draft came from a job that ran a model: check its shape.
+          for f in title.txt body.md; do
+            [ -s "$DRAFT/$f" ] || { echo "::error title=Issue enrich::the draft has no $f; nothing was edited"; exit 1; }
+          done
+          title="$(tr -d '\r' <"$DRAFT/title.txt")"
+          title="${title%"${title##*[![:space:]]}"}"
+          title="${title#"${title%%[![:space:]]*}"}"
+          case "$title" in *$'\n'*) echo "::error title=Issue enrich::title.txt has more than one line; nothing was edited"; exit 1 ;; esac
+          if [ -z "$title" ] || [ "${#title}" -gt 256 ]; then
+            echo "::error title=Issue enrich::title.txt is empty or longer than 256 characters; nothing was edited"
+            exit 1
+          fi
+
+          # The owner's edits win: edit only an issue whose title and body are
+          # still the ones the event carried, and that no run has enriched.
+          current="$RUNNER_TEMP/current.json"
+          gh api "repos/$REPO/issues/$NUMBER" --jq '{title, body: (.body // "")}' >"$current"
+          if jq -e --arg m "$marker" '.body | contains($m)' "$current" >/dev/null; then
+            echo "::notice title=Issue enrich::#$NUMBER is already enriched; nothing was edited"
+            exit 0
+          fi
+          if ! jq -e --slurpfile ev "$GITHUB_EVENT_PATH" \
+            '.title == $ev[0].issue.title and .body == ($ev[0].issue.body // "")' "$current" >/dev/null; then
+            echo "::notice title=Issue enrich::#$NUMBER was edited after it was opened; the owner's version is kept"
+            exit 0
+          fi
+
+          # New body: the draft, then the original inside a fence longer than
+          # any backtick run in it, then the marker. Any marker the draft
+          # carries is removed, so only this step decides whether it is there.
+          new="$RUNNER_TEMP/new-issue.json"
+          jq -n --arg t "$title" --rawfile draft "$DRAFT/body.md" --slurpfile cur "$current" --arg m "$marker" '
+            ($cur[0].title + "\n\n" + $cur[0].body) as $orig
+            | ([$orig | scan("`+") | length] | max // 0) as $run
+            | ("`" * ([3, $run + 1] | max)) as $fence
+            | ($draft | gsub("<!--\\s*issue-enrich[^>]*-->"; "") | sub("\\s+$"; "")) as $b
+            | {title: $t,
+               body: ($b + "\n\n<details>\n<summary>Original issue text</summary>\n\n"
+                      + $fence + "text\n" + $orig + "\n" + $fence + "\n\n</details>\n\n" + $m + "\n")}' >"$new"
+          len="$(jq '.body | length' "$new")"
+          if [ "$len" -gt 65536 ]; then
+            echo "::error title=Issue enrich::the new body is $len characters, over GitHub's 65536; nothing was edited"
+            exit 1
+          fi
+
+          if [ "${DRY_RUN:-}" != false ]; then
+            echo "Dry run: would set the title of #$NUMBER to: $title"
+            echo "Dry run: the new body:"
+            jq -r '.body' "$new"
+            echo "Dry run: would rewrite #$NUMBER as \"$title\"" >>"$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          gh api -X PATCH "repos/$REPO/issues/$NUMBER" --input "$new" --silent
+          echo "Rewrote #$NUMBER: $title"
+          echo "Rewrote #$NUMBER: $title" >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Apply labels
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.issue.number }}
+          DRY_RUN: ${{ inputs.dry-run }}
+          TAXONOMY_PATH: ${{ inputs.taxonomy-path }}
+          DRAFT: ${{ runner.temp }}/issue-enrich
+        run: |
+          set -euo pipefail
+          case "${NUMBER:-}" in '' | *[!0-9]*) echo "::error title=Issue enrich::the event carries no usable issue number"; exit 1 ;; esac
+          script=.issue-labels/git-plugin/scripts/issue-labels.py
+
+          # apply <result file> <source>: add the result's `add` list, nothing else.
+          apply() {
+            if ! jq -e '.status == "OK" and (.add | type == "array") and all(.add[]; type == "string")' "$1" >/dev/null 2>&1; then
+              echo "::error title=Issue enrich::the $2 result is missing or malformed; nothing was applied"
+              exit 1
+            fi
+            local names
+            names="$(jq -r '.add | map("`" + . + "`") | join(", ")' "$1")"
+            if [ -z "$names" ]; then
+              echo "$2: nothing to add to #$NUMBER."
+            elif [ "${DRY_RUN:-}" != false ]; then
+              echo "Dry run: $2 would add to #$NUMBER: $names" | tee -a "$GITHUB_STEP_SUMMARY"
+            else
+              jq -c '{labels: .add}' "$1" | gh api -X POST "repos/$REPO/issues/$NUMBER/labels" --input - --silent
+              echo "$2 added to #$NUMBER: $names" | tee -a "$GITHUB_STEP_SUMMARY"
+            fi
+          }
+
+          # 1. What the deterministic classifier derives from the issue as it
+          # now reads (the enriched text, unless this is a dry run).
+          python3 "$script" classify --repo "$REPO" --issue "$NUMBER" --taxonomy-path "$TAXONOMY_PATH" \
+            >"$RUNNER_TEMP/classify.json"
+          cat "$RUNNER_TEMP/classify.json"
+          apply "$RUNNER_TEMP/classify.json" classify
+
+          # 2. The model's proposals, without needs: labels and `blocked`,
+          # through validate, which re-reads the issue's labels after step 1.
+          if ! jq -e '.labels | type == "array"' "$DRAFT/labels.json" >/dev/null 2>&1; then
+            echo "::warning title=Issue enrich::the draft has no usable labels.json; only classify's labels were applied"
+            exit 0
+          fi
+          jq '{labels: [.labels[] | select(type == "object" and (.name | type) == "string")
+              | select(.name | ascii_downcase | gsub("^\\s+|\\s+$"; "") | (startswith("needs:") or . == "blocked") | not)]}' \
+            "$DRAFT/labels.json" >"$RUNNER_TEMP/proposals.json"
+          python3 "$script" validate --repo "$REPO" --issue "$NUMBER" --labels-file "$RUNNER_TEMP/proposals.json" \
+            >"$RUNNER_TEMP/validate.json"
+          cat "$RUNNER_TEMP/validate.json"
+          apply "$RUNNER_TEMP/validate.json" model
