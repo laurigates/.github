@@ -25,6 +25,12 @@ name: Issue Enrich (Reusable)
 #   - Only issues the repository owner opened (`author_association` OWNER),
 #     never a bot's, and never one whose body already carries the
 #     `<!-- issue-enrich` marker. Other people's issues are left alone.
+#   - Only terse issues: a body that already has a `## ` heading is skipped
+#     before a runner starts. An issue a Claude session files with the
+#     owner's token is indistinguishable from a hand-written one by author
+#     (both are OWNER, type User), but it always has section headings, so this
+#     check is what keeps such issues out, with no marker or hook needed on
+#     the filing side.
 #   - The agent writes, bash publishes. The enrich job's token can read
 #     contents and issues and nothing else, the agent's tools are Read, Grep,
 #     Glob and Write, and its only directory outside the checkout is
@@ -131,7 +137,8 @@ jobs:
       github.event.issue.author_association == 'OWNER' &&
       github.event.issue.user.type != 'Bot' &&
       github.event.sender.type != 'Bot' &&
-      !contains(github.event.issue.body || '', '<!-- issue-enrich')
+      !contains(github.event.issue.body || '', '<!-- issue-enrich') &&
+      !contains(github.event.issue.body || '', '## ')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

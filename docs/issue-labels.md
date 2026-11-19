@@ -89,6 +89,9 @@ end of the new body.
 
 - It runs only on issues the repository owner opens. Other people's issues
   are left alone.
+- It skips an issue whose body already has a `## ` heading. That covers
+  detailed issues written by hand and issues a Claude session files, which
+  GitHub records under the owner's account like any other.
 - If the owner edits the issue while Claude is drafting, the rewrite is
   dropped and the owner's version stays.
 - Labels: the classifier runs again on the rewritten text, then Claude's

@@ -38,7 +38,8 @@ lacks() { ok; if grep -qF -- "$2" <<<"$1"; then fail "unexpected '$2' in: $(tr '
 CASE=static
 gate="$(yq '.jobs.enrich.if' "$WF")"
 for want in "github.event.action == 'opened'" "author_association == 'OWNER'" \
-  "github.event.issue.user.type != 'Bot'" "github.event.sender.type != 'Bot'" "'<!-- issue-enrich'"; do
+  "github.event.issue.user.type != 'Bot'" "github.event.sender.type != 'Bot'" "'<!-- issue-enrich'" \
+  "!contains(github.event.issue.body || '', '## ')"; do
   has "$gate" "$want"
 done
 perms="$(yq -o=json -I=0 '.jobs.enrich.permissions' "$WF")"
