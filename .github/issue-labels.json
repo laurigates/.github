@@ -143,14 +143,17 @@
       ]
     },
     "issue-labels": {
-      "description": "Reusable issue-labels workflow",
+      "description": "Reusable issue-labels and issue-enrich workflows",
       "color": "0e8a16",
       "paths": [
         ".github/workflows/reusable-issue-labels.yml",
-        ".github/tests/issue-labels/**"
+        ".github/tests/issue-labels/**",
+        ".github/workflows/reusable-issue-enrich.yml",
+        ".github/tests/issue-enrich/**"
       ],
       "scopes": [
-        "reusable-issue-labels"
+        "reusable-issue-labels",
+        "reusable-issue-enrich"
       ]
     },
     "rulesync": {
@@ -205,6 +208,7 @@
         ".github/workflows/claude.yml",
         ".github/workflows/merge-method.yml",
         ".github/workflows/issue-labels.yml",
+        ".github/workflows/issue-enrich.yml",
         ".github/issue-labels.json",
         ".github/tests/run.sh",
         ".github/tests/README.md",

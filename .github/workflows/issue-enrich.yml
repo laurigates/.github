@@ -1,0 +1,23 @@
+name: Issue enrich
+
+# Rewrites a terse issue the repository owner opens into a structured one and
+# labels it: see reusable-issue-enrich.yml for what runs and what it
+# guarantees. Issues opened by anyone else are left alone.
+#
+# This repository is the pilot caller. Labels come from
+# .github/issue-labels.json, the same taxonomy issue-labels.yml uses.
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: read
+  issues: write
+  id-token: write
+
+jobs:
+  issue-enrich:
+    uses: laurigates/.github/.github/workflows/reusable-issue-enrich.yml@main
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
