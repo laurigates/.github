@@ -41,7 +41,7 @@ on:
         description: "OpenCode model as opencode/<id>. The default is free on OpenCode for a limited time, and OpenCode states its provider keeps no data and does not train on it. The job fails if OpenCode stops listing the id"
         required: false
         type: string
-        default: 'opencode/glm-5.3-flash-free'
+        default: 'opencode/deepseek-v4.1-flash-free'
       max-diff-lines:
         description: 'Skip the review when the reviewed diff (added + deleted lines in files not matching skip-paths) exceeds this many lines; 0 disables the cap'
         required: false
