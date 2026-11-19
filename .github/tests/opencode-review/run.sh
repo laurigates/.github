@@ -212,7 +212,7 @@ CASE=gate/title-body-inert; ev event-opened.json; CWD="$work/globdir" gate; rc 0
 listing="$(ls "$work/globdir")"; ok; if grep -q pwned <<< "$listing"; then fail "PR title/body text was executed"; fi
 
 # ------------------------------------------------------------------ model
-model() { run_step model OPENCODE_API_KEY="${KEY-test-key-123}" MODEL="${MODEL_IN:-opencode/glm-5.3-flash-free}" \
+model() { run_step model OPENCODE_API_KEY="${KEY-test-key-123}" MODEL="${MODEL_IN:-opencode/deepseek-v4.1-flash-free}" \
   MODELS_URL=https://opencode.ai/inference/v1/models FX_MODELS="${MODELS:-$FIX/models.json}" CURL_CODE="${CODE:-200}" CURL_FAIL="${CFAIL:-}"; }
 CASE=model/listed; model; rc 0
 has "$run/stub/curl.log" "STUB-CURL" "curl stub ran"
@@ -222,7 +222,7 @@ has "$run/stub/curl.log" "https://opencode.ai/inference/v1/models" "models URL"
 CASE=model/empty-key; KEY='' model; rc 1; error "OPENCODE_API_KEY is empty"
 ok; [ ! -e "$run/stub/curl.log" ] || fail "curl ran with an empty key"
 CASE=model/not-opencode; MODEL_IN=anthropic/claude-sonnet-5-5 model; rc 1; error "is not an opencode/<id> model"
-CASE=model/bare-id; MODEL_IN=glm-5.3-flash-free model; rc 1; error "is not an opencode/<id> model"
+CASE=model/bare-id; MODEL_IN=deepseek-v4.1-flash-free model; rc 1; error "is not an opencode/<id> model"
 CASE=model/unlisted; MODEL_IN=opencode/glm-4.7-free model; rc 1; error "does not list the model 'glm-4.7-free'"
 CASE=model/401; CODE=401 model; rc 1; error "OpenCode rejected OPENCODE_API_KEY (HTTP 401"
 CASE=model/500; CODE=500 model; rc 1; error "HTTP 500 from"
@@ -374,7 +374,7 @@ review_step() {
   printf 'diff --git a/x b/x\n' > "$work/rtemp/opencode-review/diff.patch"
   local title body
   title="$(jq -r .pull_request.title "$FIX/event-opened.json")"; body="$(jq -r .pull_request.body "$FIX/event-opened.json")"
-  CWD="$checkout" TEMP_DIR="$work/rtemp" run_step review OPENCODE_API_KEY=test-key MODEL=opencode/glm-5.3-flash-free \
+  CWD="$checkout" TEMP_DIR="$work/rtemp" run_step review OPENCODE_API_KEY=test-key MODEL=opencode/deepseek-v4.1-flash-free \
     TIMEOUT_MINUTES="${TMIN:-15}" REPO=laurigates/example RANGE="the whole pull request" PR_TITLE="$title" PR_BODY="$body" \
     OC_WRITE="${WRITE:-}" OC_RC="${ORC:-0}" OC_ERROR="${OERR:-}" OC_HANG="${HANG:-}" OC_LOG="${OLOG:-}" OC_CRASH="${CRASH:-}"
 }
@@ -382,7 +382,7 @@ CASE=review/writes-findings; WRITE='{"summary":"ok","findings":[]}' review_step;
 has "$run/stub/opencode.log" "STUB-OPENCODE run" "opencode stub ran"
 eq "$(cat "$work/rtemp/opencode-review/findings.json")" '{"summary":"ok","findings":[]}' "findings copied for publish"
 args="$run/stub/opencode-run-args"
-for want in --pure -m opencode/glm-5.3-flash-free --format json .opencode-review/diff.patch .opencode-review/pull-request.md --; do has "$args" "$want" "opencode run argument"; done
+for want in --pure -m opencode/deepseek-v4.1-flash-free --format json .opencode-review/diff.patch .opencode-review/pull-request.md --; do has "$args" "$want" "opencode run argument"; done
 has "$args" "File to write: $checkout/.opencode-review/findings.json" "absolute findings path in the prompt"
 has "$args" "Review a pull request in laurigates/example: the whole pull request." "prompt header"
 has "$checkout/.opencode-review/pull-request.md" '# fix: handle an empty list in mean() $(touch pwned-title)' "title verbatim"
@@ -394,7 +394,7 @@ has "$run/stdout" "Tokens: 1200 in, 80 out" "token summary"
 CASE=review/no-findings-file; review_step; rc 1; error "finished without writing .opencode-review/findings.json"
 CASE=review/planted-file-removed; PLANT='{"summary":"planted by the PR","findings":[]}' review_step; rc 1; error "finished without writing"
 ok; [ ! -e "$work/rtemp/opencode-review/findings.json" ] || fail "a findings file the checkout carried was published"
-CASE=review/opencode-fails; ORC=1 OERR='Model not found: opencode/glm-5.3-flash-free' WRITE='{"summary":"x","findings":[]}' review_step; rc 1
+CASE=review/opencode-fails; ORC=1 OERR='Model not found: opencode/deepseek-v4.1-flash-free' WRITE='{"summary":"x","findings":[]}' review_step; rc 1
 error "opencode run exited 1"; has "$run/stdout" "opencode error: Model not found" "provider error printed"
 has "$run/stdout" "::group::opencode evidence" "evidence on a failed run"
 
@@ -429,7 +429,7 @@ publish() {
   jq '[.[] | select(.filename != "README.md" and .filename != "Cargo.lock")]' "$FIX/pr-files.json" > "$pub/pr-reviewable.json"
   if [ -n "${1:-}" ]; then printf '%s' "$1" > "$pub/findings.json"; fi
   TEMP_DIR="$work/ptemp" run_step publish GH_TOKEN=stub REPO=laurigates/example PR=7 \
-    HEAD_SHA=1111111111111111111111111111111111111111 MODEL=opencode/glm-5.3-flash-free \
+    HEAD_SHA=1111111111111111111111111111111111111111 MODEL=opencode/deepseek-v4.1-flash-free \
     RANGE="the whole pull request" INLINE="${INL:-true}" FAIL_INLINE="${F422:-}" FAIL_POST="${F500:-}"
   posted="$run/stub/posted-1.json"
 }
@@ -454,7 +454,7 @@ eq "$(jq -r .event "$posted")" COMMENT "event"
 eq "$(jq -c '[.comments[] | [.path, .line, .side]]' "$posted")" '[["src/stats.py",3,"RIGHT"],["src/new_helper.py",11,"RIGHT"]]' "anchored comments"
 eq "$(jq -r '.comments[0].body' "$posted" | head -n 1)" "**Bug: Skips the first element**" "comment heading"
 jq -r .body "$posted" > "$work/body.md"
-has "$work/body.md" "**OpenCode review** of the whole pull request at \`111111111111\` with \`opencode/glm-5.3-flash-free\`. Suggestions are advisory." "body header"
+has "$work/body.md" "**OpenCode review** of the whole pull request at \`111111111111\` with \`opencode/deepseek-v4.1-flash-free\`. Suggestions are advisory." "body header"
 has "$work/body.md" "Findings not on a diff line:" "loose heading"
 has "$work/body.md" '`src/stats.py` line 99:' "off-diff line"; has "$work/body.md" '`src/legacy.py` line 1:' "removed file is not anchorable"
 has "$work/body.md" "(no file) line 1:" "non-string path"; has "$work/body.md" "(no file) line 2:" "missing path"; has "$work/body.md" '`src/stats.py`: **Risk' "string line"
@@ -493,7 +493,7 @@ CASE=wiring/permissions
 eq "$(yq -o=json -I=0 '.permissions' "$WF")" '{"contents":"read","pull-requests":"write"}' "top-level permissions"
 eq "$(yq '.jobs.review.permissions // "none"' "$WF")" none "job-level permissions"
 CASE=wiring/inputs
-eq "$(yq '.on.workflow_call.inputs.model.default' "$WF")" opencode/glm-5.3-flash-free "model default"
+eq "$(yq '.on.workflow_call.inputs.model.default' "$WF")" opencode/deepseek-v4.1-flash-free "model default"
 eq "$(yq '.on.workflow_call.inputs.max-diff-lines.type' "$WF")" number "max-diff-lines type"
 eq "$(yq '.on.workflow_call.inputs.allowed-bots.default' "$WF")" "" "allowed-bots default"
 eq "$(yq '.on.workflow_call.inputs.inline-comments.default' "$WF")" true "inline-comments default"
