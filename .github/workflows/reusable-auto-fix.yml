@@ -285,7 +285,7 @@ jobs:
       - name: Generate GitHub App token
         id: app-token
         if: steps.gate.outputs.run == 'true' && inputs.app-id != ''
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           client-id: ${{ inputs.app-id }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
@@ -640,7 +640,7 @@ jobs:
 
       - name: Analyze and fix with Claude
         if: steps.gate.outputs.run == 'true' && steps.context.outputs.recent_fix_count == '0'
-        uses: anthropics/claude-code-action@8a29bc6f0ae11a363721054b6739feba6adabe57 # v1.0.273
+        uses: anthropics/claude-code-action@5a856893345e332afa621934082d8c660c26d689 # v1.0.282
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           allowed_bots: ${{ inputs.allowed_bots }}
