@@ -129,7 +129,7 @@ jobs:
       # The api.anthropic.com rule is added only when ANTHROPIC_API_KEY is set;
       # without it the value is the ghcr.io rule alone, as before (#135). The
       # rule sends no anthropic-workspace-id header, so the key must be scoped
-      # to one workspace (#140; CLAUDE.md, reusable-renovate.yml entry).
+      # to one workspace (#140; .claude/rules/workflow-renovate.md).
       - name: Build Renovate host rules
         env:
           REGISTRY_TOKEN: ${{ inputs.app-id != '' && steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}

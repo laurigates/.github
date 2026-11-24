@@ -1,0 +1,10 @@
+---
+paths:
+  - ".github/workflows/reusable-issue-enrich.yml"
+  - ".github/workflows/issue-enrich.yml"
+  - ".github/tests/issue-enrich/**"
+---
+
+# `reusable-issue-enrich.yml`
+
+- **`reusable-issue-enrich.yml`** — rewrites a terse issue the repository owner opens into What/Why/Context/Acceptance/Open questions sections, using the caller's checkout, open issues and labels as context, keeps the original title and body in a collapsed block, and labels it; this repo is the pilot caller (`issue-enrich.yml`). It is #147's model stage as a second file, so `reusable-issue-labels.yml` keeps its narrower caller grant; callers grant `contents: read`, `issues: write`, `id-token: write` and pass `CLAUDE_CODE_OAUTH_TOKEN`. The `enrich` job runs only on `issues: opened` with `author_association == 'OWNER'`, no bot author or sender, no `<!-- issue-enrich` marker and no `## ` heading in the body (an issue a Claude session files with the owner's token is OWNER/User like a hand-written one; the heading check is what skips it); its token reads contents and issues only, the agent gets `Read,Grep,Glob,Write` with `Bash`/`WebFetch`/`WebSearch` denied and `--add-dir $RUNNER_TEMP/issue-enrich` (never `$RUNNER_TEMP`), and it writes `title.txt`, `body.md`, `labels.json` (or `skip.txt`), handed over as an artifact. The `publish` job (slim, `issues: write`, no model, no secret) edits only when the issue's title and body still equal the event payload (`$GITHUB_EVENT_PATH`), so an edit the owner made meanwhile wins; it fences the original with a backtick run longer than any inside it, strips any marker from the draft and appends `<!-- issue-enrich: v1 -->` itself. A `GITHUB_TOKEN` edit fires no `issues: edited`, so `issue-labels.yml` never sees the new text: `Apply labels` runs `issue-labels.py classify` on it, then drops `needs:` and `blocked` from the model's proposals and applies what `validate` accepts. `.github/tests/issue-enrich/run.sh` runs both publish bodies against a stub `gh` and a stand-in script
