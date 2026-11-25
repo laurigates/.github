@@ -128,7 +128,7 @@ for WF in .github/workflows/reusable-*.yml .github/workflows/reusable-*.yaml; do
   ok; [ "$COUNT" = "${#paths[@]}" ] || fail "count=$COUNT for ${#paths[@]} changed files matching '$defaults'"
   for p in "${paths[@]}"; do assert_has_file "$p"; done
 
-  # 2. A caller's '**/*.py' must match a top-level server.py (pal-mcp-server).
+  # 2. A caller's '**/*.py' must match a top-level server.py (palaver-mcp-server).
   CASE="$WF_SHORT/caller-py"
   rm -rf "$work/repo"
   make_repo "$work/repo" server.py pkg/mod.py README.md
