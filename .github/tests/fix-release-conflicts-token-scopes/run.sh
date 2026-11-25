@@ -5,7 +5,7 @@
 # GITHUB_TOKEN. The workflow's `permissions:` block scopes GITHUB_TOKEN only,
 # so an App or PAT without Actions: write closes the PR and then fails the
 # dispatch, and nothing recreates the release PR (issue #114). This test pins
-# that the input/secret descriptions and CLAUDE.md say the token needs
+# that the input/secret descriptions and .claude/rules/workflow-release.md say the token needs
 # actions write, and that the dispatch they describe still exists.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
@@ -38,11 +38,11 @@ grep -iq 'actions' <<<"$pat_desc" \
   || fail "RELEASE_PLEASE_TOKEN description does not mention the Actions permission: $pat_desc"
 n=$((n + 1))
 
-# 4. CLAUDE.md's bullet for the workflow states `actions: write`.
-bullet=$(grep -F -- '- **`reusable-fix-release-conflicts.yml`**' CLAUDE.md || true)
-[ -n "$bullet" ] || fail "CLAUDE.md has no reusable-fix-release-conflicts.yml bullet"
+# 4. .claude/rules/workflow-release.md's bullet for the workflow states `actions: write`.
+bullet=$(grep -F -- '- **`reusable-fix-release-conflicts.yml`**' .claude/rules/workflow-release.md || true)
+[ -n "$bullet" ] || fail ".claude/rules/workflow-release.md has no reusable-fix-release-conflicts.yml bullet"
 grep -Fq 'actions: write' <<<"$bullet" \
-  || fail "CLAUDE.md reusable-fix-release-conflicts.yml bullet does not mention 'actions: write'"
+  || fail ".claude/rules/workflow-release.md reusable-fix-release-conflicts.yml bullet does not mention 'actions: write'"
 n=$((n + 1))
 
 echo "PASS: $NAME ($n assertion(s))"
