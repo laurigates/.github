@@ -117,6 +117,11 @@ name: Issue Labels (Reusable)
 #     pull-requests: write
 #   jobs:
 #     issue-labels:
+#       # Starts no run for a bot's issue edit, which classify-issue skips
+#       # anyway. Bot opens, reopens and closes still run.
+#       if: >-
+#         github.event_name != 'issues' || github.event.action != 'edited' ||
+#         github.event.sender.type != 'Bot'
 #       uses: laurigates/.github/.github/workflows/reusable-issue-labels.yml@main
 #       with:
 #         mode: ${{ inputs.mode || 'audit' }}
