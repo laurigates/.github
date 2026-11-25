@@ -1,0 +1,9 @@
+---
+paths:
+  - ".github/workflows/reusable-security-deps.yml"
+  - ".github/tests/osv-scanner-job/**"
+---
+
+# `reusable-security-deps.yml`
+
+- **`reusable-security-deps.yml`** — one `osv-scanner` job, with no Claude step (issue #94 removed the Claude `audit` job, its native audits and its publish block copy). The job (SHA256-pinned binary, `ubuntu-slim`, `contents: read`) reads every lockfile and manifest it recognises and reports each advisory group with its CVSS score in the job summary and as annotations. On a `pull_request` it runs only when a lockfile changed (the gate counts `pyproject.toml`; a pyproject-only PR used to skip the scan, issue #113); every other event scans everything present. It fails only when `fail-on-high` is set and a group scores 7.0 or higher. osv-scanner exits 0 with no advisories, 1 with some, and 128 when it finds no package source; anything else fails the job. The workflow outputs `vulnerabilities` (advisory groups) and `critical` (groups at CVSS 7.0 or higher) come from the scan step, which writes them only after a scan ran, so both are empty when nothing was audited, and only after checking both are integers, since a value carrying a newline would write a second line into `$GITHUB_OUTPUT`. The inputs only the Claude job read (`package-manager`, `max-turns`, `model`, `effort`, `allowed-bots`, `use-sticky-comment`, `max-budget-usd`, `timeout-minutes`, `max-diff-lines`) and the `CLAUDE_CODE_OAUTH_TOKEN` secret, now optional, stay declared and do nothing: GitHub's workflow syntax reference says that a caller passing an input or a secret the called workflow does not specify "results in an error" (`on.workflow_call.inputs`, `on.workflow_call.secrets`). `.github/tests/osv-scanner-job/run.sh` runs the extracted step against a stub, with real 2.7.0 output as the fixture, and pins the outputs' wiring and the absence of the Claude job.

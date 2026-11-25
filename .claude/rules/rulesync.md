@@ -1,3 +1,14 @@
+---
+paths:
+  - ".rulesync/**"
+  - "rulesync.jsonc"
+  - ".github/workflows/reusable-sync-ai-rules.yml"
+  - ".github/workflows/lint.yml"
+  - ".github/tests/sync-ai-rules-targets/**"
+  - ".github/tests/rulesync-ignore/**"
+  - ".github/tests/tool-pins/**"
+---
+
 # Rulesync (v9+) — Source Layout & CLI Gotchas
 
 This repo is the rules **source** for `reusable-sync-ai-rules.yml`: consumer
