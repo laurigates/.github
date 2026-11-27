@@ -75,6 +75,12 @@ without having called anything.
 | `reusable-a11y-aria.yml` | ARIA pattern correctness |
 | `reusable-a11y-wcag.yml` | WCAG 2.1 compliance check |
 
+### Composite actions
+
+| Action | Description |
+|--------|-------------|
+| `actions/script-to-issue` | Scheduled audit to one issue: provisions the audit's label, skips while its previous report is open (or supersedes last period's), runs a script, and files its stdout with a `## Processing` section. Empty stdout files nothing. Used as `uses: laurigates/.github/.github/actions/script-to-issue@main` |
+
 ## Usage Example
 
 ```yaml
