@@ -143,17 +143,20 @@
       ]
     },
     "issue-labels": {
-      "description": "Reusable issue-labels and issue-enrich workflows",
+      "description": "Reusable issue-labels and issue-enrich workflows, and the script-to-issue action",
       "color": "0e8a16",
       "paths": [
         ".github/workflows/reusable-issue-labels.yml",
         ".github/tests/issue-labels/**",
         ".github/workflows/reusable-issue-enrich.yml",
-        ".github/tests/issue-enrich/**"
+        ".github/tests/issue-enrich/**",
+        ".github/actions/script-to-issue/**",
+        ".github/tests/script-to-issue/**"
       ],
       "scopes": [
         "reusable-issue-labels",
-        "reusable-issue-enrich"
+        "reusable-issue-enrich",
+        "script-to-issue"
       ]
     },
     "rulesync": {
