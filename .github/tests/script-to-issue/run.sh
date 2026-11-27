@@ -10,7 +10,7 @@
 #
 # ACTION_DIR overrides the action directory under test.
 set -uo pipefail
-cd "$(git rev-parse --show-toplevel)"
+cd "$(git rev-parse --show-toplevel)" || exit 1
 dir=".github/tests/script-to-issue"
 
 total=0
