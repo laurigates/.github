@@ -4,6 +4,7 @@
   "ignoreDeps": ["laurigates/.github"],
   "description": [
     "Repository config for laurigates/.github. The owner-wide Renovate runner supplies everything else; this file adds tracking of two kinds of workflow_call input default: the Claude model IDs (#135) and the plugins-ref commits of laurigates/claude-plugins (#109).",
+    "It also tracks the release binaries four reusable workflows download at a pinned <TOOL>_VERSION (#166): gitleaks, osv-scanner, opencode and ruff, each through the github-releases datasource. The <TOOL>_SHA256 beside each version is not tracked, so every bump PR arrives red and the checksum is edited by hand on it (CLAUDE.md, tool-pins entry).",
     "The Claude model lookup needs the runner to pass ANTHROPIC_API_KEY to reusable-renovate.yml, which then authenticates api.anthropic.com; the key must be scoped to one workspace (see the secret's description there). Without it the lookup fails and the pins are not updated; nothing else changes.",
     "extends and ignoreDeps (#154): the preset makes Renovate write and bump GitHub Action pins as a commit SHA with a version comment, and laurigates/.github is ignored because the preset would otherwise pin this repository's own @main references to main's head."
   ],
@@ -29,6 +30,50 @@
       "depNameTemplate": "laurigates/claude-plugins",
       "packageNameTemplate": "https://github.com/laurigates/claude-plugins",
       "datasourceTemplate": "git-refs"
+    },
+    {
+      "customType": "regex",
+      "description": "GITLEAKS_VERSION in reusable-security-secrets.yml (#166): the gitleaks/gitleaks release binary the step downloads and checks against GITLEAKS_SHA256. Release tags are vX.Y.Z. Renovate cannot write the new GITLEAKS_SHA256, so the bump PR fails its checksum check until the hash is edited on it.",
+      "managerFilePatterns": ["/^\\.github/workflows/[^/]+\\.ya?ml$/"],
+      "matchStrings": ["\\n[ \\t]+GITLEAKS_VERSION:[ \\t]*[\"']?(?<currentValue>\\d+\\.\\d+\\.\\d+)[\"']?[ \\t]*\\n"],
+      "depNameTemplate": "gitleaks/gitleaks",
+      "packageNameTemplate": "gitleaks/gitleaks",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>\\d+\\.\\d+\\.\\d+)$",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "description": "OSV_SCANNER_VERSION in reusable-security-deps.yml (#166): the google/osv-scanner release binary the step downloads and checks against OSV_SCANNER_SHA256. Release tags are vX.Y.Z. Renovate cannot write the new OSV_SCANNER_SHA256, so the bump PR fails its checksum check until the hash is edited on it.",
+      "managerFilePatterns": ["/^\\.github/workflows/[^/]+\\.ya?ml$/"],
+      "matchStrings": ["\\n[ \\t]+OSV_SCANNER_VERSION:[ \\t]*[\"']?(?<currentValue>\\d+\\.\\d+\\.\\d+)[\"']?[ \\t]*\\n"],
+      "depNameTemplate": "google/osv-scanner",
+      "packageNameTemplate": "google/osv-scanner",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>\\d+\\.\\d+\\.\\d+)$",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "description": "OPENCODE_VERSION in reusable-opencode-review.yml (#166): the anomalyco/opencode release binary the step downloads and checks against OPENCODE_SHA256. Release tags are vX.Y.Z. Renovate cannot write the new OPENCODE_SHA256, so the bump PR fails its checksum check until the hash is edited on it.",
+      "managerFilePatterns": ["/^\\.github/workflows/[^/]+\\.ya?ml$/"],
+      "matchStrings": ["\\n[ \\t]+OPENCODE_VERSION:[ \\t]*[\"']?(?<currentValue>\\d+\\.\\d+\\.\\d+)[\"']?[ \\t]*\\n"],
+      "depNameTemplate": "anomalyco/opencode",
+      "packageNameTemplate": "anomalyco/opencode",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>\\d+\\.\\d+\\.\\d+)$",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "description": "RUFF_VERSION in reusable-quality-code-smell.yml (#166): the astral-sh/ruff release tarball the step downloads and checks against RUFF_SHA256. Release tags are X.Y.Z, with no v. Renovate cannot write the new RUFF_SHA256, so the bump PR fails its checksum check until the hash is edited on it; the same PR re-runs .github/tests/ruff-advisory/gen.sh on the new tarball, because ruff-advisory requires the fixture's ruff_version to equal RUFF_VERSION.",
+      "managerFilePatterns": ["/^\\.github/workflows/[^/]+\\.ya?ml$/"],
+      "matchStrings": ["\\n[ \\t]+RUFF_VERSION:[ \\t]*[\"']?(?<currentValue>\\d+\\.\\d+\\.\\d+)[\"']?[ \\t]*\\n"],
+      "depNameTemplate": "astral-sh/ruff",
+      "packageNameTemplate": "astral-sh/ruff",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^(?<version>\\d+\\.\\d+\\.\\d+)$",
+      "versioningTemplate": "semver"
     }
   ],
   "customDatasources": {
